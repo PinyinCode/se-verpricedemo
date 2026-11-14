@@ -1876,7 +1876,7 @@ def screener_worker():
                 print("[SCREENER] ⚡ Đang tải trước toàn bộ dữ liệu (Stocks, BCTC, History)...", flush=True)
                 all_stocks = list(collection.find({}))
                 all_bctc = {doc["symbol"]: doc for doc in bctc_col.find({})}
-                all_hist = {doc["symbol"]: doc for doc in history_col.find({}, {"symbol": 1, "history_d1": 1})}
+                all_hist = {doc["symbol"]: doc for doc in history_col.find({}, {"symbol": 1, "history_d1": {"$slice": -200}})}
                 
                 stock_db = {}
                 bulk_updates = []
@@ -2774,7 +2774,7 @@ def force_screener():
             print("[SCREENER] ⚡ Đang tải trước toàn bộ dữ liệu...", flush=True)
             all_stocks = list(collection.find({}))
             all_bctc = {doc["symbol"]: doc for doc in bctc_col.find({})}
-            all_hist = {doc["symbol"]: doc for doc in history_col.find({}, {"symbol": 1, "history_d1": 1})}
+            all_hist = {doc["symbol"]: doc for doc in history_col.find({}, {"symbol": 1, "history_d1": {"$slice": -200}})}
             
             stock_db = {}
             bulk_updates = []
