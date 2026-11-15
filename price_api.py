@@ -1849,6 +1849,49 @@ def full_data_crawler_worker():
         except Exception: time.sleep(60)
 
 
+# ===================== SCREENER DATA PRELOAD =====================
+def _load_screener_bctc(symbols, chunk_size=10):
+    """Đọc BCTC theo từng nhóm mã, chỉ lấy 3 bảng cần cho tính điểm."""
+    result = {}
+    symbols = list(dict.fromkeys(symbols))
+    total = len(symbols)
+    for start in range(0, total, chunk_size):
+        chunk = symbols[start:start + chunk_size]
+        cursor = bctc_col.find(
+            {"symbol": {"$in": chunk}},
+            {
+                "_id": 0, "symbol": 1,
+                "income_statement": 1, "cash_flow": 1, "balance_sheet": 1
+            }
+        ).batch_size(chunk_size)
+        for doc in cursor:
+            if doc.get("symbol"):
+                result[doc["symbol"]] = doc
+        print(f"[SCREENER] BCTC preload: {min(start + len(chunk), total)}/{total} mã", flush=True)
+    return result
+
+
+def _load_screener_history(symbols, chunk_size=5, bars_limit=1400):
+    """Đọc lịch sử theo nhóm nhỏ để tránh một truy vấn trả về payload quá lớn."""
+    result = {}
+    symbols = list(dict.fromkeys(symbols))
+    total = len(symbols)
+    for start in range(0, total, chunk_size):
+        chunk = symbols[start:start + chunk_size]
+        cursor = history_col.find(
+            {"symbol": {"$in": chunk}},
+            {
+                "_id": 0, "symbol": 1,
+                "history_d1": {"$slice": -bars_limit}
+            }
+        ).batch_size(chunk_size)
+        for doc in cursor:
+            if doc.get("symbol"):
+                result[doc["symbol"]] = doc
+        print(f"[SCREENER] History preload: {min(start + len(chunk), total)}/{total} mã", flush=True)
+    return result
+
+
 # ===================== SCREENER WORKER =====================
 def screener_worker():
     while True:
@@ -1880,8 +1923,9 @@ def screener_worker():
                 # TỐI ƯU: Preload toàn bộ dữ liệu vào RAM
                 print("[SCREENER] ⚡ Đang tải trước toàn bộ dữ liệu (Stocks, BCTC, History)...", flush=True)
                 all_stocks = list(collection.find({}))
-                all_bctc = {doc["symbol"]: doc for doc in bctc_col.find({})}
-                all_hist = {doc["symbol"]: doc for doc in history_col.find({}, {"_id": 0, "symbol": 1, "history_d1": {"$slice": -2500}})}
+                screener_symbols = [doc["symbol"] for doc in all_stocks if doc.get("symbol")]
+                all_bctc = _load_screener_bctc(screener_symbols, chunk_size=10)
+                all_hist = _load_screener_history(screener_symbols, chunk_size=5, bars_limit=1400)
                 
                 stock_db = {}
                 bulk_updates = []
@@ -2781,8 +2825,9 @@ def force_screener():
             # TỐI ƯU: Preload dữ liệu
             print("[SCREENER] ⚡ Đang tải trước toàn bộ dữ liệu...", flush=True)
             all_stocks = list(collection.find({}))
-            all_bctc = {doc["symbol"]: doc for doc in bctc_col.find({})}
-            all_hist = {doc["symbol"]: doc for doc in history_col.find({}, {"_id": 0, "symbol": 1, "history_d1": {"$slice": -2500}})}
+            screener_symbols = [doc["symbol"] for doc in all_stocks if doc.get("symbol")]
+            all_bctc = _load_screener_bctc(screener_symbols, chunk_size=10)
+            all_hist = _load_screener_history(screener_symbols, chunk_size=5, bars_limit=1400)
             
             stock_db = {}
             bulk_updates = []
