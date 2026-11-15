@@ -190,6 +190,25 @@ def _vn_now() -> datetime:
 def _now_str() -> str:
     return _vn_now().strftime("%d/%m/%Y %H:%M:%S")
 
+
+def _expected_latest_bctc_period(now=None) -> str:
+    """
+    Kỳ BCTC quý gần nhất thường đã đến hạn công bố theo lịch tại Việt Nam.
+    Dùng để phát hiện dữ liệu bị cũ, không giả định mọi doanh nghiệp công bố cùng ngày.
+    """
+    now = now or _vn_now()
+    year, month = now.year, now.month
+
+    if month >= 11:
+        return f"{year}-Q3"
+    if month >= 8:
+        return f"{year}-Q2"
+    if month >= 5:
+        return f"{year}-Q1"
+    if month >= 4:
+        return f"{year - 1}-Q4"
+    return f"{year - 1}-Q3"
+
 def _get_trading_date_str() -> str:
     vn_now = _vn_now()
     if vn_now.hour < 9: vn_now -= timedelta(days=1)
@@ -1360,9 +1379,18 @@ def build_bctc_quarterly_trend(bctc_doc, max_periods=8):
     def fmt(value):
         return "không đủ dữ liệu" if value is None else f"{value:+.1f}%"
 
+    latest_period = periods[0]
+    expected_period = _expected_latest_bctc_period()
     lines = [
-        f"XU HƯỚNG BCTC THEO QUÝ (tối đa {len(periods)} quý; đơn vị tỷ VNĐ):"
+        f"XU HƯỚNG BCTC THEO QUÝ (tối đa {len(periods)} quý; đơn vị tỷ VNĐ):",
+        f"Kỳ dữ liệu mới nhất: {latest_period}; kỳ công bố dự kiến hiện tại: {expected_period}."
     ]
+    if latest_period < expected_period:
+        lines.append(
+            f"CẢNH BÁO: Dữ liệu BCTC đang cũ ({latest_period}), chưa có dữ liệu đến "
+            f"kỳ dự kiến {expected_period}. Không được trình bày các số liệu này như "
+            "tình hình tài chính mới nhất tại thời điểm hiện tại."
+        )
     for period in reversed(periods):
         item = rows[period]
         try:
@@ -1896,29 +1924,81 @@ def full_data_crawler_worker():
             is_bctc_time = (0 <= vn_now.hour < 6 and vn_now.minute == 0 and vn_now.second < 10)
             if is_bctc_time:
                 target_symbols = [doc["symbol"] for doc in collection.find({}, {"symbol": 1})]
-                thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
+                expected_period = _expected_latest_bctc_period(vn_now)
+
                 for symbol in target_symbols:
-                    bctc_doc = bctc_col.find_one({"symbol": symbol}, {"updated_at": 1})
+                    bctc_doc = bctc_col.find_one(
+                        {"symbol": symbol},
+                        {"updated_at": 1, "latest_period": 1}
+                    )
                     need = False
-                    if not bctc_doc or "updated_at" not in bctc_doc: need = True
+                    retry_days = 30
+
+                    if not bctc_doc or not bctc_doc.get("updated_at"):
+                        need = True
                     else:
+                        latest_period = str(bctc_doc.get("latest_period") or "")
+                        period_is_stale = bool(
+                            latest_period
+                            and re.fullmatch(r"\d{4}-Q[1-4]", latest_period)
+                            and latest_period < expected_period
+                        )
+
+                        # Dữ liệu chưa theo kịp kỳ công bố dự kiến: thử cập nhật mỗi 7 ngày.
+                        # Dữ liệu đã mới: giữ chu kỳ kiểm tra định kỳ 30 ngày.
+                        retry_days = 7 if period_is_stale else 30
+
                         try:
-                            if datetime.strptime(bctc_doc["updated_at"], "%d/%m/%Y %H:%M:%S").replace(tzinfo=timezone.utc) < thirty_days_ago: need = True
-                        except: need = True
+                            last_update = datetime.strptime(
+                                bctc_doc["updated_at"], "%d/%m/%Y %H:%M:%S"
+                            ).replace(tzinfo=timezone.utc)
+                            age_days = (
+                                datetime.now(timezone.utc) - last_update
+                            ).total_seconds() / 86400
+                            need = age_days >= retry_days
+                        except (TypeError, ValueError):
+                            need = True
+
+                        if period_is_stale:
+                            logger.info(
+                                "[BCTC AUTO] %s đang cũ: latest=%s, kỳ dự kiến=%s, "
+                                "lịch thử cập nhật=%d ngày",
+                                symbol, latest_period, expected_period, retry_days
+                            )
+
                     if need:
+                        logger.info(
+                            "[BCTC AUTO] Đang làm mới %s (kỳ hiện có=%s, kỳ dự kiến=%s)",
+                            symbol,
+                            (bctc_doc or {}).get("latest_period", "chưa có"),
+                            expected_period
+                        )
                         res = _fetch_bctc_ssi(symbol)
                         if res:
                             res.update({"symbol": symbol, "updated_at": _now_str()})
-                            bctc_col.update_one({"symbol": symbol}, {"$set": res}, upsert=True)
-                            
+                            bctc_col.update_one(
+                                {"symbol": symbol}, {"$set": res}, upsert=True
+                            )
+
                             extracted = extract_metrics_from_bctc_data(res)
                             if extracted:
-                                collection.update_one({"symbol": symbol}, {"$set": extracted})
-                                
+                                collection.update_one(
+                                    {"symbol": symbol}, {"$set": extracted}
+                                )
+                            logger.info(
+                                "[BCTC AUTO] %s cập nhật xong | kỳ mới nhất=%s",
+                                symbol, res.get("latest_period", "không rõ")
+                            )
+                        else:
+                            logger.warning("[BCTC AUTO] %s không lấy được dữ liệu mới", symbol)
+
                         time.sleep(3.0)
-                time.sleep(3600) 
-            else: time.sleep(30)
-        except Exception: time.sleep(60)
+                time.sleep(3600)
+            else:
+                time.sleep(30)
+        except Exception as exc:
+            log_exception("[BCTC AUTO WORKER]", exc)
+            time.sleep(60)
 
 
 # ===================== SCREENER DATA PRELOAD =====================
