@@ -1321,14 +1321,85 @@ def get_sector_guidance(sector):
     guidance = {"NGAN_HANG": "D/E cao là bản chất. Trọng tâm: ROE, ROA, tín dụng.", "CHUNG_KHOAN": "Phụ thuộc thanh khoản. Trọng tâm: ROE, LNST YoY.", "BAT_DONG_SAN": "Ghi nhận theo dự án. Trọng tâm: P/B, ROE, dòng tiền trả trước.", "CONG_NGHE_BAN_LE": "Trọng tâm: ROE, biên gộp, LNST.", "DIEN_NUOC_HA_TANG": "CFO ổn định. Trọng tâm: ROE, cổ tức, CFO.", "NGUYEN_VAT_LIEU_CHU_KY": "Bẫy P/E thấp. Trọng tâm: P/B, ROE, biên gộp.", "SAN_XUAT_TIEU_DUNG_PHONG_THU": "Trọng tâm: ROE, biên gộp, CFO/LNST."}
     return guidance.get(sector, guidance["SAN_XUAT_TIEU_DUNG_PHONG_THU"])
 
-def build_verified_facts(symbol, sm, si, sector):
+def build_bctc_quarterly_trend(bctc_doc, max_periods=8):
+    """Tổng hợp xu hướng BCTC tối đa 8 quý; không tự suy diễn số liệu thiếu."""
+    if not isinstance(bctc_doc, dict):
+        return "Không có dữ liệu BCTC theo quý."
+
+    income = bctc_doc.get("income_statement", []) or []
+    cashflow = bctc_doc.get("cash_flow", []) or []
+    periods = sorted(
+        {x.get("period") for x in income if x.get("period")},
+        reverse=True
+    )[:max_periods]
+    if not periods:
+        return "Không có dữ liệu doanh thu/lợi nhuận theo quý."
+
+    rows = {}
+    for period in periods:
+        revenue = _get_bctc_value(income, "IS_NET_REVENUE", period)
+        cogs = _get_bctc_value(income, "IS_COST_OF_GOODS_SOLD", period)
+        npat = _get_bctc_value(
+            income,
+            ["IS_NET_PROFIT_AFTER_TAX", "IS_PROFIT_AFTER_TAX", "IS_NET_PROFIT"],
+            period
+        )
+        cfo = _get_bctc_value(
+            cashflow, "CF_NET_CASH_FLOWS_FROM_OPERATING_ACTIVITIES", period
+        )
+        rows[period] = {
+            "revenue": revenue, "npat": npat, "cfo": cfo,
+            "gross_margin": ((revenue + cogs) / revenue * 100) if revenue > 0 else None
+        }
+
+    def growth(current, previous):
+        if previous is None or previous == 0:
+            return None
+        return (current / previous - 1) * 100
+
+    def fmt(value):
+        return "không đủ dữ liệu" if value is None else f"{value:+.1f}%"
+
+    lines = [
+        f"XU HƯỚNG BCTC THEO QUÝ (tối đa {len(periods)} quý; đơn vị tỷ VNĐ):"
+    ]
+    for period in reversed(periods):
+        item = rows[period]
+        try:
+            year, quarter = period.split("-Q")
+            prior_yoy = f"{int(year)-1}-Q{quarter}"
+            prior_q = f"{int(year)-1}-Q4" if quarter == "1" else f"{year}-Q{int(quarter)-1}"
+        except Exception:
+            prior_yoy, prior_q = None, None
+
+        yoy = rows.get(prior_yoy, {})
+        prev = rows.get(prior_q, {})
+        gm = "N/A" if item["gross_margin"] is None else f"{item['gross_margin']:.1f}%"
+        lines.append(
+            f"- {period}: Doanh thu {item['revenue']/1e9:,.2f}; "
+            f"LNST {item['npat']/1e9:,.2f}; CFO {item['cfo']/1e9:,.2f}; "
+            f"biên gộp {gm}; doanh thu YoY {fmt(growth(item['revenue'], yoy.get('revenue')) if yoy else None)}; "
+            f"LNST YoY {fmt(growth(item['npat'], yoy.get('npat')) if yoy else None)}; "
+            f"doanh thu QoQ {fmt(growth(item['revenue'], prev.get('revenue')) if prev else None)}; "
+            f"LNST QoQ {fmt(growth(item['npat'], prev.get('npat')) if prev else None)}."
+        )
+
+    lines.append(
+        "LƯU Ý: So sánh chỉ khi có đủ kỳ tương ứng; không suy diễn dữ liệu thiếu "
+        "hoặc kết luận chắc chắn khi các kỳ báo cáo không đồng nhất."
+    )
+    return "\n".join(lines)
+
+
+def build_verified_facts(symbol, sm, si, sector, bctc_doc=None):
     lines = [
         f"MÃ {symbol} — NGÀNH {sector}",
         f"QUYẾT ĐỊNH: {si.get('final_decision')}",
         f"GIÁ: {sm.get('close',0):,.0f} | P/E {sm.get('pe',0):.2f} | P/B {sm.get('pb',0):.2f}",
         f"VÙNG MUA: Fair value {sm.get('fair_value_high',0):,.0f} | Vùng mua {sm.get('fair_value_low',0):,.0f} | Verdict: {sm.get('valuation_verdict')}",
-        f"SINH LỜI: ROE {sm.get('roe',0)}% | ROA {sm.get('roa',0)}% | CFO {sm.get('cfo_latest',0):,.0f} | LNST {sm.get('net_profit_ttm',0):,.0f}",
-        f"ĐIỂM: Tổng {si.get('total_score')}/100"
+        f"SINH LỜI TTM: ROE {sm.get('roe',0)}% | ROA {sm.get('roa',0)}% | CFO {sm.get('cfo_latest',0):,.0f} tỷ | LNST {sm.get('net_profit_ttm',0):,.0f} tỷ",
+        f"ĐIỂM: Tổng {si.get('total_score')}/100",
+        build_bctc_quarterly_trend(bctc_doc)
     ]
     return "\n".join(lines)
 
@@ -1454,7 +1525,8 @@ def _call_ai_for_symbol(symbol, sm, si, sector):
             print(f"  ⚠️ [{symbol}] Bỏ qua gọi AI: Chưa có dữ liệu Fair Value (cần chạy Screener trước).", flush=True)
             return None
 
-        verified_facts = build_verified_facts(symbol, sm, si, sector)
+        bctc_doc = bctc_col.find_one({"symbol": symbol}, {"_id": 0, "income_statement": 1, "cash_flow": 1})
+        verified_facts = build_verified_facts(symbol, sm, si, sector, bctc_doc)
         sector_guidance = get_sector_guidance(sector)
         
         final_decision = si.get("final_decision", "CHƯA XÁC ĐỊNH")
@@ -1489,7 +1561,7 @@ TUYỆT ĐỐI KHÔNG ĐƯỢC TỰ ĐỔI SANG CHỮ "TRÁNH" HAY BẤT KỲ T�
 
 --- ĐỊNH DẠNG: JSON THUẦN TÚY (KHÔNG ```json) ---
 {{
-  "bctc": "6-8 câu phân tích BCTC, trích số: ROE={sm.get('roe',0)}%, ROA={sm.get('roa',0)}%, P/E={sm.get('pe',0)}, P/B={sm.get('pb',0)}, CFO/LNST, D/E={sm.get('debt_to_equity',0)}. Kết luận lợi nhuận thật/ảo.",
+  "bctc": "10-12 câu phân tích BCTC: kết hợp chất lượng tài chính TTM và xu hướng tối đa 8 quý trong dữ kiện. So sánh doanh thu, LNST, biên gộp, CFO; nêu tăng/giảm YoY và QoQ khi đủ dữ liệu; nhận diện quý bất thường và chất lượng chuyển đổi lợi nhuận thành tiền nếu có bằng chứng. Phân biệt TTM với từng quý. Không bịa số liệu, không kết luận khi thiếu dữ liệu.",
   "catalyst": "3-4 câu. Economic Moat cụ thể + động lực tăng trưởng 2-3 năm.",
   "risks": "3 câu. Rủi ro trọng yếu nhất phù hợp ngành.",
   "valuation_verdict": "Copy nguyên văn: '{verdict}'",
