@@ -271,11 +271,16 @@ def _safe_replace_screener_results(results: list, tag: str = "") -> bool:
         screener_lock.release()
 
 # ===================== CAGR 5 NĂM =====================
-def get_historical_return_rate_with_details(symbol):
+def get_historical_return_rate_with_details(symbol, history_bars=None):
+    """
+    Tính CAGR 5 năm. Screener truyền history_bars đã preload để tránh truy vấn MongoDB theo từng mã.
+    Caller cũ không truyền dữ liệu vẫn đọc MongoDB như trước.
+    """
     try:
-        hist_data = history_col.find_one({"symbol": symbol})
-        if not hist_data or not hist_data.get("history_d1"): return None
-        history_bars = hist_data["history_d1"]
+        if history_bars is None:
+            hist_data = history_col.find_one({"symbol": symbol}, {"_id": 0, "history_d1": 1})
+            history_bars = hist_data.get("history_d1", []) if hist_data else []
+        if not history_bars: return None
         if len(history_bars) < 30: return None
             
         df = pd.DataFrame(history_bars)
@@ -1131,7 +1136,7 @@ def compute_final_decision(fund_score, tech_score, val_score, total_score, verdi
     if (verdict == "RẺ - TRONG VÙNG MUA" and fund_score >= 30 and val_score < 18): return ("⏳ CHỜ ĐỊNH GIÁ TỐT HƠN", "amber", "Định giá chưa hấp dẫn.")
     return ("👀 THEO DÕI", "slate", "Chưa đủ ĐK.")
 
-def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_score_raw=50, tech_status="Tích lũy", pattern="Tích lũy", existing_ai_data=None):
+def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_score_raw=50, tech_status="Tích lũy", pattern="Tích lũy", existing_ai_data=None, history_bars=None):
     sector = get_sector(symbol)
     pe, pb, roe, roa = nd["pe"], nd["pb"], nd["roe"], nd["roa"]
     close_price, cfo_latest, net_profit_ttm = nd["close_price"], nd["cfo_latest"], nd["net_profit_ttm"]
@@ -1226,7 +1231,7 @@ def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_
     fv = compute_fair_value_zone(symbol, nd, sector_median, config, group_label)
     decision, color, reason = compute_final_decision(fund_score, tech_score, val_score, total_score, fv["verdict"], cfo_latest, net_profit_ttm, roe, debt_to_equity, fv["discount_to_fair_pct"], close_price, fv["fair_high"], fv["fair_low"])
 
-    sim_data = get_historical_return_rate_with_details(symbol)
+    sim_data = get_historical_return_rate_with_details(symbol, history_bars)
     meta = VN100_METADATA.get(symbol, {})
 
     ai_data = existing_ai_data or {
@@ -1876,7 +1881,7 @@ def screener_worker():
                 print("[SCREENER] ⚡ Đang tải trước toàn bộ dữ liệu (Stocks, BCTC, History)...", flush=True)
                 all_stocks = list(collection.find({}))
                 all_bctc = {doc["symbol"]: doc for doc in bctc_col.find({})}
-                all_hist = {doc["symbol"]: doc for doc in history_col.find({}, {"symbol": 1, "history_d1": {"$slice": -200}})}
+                all_hist = {doc["symbol"]: doc for doc in history_col.find({}, {"_id": 0, "symbol": 1, "history_d1": {"$slice": -2500}})}
                 
                 stock_db = {}
                 bulk_updates = []
@@ -1920,10 +1925,12 @@ def screener_worker():
                     med, _ = get_median_for_symbol(symbol, sector_medians)
                     
                     hist_doc = all_hist.get(symbol)
+                    history_bars = hist_doc.get("history_d1", []) if hist_doc else []
+                    tech_bars = history_bars[-200:]
                     tech_score_raw, tech_status, pattern = 50, "Tích lũy", "Tích lũy"
-                    if ProfessionalTechnicalAnalyzer and hist_doc and hist_doc.get("history_d1"):
+                    if ProfessionalTechnicalAnalyzer and tech_bars:
                         try:
-                            analyzer = ProfessionalTechnicalAnalyzer(hist_doc["history_d1"]) 
+                            analyzer = ProfessionalTechnicalAnalyzer(tech_bars) 
                             ptkt_res = analyzer.analyze()
                             tech_score_raw = ptkt_res.get("technical_score", 50)
                             tech_status = ptkt_res.get("technical_status", "Tích lũy")
@@ -1942,7 +1949,8 @@ def screener_worker():
                     res = evaluate_stock_from_db(
                         symbol, nd, med, grp, cfg, 
                         tech_score_raw=tech_score_raw, tech_status=tech_status, pattern=pattern, 
-                        existing_ai_data=existing_ai
+                        existing_ai_data=existing_ai,
+                        history_bars=history_bars
                     )
                     if res: 
                         res["date"] = today_str
@@ -2774,7 +2782,7 @@ def force_screener():
             print("[SCREENER] ⚡ Đang tải trước toàn bộ dữ liệu...", flush=True)
             all_stocks = list(collection.find({}))
             all_bctc = {doc["symbol"]: doc for doc in bctc_col.find({})}
-            all_hist = {doc["symbol"]: doc for doc in history_col.find({}, {"symbol": 1, "history_d1": {"$slice": -200}})}
+            all_hist = {doc["symbol"]: doc for doc in history_col.find({}, {"_id": 0, "symbol": 1, "history_d1": {"$slice": -2500}})}
             
             stock_db = {}
             bulk_updates = []
@@ -2816,10 +2824,12 @@ def force_screener():
                 med, _ = get_median_for_symbol(sym, medians)
                 
                 hist_doc = all_hist.get(sym)
+                history_bars = hist_doc.get("history_d1", []) if hist_doc else []
+                tech_bars = history_bars[-200:]
                 tech_score_raw, tech_status, pattern = 50, "Tích lũy", "Tích lũy"
-                if ProfessionalTechnicalAnalyzer and hist_doc and hist_doc.get("history_d1"):
+                if ProfessionalTechnicalAnalyzer and tech_bars:
                     try:
-                        analyzer = ProfessionalTechnicalAnalyzer(hist_doc["history_d1"]) 
+                        analyzer = ProfessionalTechnicalAnalyzer(tech_bars) 
                         ptkt_res = analyzer.analyze()
                         tech_score_raw = ptkt_res.get("technical_score", 50)
                         tech_status = ptkt_res.get("technical_status", "Tích lũy")
@@ -2838,7 +2848,8 @@ def force_screener():
                 res = evaluate_stock_from_db(
                     sym, nd, med, grp, cfg, 
                     tech_score_raw=tech_score_raw, tech_status=tech_status, pattern=pattern, 
-                    existing_ai_data=existing_ai
+                    existing_ai_data=existing_ai,
+                    history_bars=history_bars
                 )
                 if res: 
                     res["date"] = today_str
