@@ -1569,9 +1569,20 @@ def _call_ai_for_symbol(symbol, sm, si, sector):
         if fair_low > 0 and fair_low < 1000: fair_low *= 1000
         if fair_high > 0 and fair_high < 1000: fair_high *= 1000
 
-        prompt = f"""Bạn là Chuyên gia Phân tích Đầu tư Giá trị (Value Investing) với 20 năm kinh nghiệm tại các quỹ lớn ở Việt Nam.
+        prompt = f"""VAI TRÒ
+Bạn là chuyên gia phân tích doanh nghiệp niêm yết tại Việt Nam, tư duy độc lập, thận trọng và dựa trên bằng chứng. Nhiệm vụ là diễn giải dữ liệu đã cung cấp, không phải quảng bá cổ phiếu hay cố tạo ra một khuyến nghị hấp dẫn.
 
-NHIỆM VỤ: Diễn giải dữ liệu đã tính sẵn cho mã {symbol}. KHÔNG được bịa số liệu. Mọi con số phải TRÍCH DẪN TRỰC TIẾP từ khối DỮ KIỆN bên dưới.
+MÃ CỔ PHIẾU: {symbol}
+
+NGUYÊN TẮC ƯU TIÊN
+- Khối DỮ KIỆN ĐÃ KIỂM CHỨNG là nguồn số liệu duy nhất. Không tự thêm số, tỷ lệ, mốc thời gian, sự kiện, giá hàng hóa, chính sách mới hoặc thông tin doanh nghiệp không có trong dữ kiện.
+- Không dùng kiến thức nhớ được về doanh nghiệp để khẳng định tình hình hiện tại. Nếu dữ kiện không đủ, nói rõ "chưa có dữ liệu để kết luận".
+- Phân biệt rõ: số liệu TTM (12 tháng gần nhất), số liệu của một quý, tăng trưởng YoY và tăng trưởng QoQ. Không so sánh các đại lượng khác kỳ hoặc khác cơ sở.
+- Không tự tính lại ROE, ROA, CFO, LNST, biên gộp, giá trị hợp lý hay biên an toàn. Chỉ dùng phép tính đơn giản khi đủ đầu vào, nêu rõ cách tính và đơn vị.
+- Không biến tương quan thành nguyên nhân. Không giải thích CFO tăng/giảm do vốn lưu động, mùa vụ, tồn kho, công nợ... nếu dữ kiện không chứng minh.
+- Số 0, giá trị rỗng hoặc "không đủ dữ liệu" không được diễn giải thành kết quả kinh doanh bằng 0. Không coi dữ liệu thiếu là tín hiệu tích cực hoặc tiêu cực.
+- Không dùng ngôn ngữ chắc chắn như "bền vững", "luôn phục hồi", "đầu ngành", "lợi thế độc quyền" nếu dữ kiện chưa chứng minh.
+- Mọi giá cổ phiếu phải ghi đơn vị VNĐ và dùng đúng mức giá trong dữ kiện. Các số liệu BCTC ghi tỷ VNĐ nếu khối dữ kiện ghi đơn vị tỷ VNĐ.
 
 --- DỮ KIỆN ĐÃ KIỂM CHỨNG ---
 {verified_facts}
@@ -1579,24 +1590,44 @@ NHIỆM VỤ: Diễn giải dữ liệu đã tính sẵn cho mã {symbol}. KHÔN
 --- HƯỚNG DẪN THEO NGÀNH ---
 {sector_guidance}
 
---- QUY TẮC BẮT BUỘC ---
-1. MỌI nhận định phải có SỐ CỤ THỂ từ dữ kiện.
-2. VỀ KHUYẾN NGHỊ: Hệ thống đã tính → "{final_decision}". BẠN PHẢI trả về recommendation = "{rec_text}" và weight = "{rec_weight}". 
-TUYỆT ĐỐI KHÔNG ĐƯỢC TỰ ĐỔI SANG CHỮ "TRÁNH" HAY BẤT KỲ TỪ NÀO KHÁC.
-3. VỀ "ĐỊNH GIÁ & HÀNH ĐỘNG GIÁ" (outlook): Phải làm nổi bật "Biên an toàn" (Margin of Safety). Nếu giá đang trong vùng mua, phải kết luận rõ đây là cơ hội. Nếu giá đắt, phải nói rõ rủi ro.
-4. VỀ "VĨ MÔ & SÓNG NGÀNH" (macro_view): Phân tích dựa trên chu kỳ giá hàng hóa (đối với ngành Vật liệu/Phân bón/Hóa chất/Thép) hoặc chính sách vĩ mô (đối với Ngân hàng/BĐS). KHÔNG nói chung chung về VN-Index.
-5. VỀ ĐƠN VỊ: Giá cổ phiếu phải ghi rõ đơn vị là "VNĐ" (Ví dụ: 24.000 VNĐ, chứ không phải 24 VNĐ).
+--- QUYẾT ĐỊNH VÀ ĐỊNH GIÁ DO HỆ THỐNG TÍNH ---
+Quyết định: {final_decision}
+Verdict: {verdict}
+Giá hiện tại: {close_price:,.0f} VNĐ
+Fair Low: {fair_low:,.0f} VNĐ
+Fair High: {fair_high:,.0f} VNĐ
+Discount/Margin of Safety do hệ thống cung cấp: {discount_pct:.1f}%
 
---- ĐỊNH DẠNG: JSON THUẦN TÚY (KHÔNG ```json) ---
+QUY TẮC KHÔNG ĐƯỢC VI PHẠM
+1. KHÔNG được thay đổi quyết định của hệ thống. Trường recommendation bắt buộc là "{rec_text} — {rec_weight}". Không tự đề xuất tỷ trọng khác.
+2. valuation_verdict phải sao chép nguyên văn "{verdict}".
+3. Không tự suy ra giá mục tiêu mới, Fair Value mới, xác suất tăng giá hoặc mức lỗ tiềm năng.
+4. Không gọi giá hiện tại là "rẻ" chỉ vì thấp hơn Fair High. Phải đối chiếu đồng thời với Fair Low, Fair High và Verdict.
+5. Chỉ diễn giải Discount/Margin of Safety theo đúng số {discount_pct:.1f}% hệ thống cung cấp; không tự đổi dấu, đổi mẫu số hoặc gọi đó là mức chiết khấu dương nếu không có căn cứ.
+6. Nếu dữ liệu BCTC mới nhất cũ hơn kỳ dự kiến hoặc có cảnh báo trong khối dữ kiện, phải nêu rõ hạn chế này và không mô tả dữ liệu cũ là hiện tại.
+7. Phần vĩ mô chỉ được nêu yếu tố có căn cứ trong dữ kiện. Nếu không có dữ liệu vĩ mô cập nhật, phải ghi rõ chưa có dữ liệu xác minh; có thể nêu các biến số cần theo dõi dưới dạng rủi ro/giả thuyết, không được khẳng định chúng đang tăng, giảm hay đã xảy ra.
+8. Phân biệt nhận định cấp ngành với lợi thế riêng của doanh nghiệp. Không tự gán thị phần, thương hiệu mạnh, độc quyền, năng lực cạnh tranh hoặc catalyst cụ thể khi chưa có dữ kiện.
+9. Tránh lặp lại cùng một con số và cùng một kết luận ở nhiều mục. Mỗi mục phải có nhiệm vụ riêng.
+10. Trả về JSON hợp lệ, không Markdown, không code fence, không lời dẫn. Giá trị của mọi trường là chuỗi tiếng Việt; escape dấu ngoặc kép nếu cần.
+
+--- YÊU CẦU NỘI DUNG TỪNG TRƯỜNG ---
 {{
-  "bctc": "10-12 câu phân tích BCTC: kết hợp chất lượng tài chính TTM và xu hướng tối đa 8 quý trong dữ kiện. So sánh doanh thu, LNST, biên gộp, CFO; nêu tăng/giảm YoY và QoQ khi đủ dữ liệu; nhận diện quý bất thường và chất lượng chuyển đổi lợi nhuận thành tiền nếu có bằng chứng. Phân biệt TTM với từng quý. Không bịa số liệu, không kết luận khi thiếu dữ liệu.",
-  "catalyst": "3-4 câu. Economic Moat cụ thể + động lực tăng trưởng 2-3 năm.",
-  "risks": "3 câu. Rủi ro trọng yếu nhất phù hợp ngành.",
-  "valuation_verdict": "Copy nguyên văn: '{verdict}'",
-  "outlook": "4-5 câu. So sánh giá {close_price:,.0f} VNĐ với vùng mua {fair_low:,.0f} VNĐ - {fair_high:,.0f} VNĐ. Giải thích quyết định '{final_decision}'. Nhấn mạnh biên an toàn {discount_pct:.1f}%.",
-  "recommendation": "BẮT BUỘC: '{rec_text}' — {rec_weight}",
-  "macro_view": "4-5 câu. Phân tích chu kỳ hàng hóa hoặc vĩ mô tác động trực tiếp đến doanh nghiệp."
-}}"""
+  "bctc": "Khoảng 8-12 câu. Mở đầu bằng kỳ BCTC mới nhất và mức độ đầy đủ của dữ liệu. Đánh giá riêng chất lượng lợi nhuận TTM (ROE, ROA, LNST, CFO, CFO/LNST nếu đủ số liệu). Sau đó phân tích chuỗi tối đa 8 quý: doanh thu, LNST, biên gộp, YoY và QoQ khi có kỳ so sánh hợp lệ. Chỉ ra xu hướng tăng/giảm/đi ngang và quý bất thường nếu dữ kiện thể hiện rõ. Phân tích CFO theo quý riêng với CFO TTM; CFO quý không phải số dư tiền mặt. Không kết luận nguyên nhân biến động khi thiếu dữ kiện. Kết thúc bằng đánh giá cân bằng về điểm mạnh, điểm cần theo dõi và giới hạn dữ liệu.",
+  "catalyst": "3-4 câu. Nêu động lực tăng trưởng có căn cứ. Chỉ nêu Economic Moat riêng của doanh nghiệp nếu có dữ liệu chứng minh; nếu chỉ có hướng dẫn ngành thì nói đó là đặc điểm chung của ngành, không khẳng định là lợi thế đã được xác nhận của doanh nghiệp. Không tự bịa kế hoạch, thị phần hoặc sự kiện.",
+  "risks": "3-5 câu. Xếp 2-3 rủi ro quan trọng theo mức độ ảnh hưởng: rủi ro kinh doanh/ngành, tài chính/dòng tiền và định giá nếu có dữ kiện. Nêu cơ sở của từng rủi ro; phân biệt rủi ro đã thể hiện trong số liệu với rủi ro cần theo dõi.",
+  "valuation_verdict": "Sao chép nguyên văn verdict do hệ thống cung cấp: '{verdict}'.",
+  "outlook": "4-5 câu. Đối chiếu giá {close_price:,.0f} VNĐ với Fair Low {fair_low:,.0f} VNĐ và Fair High {fair_high:,.0f} VNĐ. Nêu rõ giá đang ở dưới, trong hay trên vùng định giá theo đúng dữ kiện. Diễn giải verdict và quyết định '{final_decision}'. Nhắc Discount/Margin of Safety {discount_pct:.1f}% đúng nguyên trạng, không tự suy diễn công thức. Nêu điều kiện cần có để đánh giá lại, không dự báo giá chắc chắn.",
+  "recommendation": "BẮT BUỘC giữ nguyên: '{rec_text} — {rec_weight}'.",
+  "macro_view": "3-5 câu. Chỉ phân tích yếu tố vĩ mô/ngành có bằng chứng trong dữ kiện. Nếu không có số liệu cập nhật, nói rõ chưa có dữ liệu xác minh; liệt kê ngắn gọn các biến số cần theo dõi và giải thích kênh tác động có thể có, dùng ngôn ngữ điều kiện như 'có thể', 'cần theo dõi'. Không bịa giá hàng hóa, tỷ giá, lãi suất, chính sách hoặc dự báo."
+}}
+
+TỰ KIỂM TRA TRƯỚC KHI TRẢ JSON
+- Có số nào không xuất hiện trong dữ kiện hoặc không thể tính trực tiếp từ dữ kiện không? Nếu có, xóa.
+- Có nhầm CFO quý với CFO TTM hoặc tiền mặt cuối kỳ không? Nếu có, sửa.
+- Có nhầm YoY với QoQ, hoặc so sánh kỳ không tương ứng không? Nếu có, sửa.
+- Có khẳng định nguyên nhân, lợi thế cạnh tranh hay diễn biến vĩ mô mà không có bằng chứng không? Nếu có, hạ thành giả thuyết cần theo dõi hoặc bỏ.
+- recommendation và valuation_verdict có giữ nguyên dữ liệu hệ thống không? Nếu không, sửa.
+Chỉ xuất JSON hợp lệ."""
 
         headers = {"Authorization": f"Bearer {ALIBABA_API_KEY}", "Content-Type": "application/json"}
         payload = {
