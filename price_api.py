@@ -2476,6 +2476,13 @@ def admin_force_ai_single():
             sector = si.get("sector", "SAN_XUAT_TIEU_DUNG_PHONG_THU")
             # Fair Value nằm trong screener_col; ghép với dữ liệu gốc trước khi gọi AI.
             sm_for_ai = {**sm, **si}
+            print(
+                f"[AI-DEBUG] {symbol} | "
+                f"collection low={sm.get('fair_value_low')!r}, high={sm.get('fair_value_high')!r} | "
+                f"screener low={si.get('fair_value_low')!r}, high={si.get('fair_value_high')!r} | "
+                f"merged low={sm_for_ai.get('fair_value_low')!r}, high={sm_for_ai.get('fair_value_high')!r}",
+                flush=True
+            )
             ai_result = _call_ai_for_symbol(symbol, sm_for_ai, si, sector)
             
             if ai_result:
@@ -2546,6 +2553,13 @@ def admin_force_ai():
                 sector = si.get("sector", "SAN_XUAT_TIEU_DUNG_PHONG_THU")
                 # Fair Value nằm trong screener_col; ghép với dữ liệu gốc trước khi gọi AI.
                 sm_for_ai = {**sm, **si}
+                print(
+                    f"[AI-DEBUG] {sym} | "
+                    f"collection low={sm.get('fair_value_low')!r}, high={sm.get('fair_value_high')!r} | "
+                    f"screener low={si.get('fair_value_low')!r}, high={si.get('fair_value_high')!r} | "
+                    f"merged low={sm_for_ai.get('fair_value_low')!r}, high={sm_for_ai.get('fair_value_high')!r}",
+                    flush=True
+                )
                 ai_result = _call_ai_for_symbol(sym, sm_for_ai, si, sector)
                 
                 if ai_result:
