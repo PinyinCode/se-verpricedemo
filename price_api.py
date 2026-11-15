@@ -2474,7 +2474,9 @@ def admin_force_ai_single():
         global is_ai_running
         try:
             sector = si.get("sector", "SAN_XUAT_TIEU_DUNG_PHONG_THU")
-            ai_result = _call_ai_for_symbol(symbol, sm, si, sector)
+            # Fair Value nằm trong screener_col; ghép với dữ liệu gốc trước khi gọi AI.
+            sm_for_ai = {**sm, **si}
+            ai_result = _call_ai_for_symbol(symbol, sm_for_ai, si, sector)
             
             if ai_result:
                 collection.update_one({"symbol": symbol}, {"$set": {
@@ -2542,7 +2544,9 @@ def admin_force_ai():
                     continue
                 
                 sector = si.get("sector", "SAN_XUAT_TIEU_DUNG_PHONG_THU")
-                ai_result = _call_ai_for_symbol(sym, sm, si, sector)
+                # Fair Value nằm trong screener_col; ghép với dữ liệu gốc trước khi gọi AI.
+                sm_for_ai = {**sm, **si}
+                ai_result = _call_ai_for_symbol(sym, sm_for_ai, si, sector)
                 
                 if ai_result:
                     collection.update_one({"symbol": sym}, {"$set": {
