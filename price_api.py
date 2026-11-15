@@ -3005,6 +3005,138 @@ def crawl_ratios():
     return jsonify({"status": "success", "message": "Đang cào bảng Ratio..."})
 
 
+@app.get("/api/score-single")
+def api_score_single():
+    """
+    Chấm điểm một mã theo đúng công thức Screener hiện tại.
+    Không preload BCTC/lịch sử của toàn thị trường và không ghi đè toàn bộ screener.
+    """
+    symbol = request.args.get("symbol", "").upper().strip()
+    if request.args.get("key") != ADMIN_SECRET_KEY:
+        return jsonify({"status": "error", "message": "Sai mật khẩu Admin!"}), 403
+    if not symbol or not re.fullmatch(r"[A-Z0-9]{3,10}", symbol):
+        return jsonify({"status": "error", "message": "Mã cổ phiếu không hợp lệ."}), 400
+    if is_screener_running:
+        return jsonify({
+            "status": "busy",
+            "message": "Screener toàn thị trường đang chạy. Vui lòng thử lại sau."
+        }), 409
+
+    print(f"[API] 🎯 Chấm điểm riêng mã {symbol}...", flush=True)
+    try:
+        # 1) Chỉ lấy dữ liệu gốc và BCTC của mã được yêu cầu.
+        stock_doc = collection.find_one({"symbol": symbol}, {"_id": 0})
+        if not stock_doc:
+            return jsonify({"status": "error", "message": f"Không tìm thấy dữ liệu giá cho {symbol}."}), 404
+
+        bctc_doc = bctc_col.find_one(
+            {"symbol": symbol},
+            {"_id": 0, "income_statement": 1, "cash_flow": 1, "balance_sheet": 1}
+        ) or {}
+        stock_doc["bctc_history"] = bctc_doc.get("income_statement", []) or []
+        extracted = extract_metrics_from_bctc_data(bctc_doc)
+        if extracted:
+            stock_doc.update(extracted)
+            collection.update_one({"symbol": symbol}, {"$set": extracted})
+
+        # 2) Trung vị ngành lấy từ dữ liệu giá/định giá đang lưu sẵn.
+        # Không tải BCTC hoặc lịch sử của các mã khác.
+        peer_projection = {
+            "_id": 0, "symbol": 1, "close": 1, "close_price": 1,
+            "pe": 1, "pb": 1, "roe": 1, "roa": 1, "eps": 1,
+            "dividend_yield": 1, "cfo_latest": 1, "net_profit_ttm": 1,
+            "debt_to_equity": 1, "gross_margin": 1
+        }
+        normalized_peers = {}
+        for peer in collection.find({}, peer_projection):
+            peer_symbol = peer.get("symbol")
+            if peer_symbol:
+                normalized_peers[peer_symbol] = normalize_stock_data(peer_symbol, peer)
+        sector_medians = compute_sector_medians(normalized_peers)
+        group_label = get_sub_sector(symbol)
+        config = SUB_SECTOR_CONFIG.get(group_label) or SUB_SECTOR_CONFIG.get(get_sector(symbol))
+        if not config:
+            return jsonify({"status": "error", "message": f"Chưa có cấu hình chấm điểm cho ngành của {symbol}."}), 422
+        sector_median, _ = get_median_for_symbol(symbol, sector_medians)
+        nd = normalize_stock_data(symbol, stock_doc)
+        update_fields = nd.pop("_update_fields", {})
+        if update_fields:
+            collection.update_one({"symbol": symbol}, {"$set": update_fields})
+
+        # 3) Chỉ tải lịch sử của mã được yêu cầu; phân tích kỹ thuật dùng 200 nến gần nhất.
+        hist_doc = history_col.find_one(
+            {"symbol": symbol},
+            {"_id": 0, "history_d1": {"$slice": -1400}}
+        ) or {}
+        history_bars = hist_doc.get("history_d1", []) or []
+        tech_bars = history_bars[-200:]
+        tech_score_raw, tech_status, pattern = 50, "Tích lũy", "Tích lũy"
+        if ProfessionalTechnicalAnalyzer and tech_bars:
+            try:
+                analyzer = ProfessionalTechnicalAnalyzer(tech_bars)
+                ptkt_res = analyzer.analyze()
+                tech_score_raw = ptkt_res.get("technical_score", 50)
+                tech_status = ptkt_res.get("technical_status", "Tích lũy")
+                pattern = ptkt_res.get("pattern", "Tích lũy")
+            except Exception as tech_error:
+                print(f"[SINGLE-SCREENER] {symbol} lỗi phân tích kỹ thuật: {tech_error}", flush=True)
+
+        # 4) Giữ nguyên dữ liệu AI đã có, không gọi AI trong luồng chấm điểm.
+        old_result = screener_col.find_one({"symbol": symbol}, {"_id": 0}) or {}
+        existing_ai = {
+            "bctc": stock_doc.get("ai_bctc") or old_result.get("bctc_evaluation", ""),
+            "catalyst": stock_doc.get("ai_catalyst") or old_result.get("catalyst", ""),
+            "risks": stock_doc.get("ai_risks") or old_result.get("risks", ""),
+            "macro_view": stock_doc.get("ai_macro_view") or old_result.get("macro_view", ""),
+            "outlook": stock_doc.get("ai_outlook") or old_result.get("outlook", ""),
+            "recommendation": stock_doc.get("ai_recommendation") or old_result.get("ai_recommendation", ""),
+            "price_zone": stock_doc.get("ai_price_zone") or old_result.get("ai_price_zone", ""),
+            "ai_updated_at": stock_doc.get("ai_updated_at") or old_result.get("ai_updated_at", "Chưa phân tích"),
+            "ai_source": stock_doc.get("ai_source") or old_result.get("ai_source", "AI")
+        }
+
+        result = evaluate_stock_from_db(
+            symbol, nd, sector_median, group_label, config,
+            tech_score_raw=tech_score_raw,
+            tech_status=tech_status,
+            pattern=pattern,
+            existing_ai_data=existing_ai,
+            history_bars=history_bars
+        )
+        if not result:
+            return jsonify({"status": "error", "message": f"Không thể chấm điểm {symbol}."}), 422
+
+        result["date"] = _vn_now().strftime("%Y-%m-%d")
+        result["score_updated_at"] = _now_str()
+
+        # Nếu screener toàn thị trường vừa bắt đầu trong lúc tính, không ghi đè dữ liệu của nó.
+        if is_screener_running:
+            return jsonify({
+                "status": "busy",
+                "message": "Screener toàn thị trường vừa bắt đầu; kết quả riêng chưa được lưu."
+            }), 409
+
+        screener_col.update_one(
+            {"symbol": symbol},
+            {"$set": result},
+            upsert=True
+        )
+        print(
+            f"[SINGLE-SCREENER] ✅ {symbol} | Tổng {result.get('total_score')}/100 "
+            f"| {result.get('final_decision')}",
+            flush=True
+        )
+        return jsonify({
+            "status": "success",
+            "message": f"Đã chấm điểm riêng {symbol}.",
+            "symbol": symbol,
+            "data": result
+        })
+    except Exception as e:
+        log_exception(f"[SINGLE-SCREENER] Lỗi chấm điểm {symbol}", e)
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+
 @app.get("/api/force-screener")
 def force_screener():
     if request.args.get("key") != ADMIN_SECRET_KEY:
