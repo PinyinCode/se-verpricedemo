@@ -2707,6 +2707,104 @@ def api_status():
     })
 
 
+@app.get("/api/admin/bctc-summary")
+def api_admin_bctc_summary():
+    """Đọc tóm tắt cấu trúc BCTC của một mã; không trả toàn bộ dữ liệu tài chính."""
+    if not ADMIN_SECRET_KEY or request.args.get("key") != ADMIN_SECRET_KEY:
+        return jsonify({"status": "error", "message": "Không có quyền truy cập."}), 403
+
+    symbol = request.args.get("symbol", "").upper().strip()
+    if not re.fullmatch(r"[A-Z0-9]{2,10}", symbol):
+        return jsonify({"status": "error", "message": "Mã cổ phiếu không hợp lệ."}), 400
+
+    try:
+        projection = {
+            "_id": 0,
+            "symbol": 1,
+            "updated_at": 1,
+            "latest_period": 1,
+            "source": 1,
+            "vci_extraction_version": 1,
+            "vci_field_counts": 1,
+            "vci_period_counts": 1,
+            "vci_field_catalog": 1,
+            "balance_sheet": 1,
+            "income_statement": 1,
+            "cash_flow": 1,
+        }
+        cursor = bctc_col.find(
+            {"symbol": symbol}, projection
+        ).max_time_ms(8000).limit(1)
+        doc = next(cursor, None)
+
+        if not doc:
+            return jsonify({
+                "status": "error",
+                "message": f"Không tìm thấy BCTC của {symbol}."
+            }), 404
+
+        statements = {}
+        for statement_name in ("balance_sheet", "income_statement", "cash_flow"):
+            rows = doc.get(statement_name) or []
+            field_catalog = {}
+            periods = set()
+
+            for item in rows:
+                if not isinstance(item, dict):
+                    continue
+                source_field = str(item.get("source_field") or "").strip()
+                period = str(item.get("period") or "").strip()
+                if period:
+                    periods.add(period)
+                if source_field:
+                    existing = field_catalog.get(source_field)
+                    if not existing:
+                        field_catalog[source_field] = {
+                            "source_field": source_field,
+                            "id": item.get("id"),
+                            "name": item.get("name"),
+                            "unit": item.get("unit"),
+                            "is_core": bool(item.get("is_core", False)),
+                        }
+                    elif item.get("is_core"):
+                        existing["is_core"] = True
+
+            sorted_periods = sorted(periods, reverse=True)
+            fields = sorted(
+                field_catalog.values(),
+                key=lambda item: (not item.get("is_core", False), item.get("source_field") or "")
+            )
+            statements[statement_name] = {
+                "record_count": len(rows),
+                "field_count": len(field_catalog),
+                "core_field_count": sum(1 for item in field_catalog.values() if item.get("is_core")),
+                "period_count": len(periods),
+                "periods": sorted_periods[:12],
+                "fields": fields[:150],
+                "fields_truncated": len(fields) > 150,
+            }
+
+        return jsonify({
+            "status": "success",
+            "symbol": symbol,
+            "updated_at": doc.get("updated_at"),
+            "latest_period": doc.get("latest_period"),
+            "source": doc.get("source"),
+            "vci_extraction_version": doc.get("vci_extraction_version"),
+            "vci_field_counts_saved": doc.get("vci_field_counts") or {},
+            "vci_period_counts_saved": doc.get("vci_period_counts") or {},
+            "metadata_catalog_available": bool(doc.get("vci_field_catalog")),
+            "statements": statements,
+            "note": "Chỉ trả cấu trúc và danh mục trường; không trả giá trị BCTC."
+        }), 200
+    except Exception as e:
+        log_exception(f"[API BCTC SUMMARY] Lỗi đọc {symbol}", e)
+        return jsonify({
+            "status": "error",
+            "message": "Không đọc được tóm tắt BCTC. Kiểm tra log backend."
+        }), 500
+
+
 @app.get("/api/pause-crawl")
 def pause_crawl():
     global is_auto_crawl_paused, stop_crawl_requested
