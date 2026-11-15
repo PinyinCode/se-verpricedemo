@@ -190,6 +190,25 @@ def _vn_now() -> datetime:
 def _now_str() -> str:
     return _vn_now().strftime("%d/%m/%Y %H:%M:%S")
 
+
+def _expected_latest_bctc_period(now=None) -> str:
+    """
+    Kỳ BCTC quý gần nhất thường đã đến hạn công bố theo lịch tại Việt Nam.
+    Dùng để phát hiện dữ liệu bị cũ, không giả định mọi doanh nghiệp công bố cùng ngày.
+    """
+    now = now or _vn_now()
+    year, month = now.year, now.month
+
+    if month >= 11:
+        return f"{year}-Q3"
+    if month >= 8:
+        return f"{year}-Q2"
+    if month >= 5:
+        return f"{year}-Q1"
+    if month >= 4:
+        return f"{year - 1}-Q4"
+    return f"{year - 1}-Q3"
+
 def _get_trading_date_str() -> str:
     vn_now = _vn_now()
     if vn_now.hour < 9: vn_now -= timedelta(days=1)
@@ -1321,14 +1340,94 @@ def get_sector_guidance(sector):
     guidance = {"NGAN_HANG": "D/E cao là bản chất. Trọng tâm: ROE, ROA, tín dụng.", "CHUNG_KHOAN": "Phụ thuộc thanh khoản. Trọng tâm: ROE, LNST YoY.", "BAT_DONG_SAN": "Ghi nhận theo dự án. Trọng tâm: P/B, ROE, dòng tiền trả trước.", "CONG_NGHE_BAN_LE": "Trọng tâm: ROE, biên gộp, LNST.", "DIEN_NUOC_HA_TANG": "CFO ổn định. Trọng tâm: ROE, cổ tức, CFO.", "NGUYEN_VAT_LIEU_CHU_KY": "Bẫy P/E thấp. Trọng tâm: P/B, ROE, biên gộp.", "SAN_XUAT_TIEU_DUNG_PHONG_THU": "Trọng tâm: ROE, biên gộp, CFO/LNST."}
     return guidance.get(sector, guidance["SAN_XUAT_TIEU_DUNG_PHONG_THU"])
 
-def build_verified_facts(symbol, sm, si, sector):
+def build_bctc_quarterly_trend(bctc_doc, max_periods=8):
+    """Tổng hợp xu hướng BCTC tối đa 8 quý; không tự suy diễn số liệu thiếu."""
+    if not isinstance(bctc_doc, dict):
+        return "Không có dữ liệu BCTC theo quý."
+
+    income = bctc_doc.get("income_statement", []) or []
+    cashflow = bctc_doc.get("cash_flow", []) or []
+    periods = sorted(
+        {x.get("period") for x in income if x.get("period")},
+        reverse=True
+    )[:max_periods]
+    if not periods:
+        return "Không có dữ liệu doanh thu/lợi nhuận theo quý."
+
+    rows = {}
+    for period in periods:
+        revenue = _get_bctc_value(income, "IS_NET_REVENUE", period)
+        cogs = _get_bctc_value(income, "IS_COST_OF_GOODS_SOLD", period)
+        npat = _get_bctc_value(
+            income,
+            ["IS_NET_PROFIT_AFTER_TAX", "IS_PROFIT_AFTER_TAX", "IS_NET_PROFIT"],
+            period
+        )
+        cfo = _get_bctc_value(
+            cashflow, "CF_NET_CASH_FLOWS_FROM_OPERATING_ACTIVITIES", period
+        )
+        rows[period] = {
+            "revenue": revenue, "npat": npat, "cfo": cfo,
+            "gross_margin": ((revenue + cogs) / revenue * 100) if revenue > 0 else None
+        }
+
+    def growth(current, previous):
+        if previous is None or previous == 0:
+            return None
+        return (current / previous - 1) * 100
+
+    def fmt(value):
+        return "không đủ dữ liệu" if value is None else f"{value:+.1f}%"
+
+    latest_period = periods[0]
+    expected_period = _expected_latest_bctc_period()
+    lines = [
+        f"XU HƯỚNG BCTC THEO QUÝ (tối đa {len(periods)} quý; đơn vị tỷ VNĐ):",
+        f"Kỳ dữ liệu mới nhất: {latest_period}; kỳ công bố dự kiến hiện tại: {expected_period}."
+    ]
+    if latest_period < expected_period:
+        lines.append(
+            f"CẢNH BÁO: Dữ liệu BCTC đang cũ ({latest_period}), chưa có dữ liệu đến "
+            f"kỳ dự kiến {expected_period}. Không được trình bày các số liệu này như "
+            "tình hình tài chính mới nhất tại thời điểm hiện tại."
+        )
+    for period in reversed(periods):
+        item = rows[period]
+        try:
+            year, quarter = period.split("-Q")
+            prior_yoy = f"{int(year)-1}-Q{quarter}"
+            prior_q = f"{int(year)-1}-Q4" if quarter == "1" else f"{year}-Q{int(quarter)-1}"
+        except Exception:
+            prior_yoy, prior_q = None, None
+
+        yoy = rows.get(prior_yoy, {})
+        prev = rows.get(prior_q, {})
+        gm = "N/A" if item["gross_margin"] is None else f"{item['gross_margin']:.1f}%"
+        lines.append(
+            f"- {period}: Doanh thu {item['revenue']/1e9:,.2f}; "
+            f"LNST {item['npat']/1e9:,.2f}; CFO {item['cfo']/1e9:,.2f}; "
+            f"biên gộp {gm}; doanh thu YoY {fmt(growth(item['revenue'], yoy.get('revenue')) if yoy else None)}; "
+            f"LNST YoY {fmt(growth(item['npat'], yoy.get('npat')) if yoy else None)}; "
+            f"doanh thu QoQ {fmt(growth(item['revenue'], prev.get('revenue')) if prev else None)}; "
+            f"LNST QoQ {fmt(growth(item['npat'], prev.get('npat')) if prev else None)}."
+        )
+
+    lines.append(
+        "LƯU Ý: So sánh chỉ khi có đủ kỳ tương ứng; không suy diễn dữ liệu thiếu "
+        "hoặc kết luận chắc chắn khi các kỳ báo cáo không đồng nhất."
+    )
+    return "\n".join(lines)
+
+
+def build_verified_facts(symbol, sm, si, sector, bctc_doc=None):
     lines = [
         f"MÃ {symbol} — NGÀNH {sector}",
         f"QUYẾT ĐỊNH: {si.get('final_decision')}",
         f"GIÁ: {sm.get('close',0):,.0f} | P/E {sm.get('pe',0):.2f} | P/B {sm.get('pb',0):.2f}",
         f"VÙNG MUA: Fair value {sm.get('fair_value_high',0):,.0f} | Vùng mua {sm.get('fair_value_low',0):,.0f} | Verdict: {sm.get('valuation_verdict')}",
-        f"SINH LỜI: ROE {sm.get('roe',0)}% | ROA {sm.get('roa',0)}% | CFO {sm.get('cfo_latest',0):,.0f} | LNST {sm.get('net_profit_ttm',0):,.0f}",
-        f"ĐIỂM: Tổng {si.get('total_score')}/100"
+        f"SINH LỜI TTM: ROE {sm.get('roe',0)}% | ROA {sm.get('roa',0)}% | CFO {sm.get('cfo_latest',0):,.0f} tỷ | LNST {sm.get('net_profit_ttm',0):,.0f} tỷ",
+        f"ĐIỂM: Tổng {si.get('total_score')}/100",
+        build_bctc_quarterly_trend(bctc_doc)
     ]
     return "\n".join(lines)
 
@@ -1454,7 +1553,8 @@ def _call_ai_for_symbol(symbol, sm, si, sector):
             print(f"  ⚠️ [{symbol}] Bỏ qua gọi AI: Chưa có dữ liệu Fair Value (cần chạy Screener trước).", flush=True)
             return None
 
-        verified_facts = build_verified_facts(symbol, sm, si, sector)
+        bctc_doc = bctc_col.find_one({"symbol": symbol}, {"_id": 0, "income_statement": 1, "cash_flow": 1})
+        verified_facts = build_verified_facts(symbol, sm, si, sector, bctc_doc)
         sector_guidance = get_sector_guidance(sector)
         
         final_decision = si.get("final_decision", "CHƯA XÁC ĐỊNH")
@@ -1469,9 +1569,20 @@ def _call_ai_for_symbol(symbol, sm, si, sector):
         if fair_low > 0 and fair_low < 1000: fair_low *= 1000
         if fair_high > 0 and fair_high < 1000: fair_high *= 1000
 
-        prompt = f"""Bạn là Chuyên gia Phân tích Đầu tư Giá trị (Value Investing) với 20 năm kinh nghiệm tại các quỹ lớn ở Việt Nam.
+        prompt = f"""VAI TRÒ
+Bạn là chuyên gia phân tích doanh nghiệp niêm yết tại Việt Nam, tư duy độc lập, thận trọng và dựa trên bằng chứng. Nhiệm vụ là diễn giải dữ liệu đã cung cấp, không phải quảng bá cổ phiếu hay cố tạo ra một khuyến nghị hấp dẫn.
 
-NHIỆM VỤ: Diễn giải dữ liệu đã tính sẵn cho mã {symbol}. KHÔNG được bịa số liệu. Mọi con số phải TRÍCH DẪN TRỰC TIẾP từ khối DỮ KIỆN bên dưới.
+MÃ CỔ PHIẾU: {symbol}
+
+NGUYÊN TẮC ƯU TIÊN
+- Khối DỮ KIỆN ĐÃ KIỂM CHỨNG là nguồn số liệu duy nhất. Không tự thêm số, tỷ lệ, mốc thời gian, sự kiện, giá hàng hóa, chính sách mới hoặc thông tin doanh nghiệp không có trong dữ kiện.
+- Không dùng kiến thức nhớ được về doanh nghiệp để khẳng định tình hình hiện tại. Nếu dữ kiện không đủ, nói rõ "chưa có dữ liệu để kết luận".
+- Phân biệt rõ: số liệu TTM (12 tháng gần nhất), số liệu của một quý, tăng trưởng YoY và tăng trưởng QoQ. Không so sánh các đại lượng khác kỳ hoặc khác cơ sở.
+- Không tự tính lại ROE, ROA, CFO, LNST, biên gộp, giá trị hợp lý hay biên an toàn. Chỉ dùng phép tính đơn giản khi đủ đầu vào, nêu rõ cách tính và đơn vị.
+- Không biến tương quan thành nguyên nhân. Không giải thích CFO tăng/giảm do vốn lưu động, mùa vụ, tồn kho, công nợ... nếu dữ kiện không chứng minh.
+- Số 0, giá trị rỗng hoặc "không đủ dữ liệu" không được diễn giải thành kết quả kinh doanh bằng 0. Không coi dữ liệu thiếu là tín hiệu tích cực hoặc tiêu cực.
+- Không dùng ngôn ngữ chắc chắn như "bền vững", "luôn phục hồi", "đầu ngành", "lợi thế độc quyền" nếu dữ kiện chưa chứng minh.
+- Mọi giá cổ phiếu phải ghi đơn vị VNĐ và dùng đúng mức giá trong dữ kiện. Các số liệu BCTC ghi tỷ VNĐ nếu khối dữ kiện ghi đơn vị tỷ VNĐ.
 
 --- DỮ KIỆN ĐÃ KIỂM CHỨNG ---
 {verified_facts}
@@ -1479,24 +1590,44 @@ NHIỆM VỤ: Diễn giải dữ liệu đã tính sẵn cho mã {symbol}. KHÔN
 --- HƯỚNG DẪN THEO NGÀNH ---
 {sector_guidance}
 
---- QUY TẮC BẮT BUỘC ---
-1. MỌI nhận định phải có SỐ CỤ THỂ từ dữ kiện.
-2. VỀ KHUYẾN NGHỊ: Hệ thống đã tính → "{final_decision}". BẠN PHẢI trả về recommendation = "{rec_text}" và weight = "{rec_weight}". 
-TUYỆT ĐỐI KHÔNG ĐƯỢC TỰ ĐỔI SANG CHỮ "TRÁNH" HAY BẤT KỲ TỪ NÀO KHÁC.
-3. VỀ "ĐỊNH GIÁ & HÀNH ĐỘNG GIÁ" (outlook): Phải làm nổi bật "Biên an toàn" (Margin of Safety). Nếu giá đang trong vùng mua, phải kết luận rõ đây là cơ hội. Nếu giá đắt, phải nói rõ rủi ro.
-4. VỀ "VĨ MÔ & SÓNG NGÀNH" (macro_view): Phân tích dựa trên chu kỳ giá hàng hóa (đối với ngành Vật liệu/Phân bón/Hóa chất/Thép) hoặc chính sách vĩ mô (đối với Ngân hàng/BĐS). KHÔNG nói chung chung về VN-Index.
-5. VỀ ĐƠN VỊ: Giá cổ phiếu phải ghi rõ đơn vị là "VNĐ" (Ví dụ: 24.000 VNĐ, chứ không phải 24 VNĐ).
+--- QUYẾT ĐỊNH VÀ ĐỊNH GIÁ DO HỆ THỐNG TÍNH ---
+Quyết định: {final_decision}
+Verdict: {verdict}
+Giá hiện tại: {close_price:,.0f} VNĐ
+Fair Low: {fair_low:,.0f} VNĐ
+Fair High: {fair_high:,.0f} VNĐ
+Discount/Margin of Safety do hệ thống cung cấp: {discount_pct:.1f}%
 
---- ĐỊNH DẠNG: JSON THUẦN TÚY (KHÔNG ```json) ---
+QUY TẮC KHÔNG ĐƯỢC VI PHẠM
+1. KHÔNG được thay đổi quyết định của hệ thống. Trường recommendation bắt buộc là "{rec_text} — {rec_weight}". Không tự đề xuất tỷ trọng khác.
+2. valuation_verdict phải sao chép nguyên văn "{verdict}".
+3. Không tự suy ra giá mục tiêu mới, Fair Value mới, xác suất tăng giá hoặc mức lỗ tiềm năng.
+4. Không gọi giá hiện tại là "rẻ" chỉ vì thấp hơn Fair High. Phải đối chiếu đồng thời với Fair Low, Fair High và Verdict.
+5. Chỉ diễn giải Discount/Margin of Safety theo đúng số {discount_pct:.1f}% hệ thống cung cấp; không tự đổi dấu, đổi mẫu số hoặc gọi đó là mức chiết khấu dương nếu không có căn cứ.
+6. Nếu dữ liệu BCTC mới nhất cũ hơn kỳ dự kiến hoặc có cảnh báo trong khối dữ kiện, phải nêu rõ hạn chế này và không mô tả dữ liệu cũ là hiện tại.
+7. Phần vĩ mô chỉ được nêu yếu tố có căn cứ trong dữ kiện. Nếu không có dữ liệu vĩ mô cập nhật, phải ghi rõ chưa có dữ liệu xác minh; có thể nêu các biến số cần theo dõi dưới dạng rủi ro/giả thuyết, không được khẳng định chúng đang tăng, giảm hay đã xảy ra.
+8. Phân biệt nhận định cấp ngành với lợi thế riêng của doanh nghiệp. Không tự gán thị phần, thương hiệu mạnh, độc quyền, năng lực cạnh tranh hoặc catalyst cụ thể khi chưa có dữ kiện.
+9. Tránh lặp lại cùng một con số và cùng một kết luận ở nhiều mục. Mỗi mục phải có nhiệm vụ riêng.
+10. Trả về JSON hợp lệ, không Markdown, không code fence, không lời dẫn. Giá trị của mọi trường là chuỗi tiếng Việt; escape dấu ngoặc kép nếu cần.
+
+--- YÊU CẦU NỘI DUNG TỪNG TRƯỜNG ---
 {{
-  "bctc": "6-8 câu phân tích BCTC, trích số: ROE={sm.get('roe',0)}%, ROA={sm.get('roa',0)}%, P/E={sm.get('pe',0)}, P/B={sm.get('pb',0)}, CFO/LNST, D/E={sm.get('debt_to_equity',0)}. Kết luận lợi nhuận thật/ảo.",
-  "catalyst": "3-4 câu. Economic Moat cụ thể + động lực tăng trưởng 2-3 năm.",
-  "risks": "3 câu. Rủi ro trọng yếu nhất phù hợp ngành.",
-  "valuation_verdict": "Copy nguyên văn: '{verdict}'",
-  "outlook": "4-5 câu. So sánh giá {close_price:,.0f} VNĐ với vùng mua {fair_low:,.0f} VNĐ - {fair_high:,.0f} VNĐ. Giải thích quyết định '{final_decision}'. Nhấn mạnh biên an toàn {discount_pct:.1f}%.",
-  "recommendation": "BẮT BUỘC: '{rec_text}' — {rec_weight}",
-  "macro_view": "4-5 câu. Phân tích chu kỳ hàng hóa hoặc vĩ mô tác động trực tiếp đến doanh nghiệp."
-}}"""
+  "bctc": "Khoảng 8-12 câu. Mở đầu bằng kỳ BCTC mới nhất và mức độ đầy đủ của dữ liệu. Đánh giá riêng chất lượng lợi nhuận TTM (ROE, ROA, LNST, CFO, CFO/LNST nếu đủ số liệu). Sau đó phân tích chuỗi tối đa 8 quý: doanh thu, LNST, biên gộp, YoY và QoQ khi có kỳ so sánh hợp lệ. Chỉ ra xu hướng tăng/giảm/đi ngang và quý bất thường nếu dữ kiện thể hiện rõ. Phân tích CFO theo quý riêng với CFO TTM; CFO quý không phải số dư tiền mặt. Không kết luận nguyên nhân biến động khi thiếu dữ kiện. Kết thúc bằng đánh giá cân bằng về điểm mạnh, điểm cần theo dõi và giới hạn dữ liệu.",
+  "catalyst": "3-4 câu. Nêu động lực tăng trưởng có căn cứ. Chỉ nêu Economic Moat riêng của doanh nghiệp nếu có dữ liệu chứng minh; nếu chỉ có hướng dẫn ngành thì nói đó là đặc điểm chung của ngành, không khẳng định là lợi thế đã được xác nhận của doanh nghiệp. Không tự bịa kế hoạch, thị phần hoặc sự kiện.",
+  "risks": "3-5 câu. Xếp 2-3 rủi ro quan trọng theo mức độ ảnh hưởng: rủi ro kinh doanh/ngành, tài chính/dòng tiền và định giá nếu có dữ kiện. Nêu cơ sở của từng rủi ro; phân biệt rủi ro đã thể hiện trong số liệu với rủi ro cần theo dõi.",
+  "valuation_verdict": "Sao chép nguyên văn verdict do hệ thống cung cấp: '{verdict}'.",
+  "outlook": "4-5 câu. Đối chiếu giá {close_price:,.0f} VNĐ với Fair Low {fair_low:,.0f} VNĐ và Fair High {fair_high:,.0f} VNĐ. Nêu rõ giá đang ở dưới, trong hay trên vùng định giá theo đúng dữ kiện. Diễn giải verdict và quyết định '{final_decision}'. Nhắc Discount/Margin of Safety {discount_pct:.1f}% đúng nguyên trạng, không tự suy diễn công thức. Nêu điều kiện cần có để đánh giá lại, không dự báo giá chắc chắn.",
+  "recommendation": "BẮT BUỘC giữ nguyên: '{rec_text} — {rec_weight}'.",
+  "macro_view": "3-5 câu. Chỉ phân tích yếu tố vĩ mô/ngành có bằng chứng trong dữ kiện. Nếu không có số liệu cập nhật, nói rõ chưa có dữ liệu xác minh; liệt kê ngắn gọn các biến số cần theo dõi và giải thích kênh tác động có thể có, dùng ngôn ngữ điều kiện như 'có thể', 'cần theo dõi'. Không bịa giá hàng hóa, tỷ giá, lãi suất, chính sách hoặc dự báo."
+}}
+
+TỰ KIỂM TRA TRƯỚC KHI TRẢ JSON
+- Có số nào không xuất hiện trong dữ kiện hoặc không thể tính trực tiếp từ dữ kiện không? Nếu có, xóa.
+- Có nhầm CFO quý với CFO TTM hoặc tiền mặt cuối kỳ không? Nếu có, sửa.
+- Có nhầm YoY với QoQ, hoặc so sánh kỳ không tương ứng không? Nếu có, sửa.
+- Có khẳng định nguyên nhân, lợi thế cạnh tranh hay diễn biến vĩ mô mà không có bằng chứng không? Nếu có, hạ thành giả thuyết cần theo dõi hoặc bỏ.
+- recommendation và valuation_verdict có giữ nguyên dữ liệu hệ thống không? Nếu không, sửa.
+Chỉ xuất JSON hợp lệ."""
 
         headers = {"Authorization": f"Bearer {ALIBABA_API_KEY}", "Content-Type": "application/json"}
         payload = {
@@ -1824,29 +1955,81 @@ def full_data_crawler_worker():
             is_bctc_time = (0 <= vn_now.hour < 6 and vn_now.minute == 0 and vn_now.second < 10)
             if is_bctc_time:
                 target_symbols = [doc["symbol"] for doc in collection.find({}, {"symbol": 1})]
-                thirty_days_ago = datetime.now(timezone.utc) - timedelta(days=30)
+                expected_period = _expected_latest_bctc_period(vn_now)
+
                 for symbol in target_symbols:
-                    bctc_doc = bctc_col.find_one({"symbol": symbol}, {"updated_at": 1})
+                    bctc_doc = bctc_col.find_one(
+                        {"symbol": symbol},
+                        {"updated_at": 1, "latest_period": 1}
+                    )
                     need = False
-                    if not bctc_doc or "updated_at" not in bctc_doc: need = True
+                    retry_days = 30
+
+                    if not bctc_doc or not bctc_doc.get("updated_at"):
+                        need = True
                     else:
+                        latest_period = str(bctc_doc.get("latest_period") or "")
+                        period_is_stale = bool(
+                            latest_period
+                            and re.fullmatch(r"\d{4}-Q[1-4]", latest_period)
+                            and latest_period < expected_period
+                        )
+
+                        # Dữ liệu chưa theo kịp kỳ công bố dự kiến: thử cập nhật mỗi 7 ngày.
+                        # Dữ liệu đã mới: giữ chu kỳ kiểm tra định kỳ 30 ngày.
+                        retry_days = 7 if period_is_stale else 30
+
                         try:
-                            if datetime.strptime(bctc_doc["updated_at"], "%d/%m/%Y %H:%M:%S").replace(tzinfo=timezone.utc) < thirty_days_ago: need = True
-                        except: need = True
+                            last_update = datetime.strptime(
+                                bctc_doc["updated_at"], "%d/%m/%Y %H:%M:%S"
+                            ).replace(tzinfo=timezone.utc)
+                            age_days = (
+                                datetime.now(timezone.utc) - last_update
+                            ).total_seconds() / 86400
+                            need = age_days >= retry_days
+                        except (TypeError, ValueError):
+                            need = True
+
+                        if period_is_stale:
+                            logger.info(
+                                "[BCTC AUTO] %s đang cũ: latest=%s, kỳ dự kiến=%s, "
+                                "lịch thử cập nhật=%d ngày",
+                                symbol, latest_period, expected_period, retry_days
+                            )
+
                     if need:
+                        logger.info(
+                            "[BCTC AUTO] Đang làm mới %s (kỳ hiện có=%s, kỳ dự kiến=%s)",
+                            symbol,
+                            (bctc_doc or {}).get("latest_period", "chưa có"),
+                            expected_period
+                        )
                         res = _fetch_bctc_ssi(symbol)
                         if res:
                             res.update({"symbol": symbol, "updated_at": _now_str()})
-                            bctc_col.update_one({"symbol": symbol}, {"$set": res}, upsert=True)
-                            
+                            bctc_col.update_one(
+                                {"symbol": symbol}, {"$set": res}, upsert=True
+                            )
+
                             extracted = extract_metrics_from_bctc_data(res)
                             if extracted:
-                                collection.update_one({"symbol": symbol}, {"$set": extracted})
-                                
+                                collection.update_one(
+                                    {"symbol": symbol}, {"$set": extracted}
+                                )
+                            logger.info(
+                                "[BCTC AUTO] %s cập nhật xong | kỳ mới nhất=%s",
+                                symbol, res.get("latest_period", "không rõ")
+                            )
+                        else:
+                            logger.warning("[BCTC AUTO] %s không lấy được dữ liệu mới", symbol)
+
                         time.sleep(3.0)
-                time.sleep(3600) 
-            else: time.sleep(30)
-        except Exception: time.sleep(60)
+                time.sleep(3600)
+            else:
+                time.sleep(30)
+        except Exception as exc:
+            log_exception("[BCTC AUTO WORKER]", exc)
+            time.sleep(60)
 
 
 # ===================== SCREENER DATA PRELOAD =====================
@@ -2820,6 +3003,138 @@ def crawl_ratios():
 
     threading.Thread(target=_run, daemon=True).start()
     return jsonify({"status": "success", "message": "Đang cào bảng Ratio..."})
+
+
+@app.get("/api/score-single")
+def api_score_single():
+    """
+    Chấm điểm một mã theo đúng công thức Screener hiện tại.
+    Không preload BCTC/lịch sử của toàn thị trường và không ghi đè toàn bộ screener.
+    """
+    symbol = request.args.get("symbol", "").upper().strip()
+    if request.args.get("key") != ADMIN_SECRET_KEY:
+        return jsonify({"status": "error", "message": "Sai mật khẩu Admin!"}), 403
+    if not symbol or not re.fullmatch(r"[A-Z0-9]{3,10}", symbol):
+        return jsonify({"status": "error", "message": "Mã cổ phiếu không hợp lệ."}), 400
+    if is_screener_running:
+        return jsonify({
+            "status": "busy",
+            "message": "Screener toàn thị trường đang chạy. Vui lòng thử lại sau."
+        }), 409
+
+    print(f"[API] 🎯 Chấm điểm riêng mã {symbol}...", flush=True)
+    try:
+        # 1) Chỉ lấy dữ liệu gốc và BCTC của mã được yêu cầu.
+        stock_doc = collection.find_one({"symbol": symbol}, {"_id": 0})
+        if not stock_doc:
+            return jsonify({"status": "error", "message": f"Không tìm thấy dữ liệu giá cho {symbol}."}), 404
+
+        bctc_doc = bctc_col.find_one(
+            {"symbol": symbol},
+            {"_id": 0, "income_statement": 1, "cash_flow": 1, "balance_sheet": 1}
+        ) or {}
+        stock_doc["bctc_history"] = bctc_doc.get("income_statement", []) or []
+        extracted = extract_metrics_from_bctc_data(bctc_doc)
+        if extracted:
+            stock_doc.update(extracted)
+            collection.update_one({"symbol": symbol}, {"$set": extracted})
+
+        # 2) Trung vị ngành lấy từ dữ liệu giá/định giá đang lưu sẵn.
+        # Không tải BCTC hoặc lịch sử của các mã khác.
+        peer_projection = {
+            "_id": 0, "symbol": 1, "close": 1, "close_price": 1,
+            "pe": 1, "pb": 1, "roe": 1, "roa": 1, "eps": 1,
+            "dividend_yield": 1, "cfo_latest": 1, "net_profit_ttm": 1,
+            "debt_to_equity": 1, "gross_margin": 1
+        }
+        normalized_peers = {}
+        for peer in collection.find({}, peer_projection):
+            peer_symbol = peer.get("symbol")
+            if peer_symbol:
+                normalized_peers[peer_symbol] = normalize_stock_data(peer_symbol, peer)
+        sector_medians = compute_sector_medians(normalized_peers)
+        group_label = get_sub_sector(symbol)
+        config = SUB_SECTOR_CONFIG.get(group_label) or SUB_SECTOR_CONFIG.get(get_sector(symbol))
+        if not config:
+            return jsonify({"status": "error", "message": f"Chưa có cấu hình chấm điểm cho ngành của {symbol}."}), 422
+        sector_median, _ = get_median_for_symbol(symbol, sector_medians)
+        nd = normalize_stock_data(symbol, stock_doc)
+        update_fields = nd.pop("_update_fields", {})
+        if update_fields:
+            collection.update_one({"symbol": symbol}, {"$set": update_fields})
+
+        # 3) Chỉ tải lịch sử của mã được yêu cầu; phân tích kỹ thuật dùng 200 nến gần nhất.
+        hist_doc = history_col.find_one(
+            {"symbol": symbol},
+            {"_id": 0, "history_d1": {"$slice": -1400}}
+        ) or {}
+        history_bars = hist_doc.get("history_d1", []) or []
+        tech_bars = history_bars[-200:]
+        tech_score_raw, tech_status, pattern = 50, "Tích lũy", "Tích lũy"
+        if ProfessionalTechnicalAnalyzer and tech_bars:
+            try:
+                analyzer = ProfessionalTechnicalAnalyzer(tech_bars)
+                ptkt_res = analyzer.analyze()
+                tech_score_raw = ptkt_res.get("technical_score", 50)
+                tech_status = ptkt_res.get("technical_status", "Tích lũy")
+                pattern = ptkt_res.get("pattern", "Tích lũy")
+            except Exception as tech_error:
+                print(f"[SINGLE-SCREENER] {symbol} lỗi phân tích kỹ thuật: {tech_error}", flush=True)
+
+        # 4) Giữ nguyên dữ liệu AI đã có, không gọi AI trong luồng chấm điểm.
+        old_result = screener_col.find_one({"symbol": symbol}, {"_id": 0}) or {}
+        existing_ai = {
+            "bctc": stock_doc.get("ai_bctc") or old_result.get("bctc_evaluation", ""),
+            "catalyst": stock_doc.get("ai_catalyst") or old_result.get("catalyst", ""),
+            "risks": stock_doc.get("ai_risks") or old_result.get("risks", ""),
+            "macro_view": stock_doc.get("ai_macro_view") or old_result.get("macro_view", ""),
+            "outlook": stock_doc.get("ai_outlook") or old_result.get("outlook", ""),
+            "recommendation": stock_doc.get("ai_recommendation") or old_result.get("ai_recommendation", ""),
+            "price_zone": stock_doc.get("ai_price_zone") or old_result.get("ai_price_zone", ""),
+            "ai_updated_at": stock_doc.get("ai_updated_at") or old_result.get("ai_updated_at", "Chưa phân tích"),
+            "ai_source": stock_doc.get("ai_source") or old_result.get("ai_source", "AI")
+        }
+
+        result = evaluate_stock_from_db(
+            symbol, nd, sector_median, group_label, config,
+            tech_score_raw=tech_score_raw,
+            tech_status=tech_status,
+            pattern=pattern,
+            existing_ai_data=existing_ai,
+            history_bars=history_bars
+        )
+        if not result:
+            return jsonify({"status": "error", "message": f"Không thể chấm điểm {symbol}."}), 422
+
+        result["date"] = _vn_now().strftime("%Y-%m-%d")
+        result["score_updated_at"] = _now_str()
+
+        # Nếu screener toàn thị trường vừa bắt đầu trong lúc tính, không ghi đè dữ liệu của nó.
+        if is_screener_running:
+            return jsonify({
+                "status": "busy",
+                "message": "Screener toàn thị trường vừa bắt đầu; kết quả riêng chưa được lưu."
+            }), 409
+
+        screener_col.update_one(
+            {"symbol": symbol},
+            {"$set": result},
+            upsert=True
+        )
+        print(
+            f"[SINGLE-SCREENER] ✅ {symbol} | Tổng {result.get('total_score')}/100 "
+            f"| {result.get('final_decision')}",
+            flush=True
+        )
+        return jsonify({
+            "status": "success",
+            "message": f"Đã chấm điểm riêng {symbol}.",
+            "symbol": symbol,
+            "data": result
+        })
+    except Exception as e:
+        log_exception(f"[SINGLE-SCREENER] Lỗi chấm điểm {symbol}", e)
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 
 @app.get("/api/force-screener")
