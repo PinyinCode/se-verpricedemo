@@ -175,6 +175,18 @@ TITLE_RULES = {
         (("tong cong tai san", "total assets"), "BS_TOTAL_ASSETS"),
     ],
     "income_statement": [
+        # Industrial-company labels: deliberately specific to avoid confusing
+        # gross revenue, net revenue, operating profit and pre-tax profit.
+        (("doanh thu thuan ve ban hang va cung cap dich vu", "net revenue from sales and services", "net revenue"), "IS_NET_REVENUE"),
+        (("gia von hang ban", "cost of goods sold"), "IS_COST_OF_GOODS_SOLD"),
+        (("loi nhuan gop ve ban hang va cung cap dich vu", "gross profit"), "IS_GROSS_PROFIT"),
+        (("doanh thu hoat dong tai chinh", "finance income"), "IS_FINANCIAL_INCOME"),
+        (("chi phi tai chinh", "finance costs"), "IS_FINANCIAL_EXPENSE"),
+        (("chi phi ban hang", "selling expenses"), "IS_SELLING_EXPENSE"),
+        (("chi phi quan ly doanh nghiep", "general and administrative expenses"), "IS_GENERAL_ADMIN_EXPENSE"),
+        (("loi nhuan thuan tu hoat dong kinh doanh", "operating profit"), "IS_OPERATING_PROFIT"),
+        (("chi phi thue thu nhap doanh nghiep hien hanh", "current income tax expense"), "IS_CURRENT_INCOME_TAX"),
+        (("chi phi thue thu nhap doanh nghiep hoan lai", "deferred income tax expense"), "IS_DEFERRED_INCOME_TAX"),
         (("thu nhap lai thuan", "net interest income"), "IS_NET_INTEREST_INCOME"),
         (("thu nhap lai va cac khoan thu nhap tuong tu", "interest income"), "IS_INTEREST_INCOME"),
         (("chi phi lai va cac chi phi tuong tu", "interest expense"), "IS_INTEREST_EXPENSE"),
@@ -186,35 +198,107 @@ TITLE_RULES = {
     "cash_flow": [
         (("luu chuyen tien thuan tu hoat dong san xuat kinh doanh", "net cash flows from operating activities"), "CF_NET_CASH_FLOWS_FROM_OPERATING_ACTIVITIES"),
         (("luu chuyen tien thuan tu hoat dong dau tu", "net cash flows from investing activities"), "CF_NET_CASH_FLOWS_FROM_INVESTING_ACTIVITIES"),
+        (("luu chuyen tien thuan tu hoat dong tai chinh", "net cash flows from financing activities"), "CF_NET_CASH_FLOWS_FROM_FINANCING_ACTIVITIES"),
+        (("tien va tuong duong tien cuoi ky", "cash and cash equivalents at end of period"), "CF_CASH_AT_END"),
+        (("tien va tuong duong tien dau ky", "cash and cash equivalents at beginning of period"), "CF_CASH_AT_BEGINNING"),
+        (("anh huong cua thay doi ty gia hoi doai quy doi ngoai te", "effect of exchange rate changes on cash"), "CF_FX_EFFECT_ON_CASH"),
     ],
 }
 
-def canonicalize_vci_field(report_name, field_code, title):
+def resolve_vci_field_mapping(report_name, field_code, title):
+    """Resolve a BCTC label while preserving how strong the mapping evidence is.
+
+    Exact field-dictionary matches are distinct from title-rule and generic
+    label candidates. Candidate matches are never issuer-level approval.
+    """
     section = str(report_name or "").lower()
     field = str(field_code or "").lower()
     exact = VCI_FIELD_MAP.get(section, {}).get(field)
     if exact:
-        return exact
+        return {
+            "canonical_id": exact,
+            "mapping_method": "EXACT_FIELD_DICTIONARY",
+            "mapping_status": "FIELD_CODE_MATCH",
+            "source_section": section,
+            "source_field": field,
+        }
+
     label = normalize_label(title or "")
     for phrases, canonical in TITLE_RULES.get(section, []):
         if any(normalize_label(p) in label for p in phrases):
-            return canonical
-    # Generic mappings only for unambiguous subtotal labels.
+            return {
+                "canonical_id": canonical,
+                "mapping_method": "TITLE_RULE",
+                "mapping_status": "TITLE_RULE_CANDIDATE",
+                "source_section": section,
+                "source_field": field,
+            }
+
+    # Generic mappings are intentionally limited to unambiguous subtotal labels.
     if section == "balance_sheet":
         if label in ("tai san ngan han", "current assets"):
-            return "BS_SHORT_TERM_ASSETS"
+            return {
+                "canonical_id": "BS_SHORT_TERM_ASSETS",
+                "mapping_method": "GENERIC_LABEL",
+                "mapping_status": "GENERIC_LABEL_CANDIDATE",
+                "source_section": section,
+                "source_field": field,
+            }
         if label in ("tai san dai han", "non current assets"):
-            return "BS_LONG_TERM_ASSETS"
+            return {
+                "canonical_id": "BS_LONG_TERM_ASSETS",
+                "mapping_method": "GENERIC_LABEL",
+                "mapping_status": "GENERIC_LABEL_CANDIDATE",
+                "source_section": section,
+                "source_field": field,
+            }
         if label in ("no phai tra", "total liabilities"):
-            return "BS_LIABILITIES"
+            return {
+                "canonical_id": "BS_LIABILITIES",
+                "mapping_method": "GENERIC_LABEL",
+                "mapping_status": "GENERIC_LABEL_CANDIDATE",
+                "source_section": section,
+                "source_field": field,
+            }
     if section == "income_statement":
-        if field == "isa20" or label == "loi nhuan sau thue":
-            return "IS_NET_PROFIT_AFTER_TAX"
+        if label == "loi nhuan sau thue":
+            return {
+                "canonical_id": "IS_NET_PROFIT_AFTER_TAX",
+                "mapping_method": "GENERIC_LABEL",
+                "mapping_status": "GENERIC_LABEL_CANDIDATE",
+                "source_section": section,
+                "source_field": field,
+            }
         if "doanh thu thuan" in label or label == "net revenue":
-            return "IS_NET_REVENUE"
+            return {
+                "canonical_id": "IS_NET_REVENUE",
+                "mapping_method": "GENERIC_LABEL",
+                "mapping_status": "GENERIC_LABEL_CANDIDATE",
+                "source_section": section,
+                "source_field": field,
+            }
         if "gia von hang ban" in label or label == "cost of goods sold":
-            return "IS_COST_OF_GOODS_SOLD"
-    return None
+            return {
+                "canonical_id": "IS_COST_OF_GOODS_SOLD",
+                "mapping_method": "GENERIC_LABEL",
+                "mapping_status": "GENERIC_LABEL_CANDIDATE",
+                "source_section": section,
+                "source_field": field,
+            }
+
+    return {
+        "canonical_id": None,
+        "mapping_method": "UNMAPPED",
+        "mapping_status": "UNMAPPED",
+        "source_section": section,
+        "source_field": field,
+    }
+
+
+def canonicalize_vci_field(report_name, field_code, title):
+    """Backward-compatible canonical ID wrapper; use resolver for provenance."""
+    return resolve_vci_field_mapping(report_name, field_code, title)["canonical_id"]
+
 
 # 50-point fundamental framework; scoring is gated by data availability.
 SECTOR_RULES = {
@@ -232,6 +316,16 @@ SECTOR_RULES = {
     "CANG_LOGISTICS": {"weights": {"growth_throughput": 10, "profitability": 10, "utilization_backlog": 10, "capex_debt": 10, "cash_conversion": 10}, "valuation": ["PE", "EV_EBITDA_IF_VALID"]},
     "TIEU_DUNG": {"weights": {"growth": 10, "profitability": 12, "brand_mix": 8, "working_capital": 10, "cash_conversion": 10}, "valuation": ["PE", "EV_EBITDA_IF_VALID", "DIVIDEND"]},
     "VAT_LIEU_XAY_DUNG": {"weights": {"growth_cycle": 8, "profitability": 12, "inventory_working_capital": 10, "debt_capex": 10, "cash_conversion": 10}, "valuation": ["MID_CYCLE_PE", "PB", "ROIC"]},
+    "AGRI": {"weights": {"cycle_growth": 10, "profitability": 10, "biological_assets": 10, "working_capital": 10, "cash_conversion": 10}, "valuation": ["MID_CYCLE_PE", "PB", "DCF_IF_VALID"], "exclude": ["industrial_metrics_without_verified_inputs"]},
+    "NGUYEN_VAT_LIEU_CHU_KY": {"weights": {"cycle_growth": 10, "normalized_margin": 12, "inventory_working_capital": 10, "debt_cashflow": 10, "capital_efficiency": 8}, "valuation": ["MID_CYCLE_PE", "PB", "ROIC"]},
+    "AVIATION": {"weights": {"demand_growth": 8, "profitability": 10, "fleet_utilization": 12, "lease_debt": 10, "cashflow": 10}, "valuation": ["EV_EBITDAR_IF_VALID", "DCF_IF_VALID"]},
+    "CONSTRUCTION": {"weights": {"backlog_quality": 12, "profitability": 8, "receivables_contract_assets": 12, "debt_liquidity": 10, "cash_conversion": 8}, "valuation": ["NORMALIZED_PE", "PB", "DCF_IF_VALID"]},
+    "PETROLEUM": {"weights": {"segment_mix": 10, "production_price": 10, "normalized_margin": 12, "reserve_capex": 8, "debt_cashflow": 10}, "valuation": ["MID_CYCLE_PE", "EV_EBITDA_IF_VALID", "DCF_IF_VALID"]},
+    "PHARMA": {"weights": {"growth": 10, "profitability": 12, "product_portfolio": 10, "working_capital": 8, "cash_conversion": 10}, "valuation": ["PE", "DCF_IF_VALID"]},
+    "TEXTILE": {"weights": {"order_growth": 10, "normalized_margin": 10, "capacity_labor": 10, "working_capital": 10, "cash_conversion": 10}, "valuation": ["MID_CYCLE_PE", "PB"]},
+    "RUBBER": {"weights": {"replacement_export_growth": 10, "normalized_margin": 12, "raw_material_inventory": 10, "debt_capex": 8, "cash_conversion": 10}, "valuation": ["MID_CYCLE_PE", "PB"]},
+    "PLASTICS_CHEMICALS": {"weights": {"volume_price_spread": 10, "normalized_margin": 12, "capacity_product_mix": 8, "working_capital": 10, "debt_cashflow": 10}, "valuation": ["MID_CYCLE_PE", "PB"]},
+    "AGRI_PROCESSING": {"weights": {"segment_growth": 10, "normalized_margin": 10, "biological_supply_chain": 10, "working_capital": 10, "cash_conversion": 10}, "valuation": ["MID_CYCLE_PE", "PB", "DCF_IF_VALID"]},
 }
 
 # Data-availability and sign-convention guardrails. No missing metric is awarded points.
@@ -474,6 +568,76 @@ SECTOR_METRICS = {
         "inventory_working_capital": ("INVENTORY_TURNOVER", "inventory_days", "receivables_days"),
         "debt_capex": ("net_debt", "interest_coverage", "capex_to_assets"),
         "cash_conversion": ("CASH_CONVERSION", "FCF"),
+    },
+    "AGRI": {
+        "cycle_growth": ("commodity_price_realization", "volume_growth", "input_cost_spread"),
+        "profitability": ("normalized_margin", "ROE", "ROIC"),
+        "biological_assets": ("biological_asset_quality", "harvest_yield", "disease_or_weather_exposure"),
+        "working_capital": ("INVENTORY_TURNOVER", "receivables_days", "payables_days"),
+        "cash_conversion": ("CASH_CONVERSION", "CFO", "FCF"),
+    },
+    "NGUYEN_VAT_LIEU_CHU_KY": {
+        "cycle_growth": ("volume_growth", "realized_price", "capacity_utilization"),
+        "normalized_margin": ("mid_cycle_gross_margin", "operating_margin"),
+        "inventory_working_capital": ("INVENTORY_TURNOVER", "inventory_days", "receivables_days"),
+        "debt_cashflow": ("net_debt", "interest_coverage", "FCF"),
+        "capital_efficiency": ("ROE", "ROIC", "capex_efficiency"),
+    },
+    "AVIATION": {
+        "demand_growth": ("passenger_growth", "cargo_growth", "yield_per_passenger"),
+        "profitability": ("normalized_margin", "ROE", "ROIC"),
+        "fleet_utilization": ("load_factor", "fleet_utilization", "fleet_age"),
+        "lease_debt": ("lease_adjusted_net_debt", "lease_maturity", "interest_coverage"),
+        "cashflow": ("CFO", "FCF", "capex_commitment"),
+    },
+    "CONSTRUCTION": {
+        "backlog_quality": ("backlog_growth", "backlog_conversion", "customer_advance_coverage"),
+        "profitability": ("normalized_margin", "ROE", "gross_margin"),
+        "receivables_contract_assets": ("receivables_days", "contract_asset_quality", "overdue_receivables"),
+        "debt_liquidity": ("net_debt", "interest_coverage", "debt_maturity"),
+        "cash_conversion": ("CFO", "CASH_CONVERSION", "FCF"),
+    },
+    "PETROLEUM": {
+        "segment_mix": ("upstream_downstream_split", "segment_profit_share", "refining_exposure"),
+        "production_price": ("production_volume_growth", "realized_oil_price", "reserve_life"),
+        "normalized_margin": ("mid_cycle_margin", "refining_margin", "operating_margin"),
+        "reserve_capex": ("reserve_replacement", "project_capex_progress", "capex_efficiency"),
+        "debt_cashflow": ("net_debt", "interest_coverage", "FCF"),
+    },
+    "PHARMA": {
+        "growth": ("revenue_growth", "volume_growth", "export_growth"),
+        "profitability": ("gross_margin", "operating_margin", "ROE"),
+        "product_portfolio": ("registered_product_share", "ethical_drug_share", "pipeline_quality"),
+        "working_capital": ("inventory_days", "receivables_days", "expiry_writeoffs"),
+        "cash_conversion": ("CASH_CONVERSION", "CFO", "FCF"),
+    },
+    "TEXTILE": {
+        "order_growth": ("export_order_growth", "backlog_conversion", "revenue_growth"),
+        "normalized_margin": ("mid_cycle_gross_margin", "operating_margin", "labor_cost_ratio"),
+        "capacity_labor": ("capacity_utilization", "labor_productivity", "compliance_risk"),
+        "working_capital": ("inventory_days", "receivables_days", "customer_advances"),
+        "cash_conversion": ("CASH_CONVERSION", "CFO", "FCF"),
+    },
+    "RUBBER": {
+        "replacement_export_growth": ("replacement_tire_share", "export_growth", "volume_growth"),
+        "normalized_margin": ("mid_cycle_gross_margin", "operating_margin", "rubber_input_spread"),
+        "raw_material_inventory": ("natural_rubber_cost", "inventory_days", "receivables_days"),
+        "debt_capex": ("net_debt", "interest_coverage", "capex_efficiency"),
+        "cash_conversion": ("CASH_CONVERSION", "CFO", "FCF"),
+    },
+    "PLASTICS_CHEMICALS": {
+        "volume_price_spread": ("volume_growth", "realized_price", "resin_input_spread"),
+        "normalized_margin": ("mid_cycle_gross_margin", "operating_margin", "energy_cost_ratio"),
+        "capacity_product_mix": ("capacity_utilization", "value_added_product_share", "capex_efficiency"),
+        "working_capital": ("inventory_days", "receivables_days", "payables_days"),
+        "debt_cashflow": ("net_debt", "interest_coverage", "CFO"),
+    },
+    "AGRI_PROCESSING": {
+        "segment_growth": ("segment_revenue_growth", "export_growth", "volume_growth"),
+        "normalized_margin": ("mid_cycle_margin", "input_cost_spread", "operating_margin"),
+        "biological_supply_chain": ("biological_asset_quality", "farm_yield", "feedstock_security"),
+        "working_capital": ("inventory_days", "receivables_days", "payables_days"),
+        "cash_conversion": ("CASH_CONVERSION", "CFO", "FCF"),
     },
 }
 
