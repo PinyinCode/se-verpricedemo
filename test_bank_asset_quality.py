@@ -18,6 +18,15 @@ class TestBankAssetQualityDiscovery(unittest.TestCase):
         self.assertEqual(classify_bank_candidate("Nợ nhóm 2"), "GROUP_2")
         self.assertEqual(classify_bank_candidate("Tiền gửi không kỳ hạn"), "DEMAND_DEPOSITS")
 
+    def test_separates_npl_ratio_from_npl_balance(self):
+        self.assertEqual(classify_bank_candidate("Tỷ lệ nợ xấu"), "NPL_RATIO")
+        self.assertEqual(classify_bank_candidate("Nợ xấu"), "NPL")
+
+    def test_classifies_group_three_four_five_as_separate_components(self):
+        self.assertEqual(classify_bank_candidate("Dư nợ nhóm 3"), "NPL_GROUP_3")
+        self.assertEqual(classify_bank_candidate("Nợ nhóm 4"), "NPL_GROUP_4")
+        self.assertEqual(classify_bank_candidate("Dư nợ nhóm 5"), "NPL_GROUP_5")
+
     def test_does_not_guess_generic_customer_loan_label(self):
         self.assertIsNone(classify_bank_candidate("Cho vay khách hàng"))
         self.assertIsNone(classify_bank_candidate("Loans to customers"))
@@ -45,6 +54,27 @@ class TestBankAssetQualityDiscovery(unittest.TestCase):
         ])
         self.assertEqual(result["candidates"][0]["conflicting_periods"], ["2026-Q3"])
 
+
+
+    def test_metadata_discovery_is_balance_sheet_only(self):
+        catalog = {
+            "BALANCE_SHEET": {"bsb200": "Nợ nhóm 2"},
+            "INCOME_STATEMENT": {"isb200": "Nợ nhóm 2"},
+            "CASH_FLOW": {"cfa200": "Nợ nhóm 2"},
+        }
+        result = discover_bank_asset_quality_metadata(catalog)
+        self.assertEqual(result["candidate_count"], 1)
+        self.assertEqual(result["candidates"][0]["source_field"], "bsb200")
+
+    def test_non_finite_numeric_candidates_are_ignored(self):
+        rows = [
+            {"source_field": "bsb200", "name": "Nợ nhóm 2",
+             "period": "2026-Q3", "value": float("nan"), "unit": "VND"},
+            {"source_field": "bsb201", "name": "Nợ xấu",
+             "period": "2026-Q3", "value": float("inf"), "unit": "VND"},
+        ]
+        result = discover_bank_asset_quality_fields(rows)
+        self.assertEqual(result["candidate_count"], 0)
 
     def test_metadata_catalog_finds_fields_without_numeric_rows(self):
         result = discover_bank_asset_quality_metadata({
