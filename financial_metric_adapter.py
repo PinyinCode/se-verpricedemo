@@ -52,7 +52,45 @@ def build_return_metric_record(metric_id, income_rows, profit_field,
                                balance_rows, balance_field, periods,
                                current_period, prior_year_period,
                                income_period_basis, return_type="ROE"):
-    """Build ROE/ROA from TTM profit and average comparable balance."""
+    """Build catalogued ROE/ROA from TTM profit and average comparable balance."""
+    normalized_id = str(metric_id or "").strip().upper()
+    normalized_return_type = str(return_type or "").strip().upper()
+    from metric_catalog import get_metric_definition
+
+    definition = get_metric_definition(normalized_id)
+    expected_sources = set(definition.get("source_fields") or []) if definition else set()
+    supplied_sources = {
+        str(profit_field or "").strip().lower(),
+        str(balance_field or "").strip().lower(),
+    }
+    normalized_periods = sorted(str(item or "").strip().upper() for item in (periods or []))
+    current_q = parse_quarter(current_period)
+    prior_q = parse_quarter(prior_year_period)
+    period_pair_valid = bool(
+        current_q and prior_q
+        and current_q[1] == prior_q[1]
+        and current_q[0] - prior_q[0] == 1
+    )
+    invalid_reason = ""
+    if normalized_id not in ("ROE", "ROA") or normalized_return_type != normalized_id:
+        invalid_reason = "return_metric_identity_mismatch"
+    elif not definition or not str(definition.get("status") or "").startswith("verified"):
+        invalid_reason = "metric_catalog_source_not_verified"
+    elif supplied_sources != {str(item).lower() for item in expected_sources}:
+        invalid_reason = "metric_source_lineage_mismatch"
+    elif len(normalized_periods) != 4 or normalized_periods[-1] != str(current_period or "").strip().upper():
+        invalid_reason = "current_period_not_ttm_end"
+    elif not period_pair_valid:
+        invalid_reason = "balance_periods_not_same_quarter_year_apart"
+
+    if invalid_reason:
+        return build_metric_record(
+            normalized_id,
+            {"available": False, "reason": invalid_reason},
+            "percent", "TTM through " + str(current_period), "TTM",
+            [profit_field, balance_field],
+        )
+
     profit = build_ttm_metric_record(
         metric_id + "_PROFIT_TTM", income_rows, profit_field,
         periods, income_period_basis,
