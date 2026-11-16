@@ -6112,6 +6112,15 @@ def api_score_single():
 
         result["date"] = _vn_now().strftime("%Y-%m-%d")
         result["score_updated_at"] = _now_str()
+        # Persist the same BCTC freshness provenance used by the scheduled worker.
+        latest_period = str(nd.get("bctc_latest_income_period") or "").strip()
+        result["bctc_latest_income_period"] = latest_period
+        result["bctc_expected_period"] = (
+            nd.get("bctc_expected_period") or _expected_latest_bctc_period()
+        )
+        result["bctc_period_is_current"] = (
+            bool(nd.get("bctc_period_is_current")) if latest_period else None
+        )
 
         # Cấp quyền ghi và cập nhật trong cùng critical section để tránh race với full refresh.
         if not _safe_update_screener_result(symbol, result):
@@ -6234,6 +6243,24 @@ def force_screener():
                     results.append(res)
             
             if results:
+                # Persist BCTC freshness provenance just like the scheduled worker.
+                # Diagnostics reads these fields from screener_results; omitting them
+                # makes valid source BCTC appear unverified in persisted results.
+                for r in results:
+                    normalized = norm_db.get(r.get("symbol"), {})
+                    latest_period = str(
+                        normalized.get("bctc_latest_income_period") or ""
+                    ).strip()
+                    r["bctc_latest_income_period"] = latest_period
+                    r["bctc_expected_period"] = (
+                        normalized.get("bctc_expected_period")
+                        or _expected_latest_bctc_period()
+                    )
+                    r["bctc_period_is_current"] = (
+                        bool(normalized.get("bctc_period_is_current"))
+                        if latest_period else None
+                    )
+
                 results = sorted(results, key=lambda x: (x.get("total_score", 0), x.get("fundamental_score", 0)), reverse=True)
                 
                 for r in results:
