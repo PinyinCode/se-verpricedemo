@@ -3444,8 +3444,8 @@ def _build_bctc_bank_income_pipeline(periods):
                     "as": "row",
                     "cond": {
                         "$and": [
-                            {"$in": ["$row.source_field", source_fields]},
-                            {"$in": ["$row.period", list(periods)]},
+                            {"$in": ["$$row.source_field", source_fields]},
+                            {"$in": ["$$row.period", list(periods)]},
                         ]
                     },
                 }
