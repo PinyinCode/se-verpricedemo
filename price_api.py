@@ -2905,6 +2905,12 @@ def auto_crawler_worker():
 def full_data_crawler_worker():
     while True:
         try:
+            # Dùng chung công tắc pause với auto real-time để có thể dừng
+            # toàn bộ lịch cào tự động khi kiểm thử.
+            if is_auto_crawl_paused:
+                time.sleep(10)
+                continue
+
             vn_now = _vn_now()
             is_bctc_time = (0 <= vn_now.hour < 6 and vn_now.minute == 0 and vn_now.second < 10)
             if is_bctc_time:
@@ -2912,6 +2918,11 @@ def full_data_crawler_worker():
                 expected_period = _expected_latest_bctc_period(vn_now)
 
                 for symbol in target_symbols:
+                    # Nếu nhận lệnh pause trong lúc đang chạy, dừng trước mã tiếp theo.
+                    if is_auto_crawl_paused:
+                        logger.info("[BCTC AUTO] Đã tạm dừng theo yêu cầu kiểm thử.")
+                        break
+
                     bctc_doc = bctc_col.find_one(
                         {"symbol": symbol},
                         {"updated_at": 1, "latest_period": 1}
