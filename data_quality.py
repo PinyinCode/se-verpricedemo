@@ -14,6 +14,45 @@ from bctc_rules import VCI_FIELD_MAP, resolve_vci_unit
 _PERIOD_RE = re.compile(r"^(\d{4})-Q([1-4])$")
 _VALID_SIGN_POLICIES = {"positive", "non_negative", "negative", "non_positive"}
 
+# Explicitly verified VCI statement identities. These are diagnostics only:
+# callers opt in by passing get_vci_reconciliation_equations(section).
+# Missing inputs remain unavailable; no values are inferred or repaired.
+VCI_RECONCILIATION_EQUATIONS = {
+    "income_statement": (
+        {
+            "id": "bank_ppop_equals_operating_income_plus_signed_operating_expense",
+            "terms": {"isb38": 1, "isb39": 1},
+            "result_field": "isb40",
+        },
+    ),
+    "balance_sheet": (
+        {
+            "id": "bank_net_customer_loans",
+            "terms": {"bsb104": 1, "bsb105": 1},
+            "result_field": "bsb103",
+        },
+        {
+            "id": "total_liabilities_and_equity",
+            "terms": {"bsa54": 1, "bsa78": 1},
+            "result_field": "bsa96",
+        },
+    ),
+    "cash_flow": (
+        {
+            "id": "cash_beginning_plus_net_change_and_fx_equals_ending",
+            "terms": {"cfa36": 1, "cfa34": 1, "cfa37": 1},
+            "result_field": "cfa38",
+        },
+    ),
+}
+
+
+def get_vci_reconciliation_equations(section):
+    """Return defensive copies of verified VCI equations for explicit validation."""
+    from copy import deepcopy
+    key = str(section or "").strip().lower()
+    return deepcopy(VCI_RECONCILIATION_EQUATIONS.get(key, ()))
+
 
 def _number(value):
     if value is None or isinstance(value, bool):
@@ -129,9 +168,30 @@ def validate_bctc_rows(rows, section, expected_units=None, sign_policies=None,
     if section not in VCI_FIELD_MAP:
         raise ValueError("unsupported BCTC section")
 
-    expected_units = expected_units or {}
-    sign_policies = sign_policies or {}
-    required = set(required_fields or [])
+    if rows is None:
+        rows = []
+    elif not isinstance(rows, (list, tuple)):
+        raise ValueError("rows must be a list or tuple")
+    if expected_units is None:
+        expected_units = {}
+    elif not isinstance(expected_units, dict):
+        raise ValueError("expected_units must be an object")
+    if sign_policies is None:
+        sign_policies = {}
+    elif not isinstance(sign_policies, dict):
+        raise ValueError("sign_policies must be an object")
+    if required_fields is None:
+        required_fields = ()
+    elif not isinstance(required_fields, (list, tuple, set)):
+        raise ValueError("required_fields must be a list, tuple or set")
+    if equations is None:
+        equations = ()
+    elif not isinstance(equations, (list, tuple)):
+        raise ValueError("equations must be a list or tuple")
+    required = {
+        str(field).strip().lower()
+        for field in required_fields if str(field).strip()
+    }
     errors, warnings = [], []
     seen_source_period = {}
     seen_canonical_period = {}
