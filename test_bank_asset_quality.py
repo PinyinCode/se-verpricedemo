@@ -4,6 +4,7 @@ import unittest
 from bank_asset_quality import (
     classify_bank_candidate,
     discover_bank_asset_quality_fields,
+    discover_bank_asset_quality_metadata,
 )
 
 
@@ -43,6 +44,27 @@ class TestBankAssetQualityDiscovery(unittest.TestCase):
              "period": "2026-Q3", "value": 11},
         ])
         self.assertEqual(result["candidates"][0]["conflicting_periods"], ["2026-Q3"])
+
+
+    def test_metadata_catalog_finds_fields_without_numeric_rows(self):
+        result = discover_bank_asset_quality_metadata({
+            "BALANCE_SHEET": {
+                "bsb777": "Dư nợ nhóm 2",
+                "bsb778": "Nợ có khả năng mất vốn",
+                "bsb779": "Cho vay khách hàng",
+            }
+        })
+        self.assertEqual(result["candidate_count"], 2)
+        self.assertEqual(
+            {item["source_field"] for item in result["candidates"]},
+            {"bsb777", "bsb778"},
+        )
+
+    def test_metadata_discovery_does_not_guess_generic_loan_field(self):
+        result = discover_bank_asset_quality_metadata({
+            "BALANCE_SHEET": {"bsb777": "Cho vay khách hàng"}
+        })
+        self.assertEqual(result["candidate_count"], 0)
 
     def test_rejects_invalid_limits(self):
         with self.assertRaises(ValueError):
