@@ -149,6 +149,113 @@ def calculate_ytd_to_quarter(current_ytd, prior_ytd, quarter_number,
 
 
 
+# General non-financial-company metrics. These functions accept only values
+# whose source fields, period basis, units and signs were verified upstream.
+
+
+def calculate_roe_ttm(parent_profit_ttm, average_parent_equity,
+                      profit_basis, decimals=4):
+    """Parent-attributable TTM profit / average parent equity, in percent."""
+    if str(profit_basis or "").strip().upper() != "TTM":
+        return _result(reason="profit_period_basis_not_verified_as_ttm")
+    return safe_ratio(parent_profit_ttm, average_parent_equity,
+                      100.0, "positive", decimals)
+
+
+def calculate_roa_ttm(net_profit_ttm, average_total_assets,
+                      profit_basis, decimals=4):
+    """TTM net profit / average total assets, in percent."""
+    if str(profit_basis or "").strip().upper() != "TTM":
+        return _result(reason="profit_period_basis_not_verified_as_ttm")
+    return safe_ratio(net_profit_ttm, average_total_assets,
+                      100.0, "positive", decimals)
+
+
+def calculate_roic_ttm(nopat_ttm, average_invested_capital,
+                       profit_basis, decimals=4):
+    """NOPAT TTM / average invested capital, in percent."""
+    if str(profit_basis or "").strip().upper() != "TTM":
+        return _result(reason="nopat_period_basis_not_verified_as_ttm")
+    return safe_ratio(nopat_ttm, average_invested_capital,
+                      100.0, "positive", decimals)
+
+
+def calculate_cash_conversion(cfo_ttm, net_profit_ttm,
+                              period_basis, decimals=4):
+    """CFO / positive net profit; not intended for banks or insurers."""
+    if str(period_basis or "").strip().upper() != "TTM":
+        return _result(reason="period_basis_not_verified_as_ttm")
+    profit = _finite(net_profit_ttm)
+    if profit is None or profit <= 0:
+        return _result(reason="net_profit_not_positive")
+    return safe_ratio(cfo_ttm, profit, 1.0, "positive", decimals)
+
+
+def calculate_inventory_turnover(cogs_ttm, average_inventory,
+                                 period_basis, cogs_sign="negative",
+                                 decimals=4):
+    """TTM cost of goods sold / average inventory, in turns."""
+    if str(period_basis or "").strip().upper() != "TTM":
+        return _result(reason="cogs_period_basis_not_verified_as_ttm")
+    cogs = _finite(cogs_ttm)
+    if cogs is None:
+        return _result(reason="missing_or_invalid_input")
+    if cogs_sign == "negative":
+        if cogs > 0:
+            return _result(reason="cogs_sign_mismatch")
+        cogs = abs(cogs)
+    elif cogs_sign == "positive":
+        if cogs < 0:
+            return _result(reason="cogs_sign_mismatch")
+    elif cogs_sign == "absolute":
+        cogs = abs(cogs)
+    else:
+        raise ValueError("unsupported cogs_sign")
+    return safe_ratio(cogs, average_inventory, 1.0, "positive", decimals)
+
+
+def calculate_interest_coverage(ebit_ttm, interest_expense_ttm,
+                                period_basis, expense_sign="negative",
+                                decimals=4):
+    """EBIT / interest expense; expense sign must be explicit."""
+    if str(period_basis or "").strip().upper() != "TTM":
+        return _result(reason="period_basis_not_verified_as_ttm")
+    ebit = _finite(ebit_ttm)
+    expense = _finite(interest_expense_ttm)
+    if ebit is None or expense is None:
+        return _result(reason="missing_or_invalid_input")
+    if expense_sign == "negative":
+        if expense > 0:
+            return _result(reason="interest_expense_sign_mismatch")
+        expense = abs(expense)
+    elif expense_sign == "positive":
+        if expense < 0:
+            return _result(reason="interest_expense_sign_mismatch")
+    elif expense_sign == "absolute":
+        expense = abs(expense)
+    else:
+        raise ValueError("unsupported expense_sign")
+    return safe_ratio(ebit, expense, 1.0, "positive", decimals)
+
+
+def calculate_net_debt_to_ebitda(total_interest_bearing_debt,
+                                 cash_and_equivalents, ebitda_ttm,
+                                 ebitda_basis, decimals=4):
+    """(interest-bearing debt - cash) / positive EBITDA TTM."""
+    if str(ebitda_basis or "").strip().upper() != "TTM":
+        return _result(reason="ebitda_period_basis_not_verified_as_ttm")
+    debt = _finite(total_interest_bearing_debt)
+    cash = _finite(cash_and_equivalents)
+    ebitda = _finite(ebitda_ttm)
+    if debt is None or cash is None or ebitda is None:
+        return _result(reason="missing_or_invalid_input")
+    if debt < 0 or cash < 0:
+        return _result(reason="debt_or_cash_negative")
+    if ebitda <= 0:
+        return _result(reason="ebitda_not_positive")
+    return _result(round((debt - cash) / ebitda, decimals))
+
+
 # Bank-specific ratios. These helpers do not establish that a source field
 # exists: callers must supply values only after field/unit/period validation.
 
