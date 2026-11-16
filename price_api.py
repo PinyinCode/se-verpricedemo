@@ -20,7 +20,10 @@ from pymongo import MongoClient, UpdateOne
 from pymongo.errors import PyMongoError
 from bctc_rules import canonicalize_vci_field, resolve_vci_unit, SECTOR_RULES, DATA_QUALITY_RULES
 from analysis_cache import TTLCache
-from bank_asset_quality import discover_bank_asset_quality_fields
+from bank_asset_quality import (
+    discover_bank_asset_quality_fields,
+    discover_bank_asset_quality_metadata,
+)
 
 # Cache trung vị peer có giới hạn bộ nhớ; dữ liệu mục tiêu vẫn được chuẩn hóa trực tiếp.
 _SECTOR_MEDIAN_CACHE = TTLCache(max_items=1, ttl_seconds=180)
@@ -3660,6 +3663,9 @@ def api_admin_bctc_bank_asset_quality():
             "updated_at": doc.get("updated_at"),
             "latest_period": doc.get("latest_period"),
             "discovery": discovery,
+            "metadata_discovery": discover_bank_asset_quality_metadata(
+                doc.get("vci_field_catalog") or {}
+            ),
             "reference_fields": reference_fields[-36:],
             "note": (
                 "Các trường ứng viên chỉ phục vụ truy tìm source_field. "
