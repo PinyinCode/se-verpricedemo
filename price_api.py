@@ -171,6 +171,9 @@ LAST_TELEGRAM_TIME = 0
 stop_crawl_requested = False
 is_auto_crawl_paused = False
 
+# Đồng bộ thao tác bắt đầu crawl với API pause để tránh worker vượt qua lệnh dừng.
+crawl_control_lock = threading.Lock()
+
 # FIX BUG #1: Lock chống race giữa screener_worker và /api/force-screener
 screener_lock = threading.Lock()
 
@@ -1001,10 +1004,20 @@ def get_vndirect_ratio(symbol, ratio_code):
 # FIX BUG #8: Preload documents 1 lần thay vì find_one 2 lần/symbol
 def _execute_crawl(symbols: list, is_retry: bool = False, is_manual: bool = False):
     global is_crawling, LAST_TELEGRAM_TIME, stop_crawl_requested, _history_cache
-    
-    if is_crawling: return
-    is_crawling = True
-    stop_crawl_requested = False 
+
+    # Kiểm tra pause và đánh dấu worker đang chạy trong cùng lock với API pause.
+    # Nhờ vậy không thể có tình huống worker kiểm tra xong rồi mới khởi chạy sau lệnh pause.
+    with crawl_control_lock:
+        if is_crawling:
+            return
+        if is_auto_crawl_paused and not (is_manual or is_retry):
+            print("[CRAWL] ⏸️ Bỏ qua lượt REAL-TIME vì hệ thống đang tạm dừng.", flush=True)
+            return
+        is_crawling = True
+        if is_manual or is_retry:
+            stop_crawl_requested = False
+        elif not is_auto_crawl_paused:
+            stop_crawl_requested = False
     
     print(f"\n[CRAWL] 🚀 [{'CÀO BÙ' if is_retry else ('CÀO TAY' if is_manual else 'REAL-TIME')}] Bắt đầu xử lý {len(symbols)} mã...", flush=True)
     try:
@@ -3638,6 +3651,7 @@ def api_admin_bctc_bank_asset_quality():
                 "updated_at": 1,
                 "latest_period": 1,
                 "source": 1,
+                "vci_field_catalog": 1,
                 "balance_sheet": 1,
             }},
             {"$limit": 1},
@@ -3694,17 +3708,24 @@ def api_admin_bctc_bank_asset_quality():
 @app.get("/api/pause-crawl")
 def pause_crawl():
     global is_auto_crawl_paused, stop_crawl_requested
-    is_auto_crawl_paused = True
-    stop_crawl_requested = True
-    print("\n[API] ⏸️ Đã TẠM DỪNG hoàn toàn tiến trình cào tự động!", flush=True)
-    return jsonify({"status": "success", "message": "Đã tạm dừng cào tự động."})
+    with crawl_control_lock:
+        is_auto_crawl_paused = True
+        stop_crawl_requested = True
+    print("\n[API] ⏸️ Đã nhận lệnh TẠM DỪNG. Worker đang chạy sẽ dừng ở điểm kiểm tra kế tiếp; không khởi chạy lượt tự động mới.", flush=True)
+    return jsonify({
+        "status": "success",
+        "is_paused": True,
+        "is_crawling": is_crawling,
+        "message": "Đã tạm dừng cào tự động. Lượt đang chạy (nếu có) sẽ dừng trước mã tiếp theo."
+    })
 
 
 @app.get("/api/resume-crawl")
 def resume_crawl():
     global is_auto_crawl_paused, stop_crawl_requested, holiday_status, holiday_checked_today, is_holiday_paused
-    is_auto_crawl_paused = False
-    stop_crawl_requested = False
+    with crawl_control_lock:
+        is_auto_crawl_paused = False
+        stop_crawl_requested = False
     
     with holiday_check_lock:
         if holiday_status == True:
