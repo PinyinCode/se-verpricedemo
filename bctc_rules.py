@@ -676,3 +676,234 @@ def validate_bctc_rules():
         errors.append("Ambiguous customer-loan title must not be auto-mapped by label.")
     return {"valid": not errors, "errors": errors, "sector_count": len(SECTOR_RULES),
             "mapped_field_count": sum(len(v) for v in VCI_FIELD_MAP.values())}
+
+
+# Versioned formula contracts for every metric in all 25 sector profiles.
+# Formula definitions are explicit; no scoring thresholds are fabricated.
+_FORMULA_TEMPLATES = {
+    "ROE": ("net_profit_attributable_TTM / average_parent_equity", "ratio", "BCTC", "higher", ["isa22", "bsa78"], "verified_formula"),
+    "ROA": ("net_profit_after_tax_TTM / average_total_assets", "ratio", "BCTC", "higher", ["isa20", "bsa53"], "verified_formula"),
+    "CASH_CONVERSION": ("operating_cash_flow_TTM / net_profit_after_tax_TTM", "ratio", "BCTC", "higher", ["cfa18", "isa20"], "verified_formula_non_financial_only"),
+    "CFO": ("sum(quarterly_CFO_for_four_consecutive_quarters)", "VND", "BCTC_cash_flow", "higher", ["cfa18"], "verified_formula"),
+    "FCF": ("operating_cash_flow_TTM - cash_capex_TTM", "VND", "BCTC_cash_flow", "higher", ["cfa18", "cfa19"], "blocked_capex_sign_and_scope"),
+    "INVENTORY_TURNOVER": ("COGS_TTM / average_inventory", "times", "BCTC", "higher_peer_context", ["isa"], "blocked_inventory_source_mapping"),
+    "NIM": ("net_interest_income_TTM / average_interest_earning_assets", "ratio", "BCTC_plus_disclosure", "higher", ["isb27"], "blocked_average_interest_earning_assets"),
+    "NPL_RATIO": ("non_performing_loans / gross_customer_loans", "ratio", "regulatory_disclosure_plus_BCTC", "lower", ["bsb104"], "blocked_NPL_source"),
+    "GROUP_2_RATIO": ("group_2_loans / gross_customer_loans", "ratio", "regulatory_disclosure_plus_BCTC", "lower", ["bsb104"], "blocked_group_2_source"),
+    "NPL_COVERAGE": ("loan_loss_provisions / non_performing_loans", "ratio", "regulatory_disclosure", "higher", [], "blocked_both_inputs"),
+    "CAR": ("regulatory_capital / risk_weighted_assets", "ratio", "regulatory_disclosure", "higher", [], "blocked_regulatory_inputs"),
+    "CASA": ("demand_deposits / customer_deposits", "ratio", "bank_disclosure_plus_BCTC", "higher", ["bsb113"], "blocked_demand_deposit_mapping"),
+    "LDR": ("gross_customer_loans / customer_deposits", "ratio", "BCTC", "peer_and_regulatory_context", ["bsb104", "bsb113"], "conditional_source_basis"),
+    "CIR": ("operating_expenses_TTM / operating_income_TTM", "ratio", "BCTC", "lower", ["isb39", "isb38"], "conditional_bank_line_verification"),
+    "UNDERWRITING_COMBINED_RATIO": ("(claims_incurred_TTM + underwriting_expenses_TTM) / earned_premium_TTM", "ratio", "insurance_disclosure", "lower", [], "blocked_disclosure_inputs"),
+    "INVESTMENT_YIELD": ("investment_income_TTM / average_invested_assets", "ratio", "BCTC_plus_disclosure", "higher_peer_context", [], "blocked_average_invested_assets"),
+    "ROIC": ("NOPAT_TTM / average_invested_capital", "ratio", "BCTC", "higher", [], "blocked_NOPAT_and_invested_capital"),
+    "EV_EBITDA": ("(market_cap + interest_bearing_debt - cash) / EBITDA_TTM", "multiple", "market_data_plus_BCTC", "lower_peer_context", [], "blocked_debt_and_EBITDA_components"),
+    "RNAV": ("sum(project_level_fair_value - project_level_net_debt - remaining_project_cost)", "VND", "project_disclosure", "higher", [], "blocked_project_level_inputs"),
+}
+
+_GROWTH_METRICS = {
+    "revenue_growth", "profit_growth", "premium_growth", "presales_growth",
+    "delivery_growth", "segment_growth", "backlog_growth", "same_store_sales_growth",
+    "volume_growth", "production_volume_growth", "throughput_growth",
+    "export_growth", "commodity_price_realization", "passenger_growth",
+    "cargo_growth", "export_order_growth", "segment_revenue_growth",
+    "regulated_tariff_growth", "input_cost_index", "realized_price",
+}
+_MARGIN_METRICS = {
+    "gross_margin": ("gross_profit_TTM / net_revenue_TTM", "higher"),
+    "operating_margin": ("operating_profit_TTM / net_revenue_TTM", "higher"),
+    "normalized_net_margin": ("normalized_net_profit_TTM / net_revenue_TTM", "higher"),
+    "normalized_margin": ("normalized_operating_profit_mid_cycle / net_revenue_mid_cycle", "higher"),
+    "mid_cycle_gross_margin": ("gross_profit_mid_cycle / net_revenue_mid_cycle", "higher"),
+    "mid_cycle_margin": ("operating_profit_mid_cycle / net_revenue_mid_cycle", "higher"),
+    "ebit_margin": ("EBIT_TTM / net_revenue_TTM", "higher"),
+    "labor_cost_ratio": ("labor_cost_TTM / net_revenue_TTM", "lower"),
+    "energy_cost_ratio": ("energy_cost_TTM / net_revenue_TTM", "lower"),
+}
+_DAYS_METRICS = {
+    "inventory_days": ("average_inventory / COGS_TTM * 365", "lower"),
+    "receivables_days": ("average_trade_receivables / net_credit_sales_TTM * 365", "lower"),
+    "payables_days": ("average_trade_payables / COGS_TTM * 365", "peer_context"),
+}
+_RATIO_METRICS = {
+    "net_debt": ("short_term_interest_bearing_debt + long_term_interest_bearing_debt - cash_and_equivalents", "VND", "lower"),
+    "interest_coverage": ("EBIT_TTM / abs(interest_expense_TTM)", "times", "higher"),
+    "capex_to_assets": ("cash_capex_TTM / average_total_assets", "ratio", "lower_peer_context"),
+    "dividend_cash_coverage": ("operating_cash_flow_TTM / cash_dividends_paid_TTM", "ratio", "higher"),
+    "customer_advance_coverage": ("customer_advances / contract_assets_and_project_receivables", "ratio", "higher_peer_context"),
+    "customer_advances": ("customer_advances_closing_balance", "VND", "disclosure_only"),
+    "receivables_quality": ("(trade_receivables - overdue_receivables - impairment_allowance) / trade_receivables", "ratio", "higher"),
+    "contract_asset_quality": ("(contract_assets - overdue_contract_assets - impairment_allowance) / contract_assets", "ratio", "higher"),
+    "overdue_receivables": ("overdue_trade_receivables / total_trade_receivables", "ratio", "lower"),
+    "expiry_writeoffs": ("expired_or_written_off_inventory / average_inventory", "ratio", "lower"),
+    "related_party_exposure": ("related_party_receivables_and_investments / total_assets", "ratio", "lower"),
+    "investment_concentration": ("largest_investment_exposure / total_invested_assets", "ratio", "lower"),
+    "recurring_profit_share": ("recurring_operating_profit_TTM / total_profit_before_tax_TTM", "ratio", "higher"),
+    "recurring_revenue_share": ("contracted_or_recurring_revenue_TTM / total_revenue_TTM", "ratio", "higher"),
+    "premium_product_share": ("premium_product_revenue / total_product_revenue", "ratio", "higher"),
+    "registered_product_share": ("revenue_from_registered_products / pharmaceutical_revenue", "ratio", "higher"),
+    "ethical_drug_share": ("ethical_drug_revenue / pharmaceutical_revenue", "ratio", "higher"),
+    "value_added_product_share": ("value_added_product_revenue / total_product_revenue", "ratio", "higher"),
+    "associate_profit_share": ("share_of_profit_from_associates_TTM / group_net_profit_TTM", "ratio", "context"),
+    "subsidiary_dividends": ("cash_dividends_received_from_subsidiaries_TTM", "VND", "disclosure_only"),
+    "cash_dividends_received": ("cash_dividends_received_TTM", "VND", "disclosure_only"),
+    "holding_company_CFO": ("parent_only_operating_cash_flow_TTM", "VND", "disclosure_only"),
+    "NAV": ("sum(fair_value_of_investments_and_assets - holding_company_net_debt)", "VND", "blocked_lookthrough_inputs"),
+    "load_factor": ("revenue_passenger_km / available_seat_km", "ratio", "higher"),
+    "fleet_utilization": ("operating_fleet_days / available_fleet_days", "ratio", "higher"),
+    "capacity_utilization": ("actual_output / practical_capacity", "ratio", "higher"),
+    "sales_per_store": ("retail_revenue_TTM / average_operating_store_count", "VND_per_store", "higher"),
+    "employee_productivity": ("revenue_TTM / average_employee_count", "VND_per_employee", "higher"),
+    "store_payback": ("initial_store_investment / annual_store_cash_contribution", "years", "lower"),
+    "lease_adjusted_return": ("lease_adjusted_operating_profit / average_lease_adjusted_capital", "ratio", "higher"),
+    "capex_efficiency": ("incremental_operating_cash_flow / cash_capex", "ratio", "higher"),
+    "project_progress": ("verified_completed_project_milestones / planned_project_milestones", "ratio", "higher"),
+    "capex_to_budget": ("actual_cumulative_project_capex / approved_project_budget", "ratio", "context"),
+    "project_return": ("project_operating_cash_flow / project_invested_capital", "ratio", "higher"),
+    "backlog_conversion": ("revenue_recognized_from_opening_backlog / opening_backlog", "ratio", "higher"),
+    "contract_backlog": ("signed_unrecognized_contract_value", "VND", "disclosure_only"),
+    "backlog_growth": ("current_signed_backlog / prior_comparable_signed_backlog - 1", "ratio", "higher"),
+    "customer_retention": ("retained_customers_at_period_end / customers_at_period_start", "ratio", "higher"),
+    "brand_pricing_power": ("realized_price_growth - relevant_input_cost_inflation", "ratio", "higher"),
+    "input_cost_spread": ("realized_selling_price_per_unit - weighted_average_input_cost_per_unit", "VND_per_unit", "higher"),
+    "resin_input_spread": ("average_resin_selling_price - weighted_average_resin_input_cost", "VND_per_ton", "higher"),
+    "rubber_input_spread": ("average_product_selling_price - natural_rubber_input_cost_per_unit", "VND_per_unit", "higher"),
+    "natural_rubber_cost": ("natural_rubber_raw_material_cost_TTM / production_volume_TTM", "VND_per_unit", "lower_peer_context"),
+    "realized_oil_price": ("recognized_upstream_revenue / sold_oil_equivalent_volume", "USD_per_boe", "market_context"),
+    "refining_margin": ("refined_product_revenue - crude_oil_feedstock_cost", "VND_per_unit", "higher"),
+    "reserve_life": ("proved_and_probable_economic_reserves / annual_production", "years", "higher"),
+    "reserve_replacement": ("additions_to_economic_reserves / annual_production", "ratio", "higher"),
+    "yield_per_passenger": ("passenger_revenue / revenue_passengers", "VND_per_passenger", "higher"),
+    "passenger_growth": ("current_revenue_passengers / prior_year_revenue_passengers - 1", "ratio", "higher"),
+    "cargo_growth": ("current_cargo_tonnage / prior_year_cargo_tonnage - 1", "ratio", "higher"),
+    "replacement_tire_share": ("replacement_tire_sales_volume / total_tire_sales_volume", "ratio", "higher"),
+    "farm_yield": ("harvested_output / cultivated_or_harvested_area", "tonnes_per_hectare", "higher_peer_context"),
+    "biological_asset_quality": ("(biological_assets - impairment_allowance) / biological_assets", "ratio", "higher"),
+    "feedstock_security": ("contracted_or_controlled_feedstock_volume / planned_input_volume", "ratio", "higher"),
+    "disease_or_weather_exposure": ("production_volume_exposed_to_material_risk / total_production_volume", "ratio", "lower"),
+    "reinsurance_recovery": ("recoverable_reinsurance_claims / gross_claims_incurred", "ratio", "context"),
+    "reserve_adequacy": ("eligible_technical_reserves / estimated_required_technical_reserves", "ratio", "higher"),
+    "solvency_margin": ("available_solvency_capital / required_solvency_capital", "ratio", "higher"),
+    "claims_ratio": ("claims_incurred_TTM / earned_premium_TTM", "ratio", "lower"),
+    "capital_adequacy": ("regulatory_eligible_capital / regulatory_required_capital", "ratio", "higher"),
+    "liquid_assets": ("unencumbered_liquid_assets / short_term_liabilities", "ratio", "higher"),
+    "debt_maturity": ("debt_due_within_12_months / total_interest_bearing_debt", "ratio", "lower"),
+    "lease_maturity": ("lease_liabilities_due_within_12_months / total_lease_liabilities", "ratio", "lower"),
+    "lease_adjusted_net_debt": ("interest_bearing_debt + lease_liabilities - cash_and_equivalents", "VND", "lower"),
+    "lease_adjusted_debt": ("interest_bearing_debt + lease_liabilities", "VND", "lower"),
+    "project_inventory": ("unsold_project_inventory_at_cost_and_net_realizable_value", "VND", "disclosure_only"),
+    "unsold_inventory": ("unsold_completed_and_work_in_progress_projects", "VND", "disclosure_only"),
+    "presales_growth": ("current_period_presales / prior_comparable_period_presales - 1", "ratio", "higher"),
+    "delivery_growth": ("current_period_delivered_units / prior_comparable_period_delivered_units - 1", "ratio", "higher"),
+    "throughput_growth": ("current_period_throughput / prior_comparable_period_throughput - 1", "ratio", "higher"),
+    "production_volume_growth": ("current_period_production_volume / prior_comparable_period_production_volume - 1", "ratio", "higher"),
+    "volume_growth": ("current_period_sales_volume / prior_comparable_period_sales_volume - 1", "ratio", "higher"),
+    "export_growth": ("current_period_export_revenue_or_volume / prior_comparable_period_export_revenue_or_volume - 1", "ratio", "higher"),
+    "revenue_growth": ("revenue_TTM / prior_year_revenue_TTM - 1", "ratio", "higher"),
+    "profit_growth": ("net_profit_TTM / prior_year_net_profit_TTM - 1", "ratio", "higher"),
+    "premium_growth": ("gross_written_premium_TTM / prior_year_gross_written_premium_TTM - 1", "ratio", "higher"),
+    "segment_growth": ("segment_revenue_TTM / prior_year_segment_revenue_TTM - 1", "ratio", "higher"),
+    "segment_revenue_growth": ("segment_revenue_TTM / prior_year_segment_revenue_TTM - 1", "ratio", "higher"),
+    "same_store_sales_growth": ("same_store_sales_current_period / same_store_sales_prior_comparable_period - 1", "ratio", "higher"),
+    "export_order_growth": ("current_export_orders / prior_comparable_export_orders - 1", "ratio", "higher"),
+    "volume_price_spread": ("realized_selling_price_per_unit - weighted_average_input_cost_per_unit", "VND_per_unit", "higher"),
+    "production_volume_growth": ("current_period_production_volume / prior_comparable_period_production_volume - 1", "ratio", "higher"),
+    "regulated_tariff_growth": ("current_average_realized_tariff / prior_comparable_average_tariff - 1", "ratio", "higher"),
+    "commodity_price_realization": ("company_realized_commodity_price / relevant_benchmark_price", "ratio", "market_context"),
+    "upstream_downstream_split": ("upstream_segment_revenue / total_group_revenue", "ratio", "context"),
+    "segment_profit_share": ("segment_operating_profit / total_segment_operating_profit", "ratio", "context"),
+    "refining_exposure": ("downstream_refining_revenue / total_group_revenue", "ratio", "context"),
+    "production_volume": ("reported_production_volume_for_period", "physical_unit", "disclosure_only"),
+    "realized_price": ("recognized_revenue / sold_volume", "VND_per_unit", "market_context"),
+    "contracted_volume": ("contracted_volume_for_forward_period", "physical_unit", "disclosure_only"),
+    "yield_per_passenger": ("passenger_revenue / revenue_passengers", "VND_per_passenger", "higher"),
+    "input_cost_index": ("weighted_input_cost_index_current / weighted_input_cost_index_base", "index", "market_context"),
+    "volume_growth": ("current_period_sales_volume / prior_comparable_period_sales_volume - 1", "ratio", "higher"),
+    "backlog_growth": ("current_signed_backlog / prior_comparable_signed_backlog - 1", "ratio", "higher"),
+    "customer_advances": ("customer_advances_closing_balance", "VND", "disclosure_only"),
+    "asset_utilization": ("revenue_TTM / average_operating_asset_base", "ratio", "higher"),
+    "capital_efficiency": ("NOPAT_TTM / average_invested_capital", "ratio", "blocked_inputs"),
+    "normalized_ROE": ("normalized_net_profit_TTM / average_parent_equity", "ratio", "blocked_normalization_method"),
+    "proprietary_income_share": ("proprietary_trading_income_TTM / total_operating_income_TTM", "ratio", "disclosure_only"),
+    "operating_cost_ratio": ("operating_expenses_TTM / operating_income_TTM", "ratio", "lower"),
+    "margin_loan_ratio": ("margin_loans_closing_balance / regulatory_equity_or_total_assets", "ratio", "higher_risk"),
+    "MARGIN_LOAN_RATIO": ("margin_loans_closing_balance / regulatory_equity_or_total_assets", "ratio", "higher_risk"),
+}
+
+def _formula_contract_for_metric(metric_id):
+    key = str(metric_id).strip()
+    upper = key.upper()
+    if upper in _FORMULA_TEMPLATES:
+        formula, unit, source, direction, fields, status = _FORMULA_TEMPLATES[upper]
+        return {"metric_id": key, "formula": formula, "unit": unit,
+                "source_requirement": source, "direction": direction,
+                "source_fields": list(fields), "formula_status": status,
+                "threshold_status": "needs_calibration",
+                "scoreable": False,
+                "missing_data_policy": "exclude_metric_weight_no_redistribution"}
+    if key in _MARGIN_METRICS:
+        formula, direction = _MARGIN_METRICS[key]
+        unit = "ratio"
+    elif key in _DAYS_METRICS:
+        formula, direction = _DAYS_METRICS[key]
+        unit = "days"
+    elif key in _RATIO_METRICS:
+        formula, unit, direction = _RATIO_METRICS[key]
+    elif key.endswith("_growth") or key in _GROWTH_METRICS:
+        formula = f"{key}_current_comparable_period / {key}_prior_comparable_period - 1"
+        unit, direction = "ratio", "higher"
+    else:
+        # These are company/exchange/regulatory disclosure KPIs, not fields
+        # derivable from standard financial statements. The formula is the
+        # explicitly defined reported KPI; it remains blocked until source
+        # lineage and issuer coverage are validated.
+        formula = f"reported_{key}_for_period (issuer_or_regulatory_disclosure)"
+        unit, direction = "disclosed_KPI", "peer_context"
+    return {"metric_id": key, "formula": formula, "unit": unit,
+            "source_requirement": "issuer_exchange_or_regulatory_disclosure",
+            "direction": direction, "source_fields": [],
+            "formula_status": "formula_defined_source_unverified",
+            "threshold_status": "needs_calibration", "scoreable": False,
+            "missing_data_policy": "exclude_metric_weight_no_redistribution"}
+
+def build_sector_formula_contracts():
+    """Return explicit formula contracts for all configured sectors and groups."""
+    contracts = {}
+    for sector, groups in SECTOR_METRICS.items():
+        sector_contract = {}
+        for group, metric_ids in groups.items():
+            sector_contract[group] = [
+                _formula_contract_for_metric(metric_id) for metric_id in metric_ids
+            ]
+        contracts[sector] = sector_contract
+    return contracts
+
+SECTOR_FORMULA_CONTRACTS = build_sector_formula_contracts()
+
+def validate_sector_formula_contracts():
+    """Structural completeness only; does not certify source coverage or thresholds."""
+    errors = []
+    if set(SECTOR_FORMULA_CONTRACTS) != set(SECTOR_RULES):
+        errors.append("formula_contract_sector_registry_mismatch")
+    for sector, rule in SECTOR_RULES.items():
+        groups = SECTOR_FORMULA_CONTRACTS.get(sector, {})
+        if set(groups) != set(rule.get("weights", {})):
+            errors.append(f"{sector}:formula_group_registry_mismatch")
+        for group, metrics in groups.items():
+            if not metrics:
+                errors.append(f"{sector}.{group}:empty_metric_contract")
+            for metric in metrics:
+                if not metric.get("formula") or not metric.get("unit"):
+                    errors.append(f"{sector}.{group}.{metric.get('metric_id')}:formula_or_unit_missing")
+                if metric.get("threshold_status") != "needs_calibration":
+                    errors.append(f"{sector}.{group}.{metric.get('metric_id')}:threshold_gate_missing")
+                if metric.get("scoreable") is not False:
+                    errors.append(f"{sector}.{group}.{metric.get('metric_id')}:unsafe_scoreable_default")
+                if metric.get("missing_data_policy") != "exclude_metric_weight_no_redistribution":
+                    errors.append(f"{sector}.{group}.{metric.get('metric_id')}:missing_data_policy_invalid")
+    return {"valid": not errors, "sector_count": len(SECTOR_FORMULA_CONTRACTS),
+            "metric_count": sum(len(ms) for gs in SECTOR_FORMULA_CONTRACTS.values()
+                                for ms in gs.values()), "errors": errors}
+
+# Formula-contract registry is intentionally separate from production approval; see tests/test_bctc_rules.py.
