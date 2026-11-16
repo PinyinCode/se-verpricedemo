@@ -28,6 +28,7 @@ def load_production_functions():
         "_safe_float",
         "_get_bctc_optional_value",
         "_build_bctc_selected_fields_pipeline",
+        "_build_bctc_bank_income_pipeline",
         "get_sector",
         "get_sub_sector",
         "compute_fair_value_zone",
@@ -100,6 +101,15 @@ class TestBctcDiagnosticPipeline(unittest.TestCase):
             ["bsb103", "bsb104", "bsb105"],
         )
         self.assertEqual(condition["$and"][1]["$eq"], ["$$row.period", "$latest_period"])
+
+    def test_bank_income_pipeline_returns_only_selected_fields_and_periods(self):
+        periods = ["2025-Q1", "2025-Q2", "2025-Q3", "2025-Q4", "2026-Q1", "2026-Q2", "2026-Q3"]
+        pipeline = PROD["_build_bctc_bank_income_pipeline"](periods)
+        condition = pipeline[1]["$project"]["income_statement"]["$filter"]["cond"]
+        self.assertEqual(condition["$and"][0]["$in"][0], "$$row.source_field")
+        self.assertEqual(len(condition["$and"][0]["$in"][1]), 20)
+        self.assertEqual(condition["$and"][1]["$in"], ["$$row.period", periods])
+
 
     def test_pipeline_uses_explicit_requested_period(self):
         pipeline = PROD["_build_bctc_selected_fields_pipeline"]("2026-Q3")
