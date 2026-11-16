@@ -311,3 +311,86 @@ def score_industry_profile(profile, metric_values, metric_specs,
         "data_gate": gate,
         "errors": [],
     }
+
+
+def assess_sector_formula_readiness(profile_id):
+    """Connect sector formula contracts to the scoring engine without fabricating scores.
+
+    This is a readiness/validation bridge. A sector can receive a numeric score
+    only after source mappings, calibrated thresholds and production approval
+    are supplied to score_industry_profile().
+    """
+    from bctc_rules import SECTOR_FORMULA_CONTRACTS, SECTOR_RULES
+    from industry_profiles import get_industry_profile
+
+    profile = get_industry_profile(profile_id)
+    if not profile:
+        return {
+            "status": "unknown_profile", "ready": False,
+            "profile_id": profile_id, "formula_count": 0,
+            "score": None, "errors": ["unknown_sector_profile"],
+        }
+    rule_key = profile.get("rule_source")
+    contracts = SECTOR_FORMULA_CONTRACTS.get(rule_key, {})
+    weights = profile.get("weights") or {}
+    errors = []
+    metric_count = 0
+    blocked_count = 0
+    group_results = {}
+    if not contracts or set(contracts) != set(weights):
+        errors.append("formula_contract_groups_do_not_match_profile")
+    for group, group_weight in weights.items():
+        metrics = contracts.get(group, [])
+        metric_count += len(metrics)
+        blocked = [
+            item.get("metric_id") for item in metrics
+            if item.get("scoreable") is not True
+            or item.get("threshold_status") != "approved"
+            or not item.get("source_fields")
+        ]
+        blocked_count += len(blocked)
+        group_results[group] = {
+            "group_weight": group_weight,
+            "formula_count": len(metrics),
+            "blocked_metric_count": len(blocked),
+            "blocked_metrics": blocked,
+            "status": "blocked" if blocked else "ready",
+        }
+    ready = (
+        not errors and metric_count > 0 and blocked_count == 0
+        and profile.get("status") == "production"
+        and profile.get("scoring_enabled") is True
+    )
+    return {
+        "status": "ready" if ready else "formula_contracts_integrated_but_not_scoreable",
+        "ready": ready,
+        "profile_id": profile.get("profile_id"),
+        "rule_source": rule_key,
+        "score": None,
+        "score_weight": profile.get("score_weight"),
+        "formula_count": metric_count,
+        "blocked_metric_count": blocked_count,
+        "group_results": group_results,
+        "errors": errors,
+        "note": (
+            "Formula contracts are connected. Numeric scoring remains blocked "
+            "until every required metric has verified source fields, approved "
+            "thresholds, historical parity and production approval."
+        ),
+    }
+
+
+def assess_all_sector_formula_readiness():
+    """Return readiness for every configured industry profile."""
+    from industry_profiles import INDUSTRY_PROFILES
+
+    results = {
+        profile_id: assess_sector_formula_readiness(profile_id)
+        for profile_id in sorted(INDUSTRY_PROFILES)
+    }
+    return {
+        "profile_count": len(results),
+        "formula_ready_count": sum(1 for item in results.values() if item["ready"]),
+        "blocked_count": sum(1 for item in results.values() if not item["ready"]),
+        "by_profile": results,
+    }
