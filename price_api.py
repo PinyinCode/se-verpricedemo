@@ -19,6 +19,11 @@ from flask_compress import Compress
 from pymongo import MongoClient, UpdateOne
 from pymongo.errors import PyMongoError
 from bctc_rules import canonicalize_vci_field, resolve_vci_unit, SECTOR_RULES, DATA_QUALITY_RULES
+from analysis_cache import TTLCache
+from bank_asset_quality import discover_bank_asset_quality_fields
+
+# Cache trung vị peer có giới hạn bộ nhớ; dữ liệu mục tiêu vẫn được chuẩn hóa trực tiếp.
+_SECTOR_MEDIAN_CACHE = TTLCache(max_items=1, ttl_seconds=180)
 
 # ===================== LOGGING CHẨN ĐOÁN =====================
 logger = logging.getLogger("price_api")
@@ -1322,6 +1327,34 @@ def compute_sector_medians(normalized_db):
             "n": len(b["pe"]) + len(b["pb"])
         }
     return medians
+
+def get_cached_sector_medians(collection_obj, force_refresh=False):
+    """Reuse peer medians briefly instead of scanning every stock per request.
+
+    Cache is process-local and bounded. A 180-second TTL limits staleness;
+    callers can force refresh after a known bulk data update.
+    """
+    cache_key = "sector_medians:v1"
+    if not force_refresh:
+        cached = _SECTOR_MEDIAN_CACHE.get(cache_key)
+        if cached is not None:
+            return cached, True
+
+    peer_projection = {
+        "_id": 0, "symbol": 1, "close": 1, "close_price": 1,
+        "pe": 1, "pb": 1, "roe": 1, "roa": 1, "eps": 1,
+        "dividend_yield": 1, "cfo_latest": 1, "net_profit_ttm": 1,
+        "debt_to_equity": 1, "gross_margin": 1
+    }
+    normalized_peers = {}
+    for peer in collection_obj.find({}, peer_projection):
+        peer_symbol = peer.get("symbol")
+        if peer_symbol:
+            normalized_peers[peer_symbol] = normalize_stock_data(peer_symbol, peer)
+    medians = compute_sector_medians(normalized_peers)
+    _SECTOR_MEDIAN_CACHE.set(cache_key, medians)
+    return medians, False
+
 
 def get_median_for_symbol(symbol, sector_medians):
     sub, sector = get_sub_sector(symbol), get_sector(symbol)
@@ -3572,6 +3605,75 @@ def api_admin_bctc_bank_loans():
         }), 500
 
 
+@app.get("/api/admin/bctc-bank-asset-quality")
+def api_admin_bctc_bank_asset_quality():
+    """Return only explicit NPL/group-2/demand-deposit label candidates for one bank."""
+    if not ADMIN_SECRET_KEY or request.args.get("key") != ADMIN_SECRET_KEY:
+        return jsonify({"status": "error", "message": "Không có quyền truy cập."}), 403
+
+    symbol = request.args.get("symbol", "").upper().strip()
+    if not re.fullmatch(r"[A-Z0-9]{2,10}", symbol):
+        return jsonify({"status": "error", "message": "Mã cổ phiếu không hợp lệ."}), 400
+
+    try:
+        pipeline = [
+            {"$match": {"symbol": symbol}},
+            {"$project": {
+                "_id": 0,
+                "symbol": 1,
+                "updated_at": 1,
+                "latest_period": 1,
+                "source": 1,
+                "balance_sheet": 1,
+            }},
+            {"$limit": 1},
+        ]
+        doc = next(bctc_col.aggregate(pipeline, maxTimeMS=8000), None)
+        if not doc:
+            return jsonify({
+                "status": "error",
+                "message": f"Không tìm thấy BCTC của {symbol}."
+            }), 404
+
+        rows = doc.get("balance_sheet") or []
+        discovery = discover_bank_asset_quality_fields(rows, max_periods=12, max_fields=30)
+        reference_fields = [
+            {
+                "source_field": row.get("source_field"),
+                "id": row.get("id"),
+                "name": row.get("name"),
+                "unit": row.get("unit"),
+                "period": row.get("period"),
+                "value": row.get("value"),
+            }
+            for row in rows
+            if isinstance(row, dict)
+            and str(row.get("source_field") or "").lower() in {"bsb104", "bsb105", "bsb113"}
+        ]
+        reference_fields.sort(
+            key=lambda row: (str(row.get("source_field")), str(row.get("period")),)
+        )
+        return jsonify({
+            "status": "success",
+            "symbol": symbol,
+            "source": doc.get("source"),
+            "updated_at": doc.get("updated_at"),
+            "latest_period": doc.get("latest_period"),
+            "discovery": discovery,
+            "reference_fields": reference_fields[-36:],
+            "note": (
+                "Các trường ứng viên chỉ phục vụ truy tìm source_field. "
+                "Chưa xác nhận mapping, chưa tính NPL/CASA và không dùng để chấm điểm."
+            ),
+        }), 200
+    except Exception as e:
+        log_exception(f"[API BANK ASSET QUALITY] Lỗi đọc {symbol}", e)
+        return jsonify({
+            "status": "error",
+            "message": "Không đọc được dữ liệu chẩn đoán BCTC ngân hàng."
+        }), 500
+
+
 @app.get("/api/pause-crawl")
 def pause_crawl():
     global is_auto_crawl_paused, stop_crawl_requested
@@ -4212,18 +4314,7 @@ def api_score_single():
 
         # 2) Trung vị ngành lấy từ dữ liệu giá/định giá đang lưu sẵn.
         # Không tải BCTC hoặc lịch sử của các mã khác.
-        peer_projection = {
-            "_id": 0, "symbol": 1, "close": 1, "close_price": 1,
-            "pe": 1, "pb": 1, "roe": 1, "roa": 1, "eps": 1,
-            "dividend_yield": 1, "cfo_latest": 1, "net_profit_ttm": 1,
-            "debt_to_equity": 1, "gross_margin": 1
-        }
-        normalized_peers = {}
-        for peer in collection.find({}, peer_projection):
-            peer_symbol = peer.get("symbol")
-            if peer_symbol:
-                normalized_peers[peer_symbol] = normalize_stock_data(peer_symbol, peer)
-        sector_medians = compute_sector_medians(normalized_peers)
+        sector_medians, peer_cache_hit = get_cached_sector_medians(collection)
         group_label = get_sub_sector(symbol)
         config = SUB_SECTOR_CONFIG.get(group_label) or SUB_SECTOR_CONFIG.get(get_sector(symbol))
         if not config:
