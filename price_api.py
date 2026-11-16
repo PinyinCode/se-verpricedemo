@@ -43,6 +43,7 @@ from data_quality import (
 )
 from industry_profiles import (
     get_industry_profile,
+    normalize_profile_id,
     summarize_all_sector_scoring_readiness,
     validate_industry_profiles,
 )
@@ -564,6 +565,15 @@ def extract_metrics_from_bctc_data(bctc_doc):
     metrics["bctc_latest_income_period"] = latest_period or ""
     metrics["bctc_income_ttm_complete"] = False
     metrics["bctc_cfo_ttm_complete"] = False
+    # Explicitly clear legacy values when the current source cannot verify them.
+    metrics["gross_margin"] = 0.0
+    metrics["gross_margin_available"] = False
+    metrics["gross_margin_ttm"] = 0.0
+    metrics["gross_margin_ttm_available"] = False
+    metrics["debt_to_equity"] = 0.0
+    metrics["debt_to_equity_available"] = False
+    metrics["total_liabilities_to_equity"] = 0.0
+    metrics["total_liabilities_to_equity_available"] = False
 
     if latest_period:
         latest_npat = _get_bctc_optional_value(
@@ -575,8 +585,14 @@ def extract_metrics_from_bctc_data(bctc_doc):
             metrics["net_profit_latest_quarter"] = round(latest_npat / 1e9, 2)
         if latest_rev is not None:
             metrics["revenue_latest_quarter"] = round(latest_rev / 1e9, 2)
-        if latest_rev is not None and latest_cogs is not None and latest_rev > 0:
+        # COGS is canonicalized to a non-positive expense during VCI ingestion.
+        # If raw/legacy rows bypass that normalization, do not publish a misleading margin.
+        if (
+            latest_rev is not None and latest_cogs is not None
+            and latest_rev > 0 and latest_cogs <= 0
+        ):
             metrics["gross_margin"] = round((latest_rev + latest_cogs) / latest_rev * 100, 2)
+            metrics["gross_margin_available"] = True
 
         prior_year_period = f"{int(latest_period[:4]) - 1}-{latest_period[4:]}"
         prior_npat = _get_bctc_optional_value(
@@ -609,25 +625,48 @@ def extract_metrics_from_bctc_data(bctc_doc):
             metrics["net_profit_ttm"] = 0.0
         if all(v is not None for v in revenue_values):
             metrics["revenue_ttm"] = round(sum(revenue_values) / 1e9, 2)
-        if all(v is not None for v in revenue_values + cogs_values) and sum(revenue_values) > 0:
+        if (
+            all(v is not None for v in revenue_values + cogs_values)
+            and sum(revenue_values) > 0
+            and all(value <= 0 for value in cogs_values)
+        ):
             metrics["gross_margin_ttm"] = round(
                 (sum(revenue_values) + sum(cogs_values)) / sum(revenue_values) * 100, 2
             )
+            metrics["gross_margin_ttm_available"] = True
     else:
         metrics["net_profit_ttm"] = 0.0
 
     # CIR ngân hàng chỉ tính khi đủ 4 quý và có đủ hai dòng thu nhập/chi phí.
     # NIM/NPL/CASA/CAR không được suy diễn từ các trường chưa xác minh.
     bank_income_periods = sorted(
-        {x.get("period") for x in income if _period_quarter_index(x.get("period")) is not None},
+        {
+            x.get("period") for x in income
+            if _period_quarter_index(x.get("period")) is not None
+            and latest_period is not None
+            and _period_quarter_index(x.get("period"))
+                <= _period_quarter_index(latest_period)
+        },
         key=_period_quarter_index,
         reverse=True
     )
     bank_latest_four = bank_income_periods[:4]
-    if _are_consecutive_quarters(list(reversed(bank_latest_four))):
+    bank_window_aligned = (
+        bool(latest_period)
+        and len(bank_latest_four) == 4
+        and bank_latest_four[0] == latest_period
+        and _are_consecutive_quarters(list(reversed(bank_latest_four)))
+    )
+    if bank_window_aligned:
         bank_oi = values_for(income, "IS_TOTAL_OPERATING_INCOME_BANK", bank_latest_four)
         bank_opex = values_for(income, "IS_OPERATING_EXPENSE_BANK", bank_latest_four)
-        if all(v is not None for v in bank_oi + bank_opex) and sum(bank_oi) > 0:
+        # The canonical bank CIR contract requires negative expense rows.
+        # abs() alone would silently accept a source sign-convention mismatch.
+        if (
+            all(v is not None for v in bank_oi + bank_opex)
+            and sum(bank_oi) > 0
+            and all(v <= 0 for v in bank_opex)
+        ):
             metrics["bank_cir"] = round(abs(sum(bank_opex)) / sum(bank_oi) * 100, 2)
             metrics["bank_cir_available"] = True
         else:
@@ -635,13 +674,26 @@ def extract_metrics_from_bctc_data(bctc_doc):
     else:
         metrics["bank_cir_available"] = False
 
+    # CFO and NPAT must cover the same four-quarter window. A newer/older
+    # cash-flow statement must never be compared with a different income TTM.
+    income_end_index = _period_quarter_index(latest_period) if latest_period else None
     cf_periods = sorted(
-        {x.get("period") for x in cashflow if _period_quarter_index(x.get("period")) is not None},
+        {
+            x.get("period") for x in cashflow
+            if _period_quarter_index(x.get("period")) is not None
+            and income_end_index is not None
+            and _period_quarter_index(x.get("period")) <= income_end_index
+        },
         key=_period_quarter_index,
         reverse=True
     )
     cf_latest_four = cf_periods[:4]
-    cfo_ttm_complete = _are_consecutive_quarters(list(reversed(cf_latest_four)))
+    cfo_ttm_complete = (
+        bool(latest_period)
+        and len(cf_latest_four) == 4
+        and cf_latest_four[0] == latest_period
+        and _are_consecutive_quarters(list(reversed(cf_latest_four)))
+    )
     cfo_source_is_vci = str(bctc_doc.get("source", "")).upper() == "VCI_DIRECT"
 
     def cfo_quarterly_from_ytd(period):
@@ -708,11 +760,21 @@ def extract_metrics_from_bctc_data(bctc_doc):
             metrics["total_assets"] = round(total_assets / 1e9, 2)
         if liab is not None:
             metrics["total_liabilities"] = round(liab / 1e9, 2)
-        if eq is not None and liab is not None and eq > 0:
-            metrics["debt_to_equity"] = round(liab / eq, 3)
-            metrics["bctc_balance_sheet_valid"] = True
-        else:
-            metrics["bctc_balance_sheet_valid"] = False
+        # Total liabilities are not the same as interest-bearing debt.
+        # Keep the valid balance-sheet ratio under its correct name and fail
+        # closed for D/E until verified borrowings and cash mappings exist.
+        metrics["total_liabilities_to_equity"] = (
+            round(liab / eq, 3)
+            if eq is not None and liab is not None and eq > 0 else 0.0
+        )
+        metrics["total_liabilities_to_equity_available"] = (
+            eq is not None and liab is not None and eq > 0
+        )
+        metrics["debt_to_equity"] = 0.0
+        metrics["debt_to_equity_available"] = False
+        metrics["bctc_balance_sheet_valid"] = (
+            eq is not None and liab is not None and eq > 0
+        )
     else:
         metrics["bctc_balance_sheet_valid"] = False
 
@@ -1414,21 +1476,17 @@ def _finite_float(value, default=0.0):
 
 
 def _has_reported_ratio(data, key):
-    """Return availability separately from profitability; negative ratios are valid observations."""
+    """Only accept profitability ratios with an explicit source-availability flag.
+
+    A non-zero vendor field is not proof of its denominator, period basis,
+    consolidation scope or source lineage. Negative and zero values remain valid
+    observations when the upstream ingestion explicitly confirms availability.
+    """
     if not isinstance(data, dict):
         return False
-    explicit = data.get(f"{key}_available")
-    if explicit is False:
+    if data.get(f"{key}_available") is not True:
         return False
-    raw = data.get(key)
-    if not _is_finite_number(raw):
-        return False
-    value = float(raw)
-    if explicit is True:
-        return True
-    # Zero is ambiguous when providers use it as a missing-value placeholder.
-    # It is accepted only when the source explicitly marks the ratio available.
-    return value != 0
+    return _is_finite_number(data.get(key))
 
 
 def _bctc_period_is_current(latest_period, expected_period=None):
@@ -1494,8 +1552,27 @@ def normalize_stock_data(symbol, data):
         "cfo_latest": _finite_float(data.get("cfo_ttm", data.get("cfo_latest", 0))),
         "cfo_ttm": _finite_float(data.get("cfo_ttm", data.get("cfo_latest", 0))),
         "net_profit_ttm": _finite_float(data.get("net_profit_ttm")),
-        "debt_to_equity": _finite_float(data.get("debt_to_equity")),
-        "gross_margin": _finite_float(data.get("gross_margin")),
+        "debt_to_equity": (
+            _finite_float(data.get("debt_to_equity"))
+            if data.get("debt_to_equity_available") is True
+            and is_valid_debt_to_equity(data.get("debt_to_equity")) else 0.0
+        ),
+        "debt_to_equity_available": (
+            data.get("debt_to_equity_available") is True
+            and is_valid_debt_to_equity(data.get("debt_to_equity"))
+        ),
+        "total_liabilities_to_equity": _finite_float(data.get("total_liabilities_to_equity")),
+        "total_liabilities_to_equity_available": data.get("total_liabilities_to_equity_available") is True,
+        "gross_margin": (
+            _finite_float(data.get("gross_margin"))
+            if data.get("gross_margin_available") is True else 0.0
+        ),
+        "gross_margin_available": data.get("gross_margin_available") is True,
+        "gross_margin_ttm": (
+            _finite_float(data.get("gross_margin_ttm"))
+            if data.get("gross_margin_ttm_available") is True else 0.0
+        ),
+        "gross_margin_ttm_available": data.get("gross_margin_ttm_available") is True,
         "profit_growth_yoy": profit_growth_yoy,
         "profit_growth_yoy_available": profit_growth_yoy_available,
         "bctc_latest_income_period": bctc_latest_income_period,
@@ -1711,6 +1788,12 @@ def compute_final_decision(fund_score, tech_score, val_score, total_score, verdi
 
 def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_score_raw=0, tech_status="Chưa đủ dữ liệu kỹ thuật", pattern="Chưa xác định", technical_details=None, existing_ai_data=None, history_bars=None):
     sector = get_sector(symbol)
+    profile_id = (
+        normalize_profile_id(group_label)
+        or normalize_profile_id(sector)
+        or "UNCLASSIFIED"
+    )
+    sector_profile = get_industry_profile(profile_id)
     is_symbol_classified_flag = is_symbol_classified(symbol)
     is_insurance = str(group_label or "").upper() == "INSURANCE"
     is_financial_group = sector in ("NGAN_HANG", "CHUNG_KHOAN") or is_insurance
@@ -1921,7 +2004,11 @@ def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_
                 fund_score += 2
         else:
             fundamental_missing_groups.append("Sinh lời ROE (8 điểm)")
-        if nd.get("bctc_balance_sheet_valid", False) and is_valid_debt_to_equity(debt_to_equity):
+        if (
+            nd.get("bctc_balance_sheet_valid", False)
+            and nd.get("debt_to_equity_available", False) is True
+            and is_valid_debt_to_equity(debt_to_equity)
+        ):
             fundamental_score_available += 12
             if debt_to_equity <= 1.0: fund_score += 12
             elif debt_to_equity <= 2.0: fund_score += 8
@@ -1957,7 +2044,11 @@ def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_
                 fund_score += 3
         else:
             fundamental_missing_groups.append("Sinh lời ROE (10 điểm)")
-        if nd.get("bctc_balance_sheet_valid", False) and is_valid_debt_to_equity(debt_to_equity):
+        if (
+            nd.get("bctc_balance_sheet_valid", False)
+            and nd.get("debt_to_equity_available", False) is True
+            and is_valid_debt_to_equity(debt_to_equity)
+        ):
             fundamental_score_available += 6
             if debt_to_equity <= 0.8: fund_score += 6
             elif debt_to_equity <= 1.5: fund_score += 4
@@ -2073,7 +2164,11 @@ def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_
                 fund_score += 3
         else:
             fundamental_missing_groups.append("Sinh lời ROE (12 điểm)")
-        if nd.get("bctc_balance_sheet_valid", False) and is_valid_debt_to_equity(debt_to_equity):
+        if (
+            nd.get("bctc_balance_sheet_valid", False)
+            and nd.get("debt_to_equity_available", False) is True
+            and is_valid_debt_to_equity(debt_to_equity)
+        ):
             fundamental_score_available += 6
             if debt_to_equity <= 0.7: fund_score += 6
             elif debt_to_equity <= 1.2: fund_score += 4
@@ -2107,7 +2202,11 @@ def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_
             else: fund_score += 3
         else:
             fundamental_missing_groups.append("Dòng cổ tức tiền mặt (10 điểm)")
-        if nd.get("bctc_balance_sheet_valid", False) and is_valid_debt_to_equity(debt_to_equity):
+        if (
+            nd.get("bctc_balance_sheet_valid", False)
+            and nd.get("debt_to_equity_available", False) is True
+            and is_valid_debt_to_equity(debt_to_equity)
+        ):
             fundamental_score_available += 6
             if debt_to_equity <= 0.5: fund_score += 6
             elif debt_to_equity <= 1.0: fund_score += 4
@@ -2140,7 +2239,11 @@ def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_
                 fund_score += 2
         else:
             fundamental_missing_groups.append("Sinh lời ROE (6 điểm)")
-        if nd.get("bctc_balance_sheet_valid", False) and is_valid_debt_to_equity(debt_to_equity):
+        if (
+            nd.get("bctc_balance_sheet_valid", False)
+            and nd.get("debt_to_equity_available", False) is True
+            and is_valid_debt_to_equity(debt_to_equity)
+        ):
             fundamental_score_available += 6
             if debt_to_equity <= 0.7: fund_score += 6
             elif debt_to_equity <= 1.2: fund_score += 4
@@ -2250,7 +2353,11 @@ def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_
             elif roa >= 2.5: fund_score += 2
         else:
             fundamental_missing_groups.append("ROA (3 điểm)")
-        if nd.get("bctc_balance_sheet_valid", False) and is_valid_debt_to_equity(debt_to_equity):
+        if (
+            nd.get("bctc_balance_sheet_valid", False)
+            and nd.get("debt_to_equity_available", False) is True
+            and is_valid_debt_to_equity(debt_to_equity)
+        ):
             fundamental_score_available += 5
             if debt_to_equity <= 0.5: fund_score += 5
             elif debt_to_equity <= 1.0: fund_score += 4
@@ -2350,7 +2457,11 @@ def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_
                 fund_score += 2
         else:
             fundamental_missing_groups.append("Hiệu quả vốn ROE (8 điểm)")
-        if nd.get("bctc_balance_sheet_valid", False) and is_valid_debt_to_equity(debt_to_equity):
+        if (
+            nd.get("bctc_balance_sheet_valid", False)
+            and nd.get("debt_to_equity_available", False) is True
+            and is_valid_debt_to_equity(debt_to_equity)
+        ):
             fundamental_score_available += 6
             if debt_to_equity <= 0.7: fund_score += 6
             elif debt_to_equity <= 1.2: fund_score += 4
@@ -2384,7 +2495,11 @@ def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_
                 fund_score += 2
         else:
             fundamental_missing_groups.append("Hiệu quả vốn ROE (8 điểm)")
-        if nd.get("bctc_balance_sheet_valid", False) and is_valid_debt_to_equity(debt_to_equity):
+        if (
+            nd.get("bctc_balance_sheet_valid", False)
+            and nd.get("debt_to_equity_available", False) is True
+            and is_valid_debt_to_equity(debt_to_equity)
+        ):
             fundamental_score_available += 6
             if debt_to_equity <= 0.7: fund_score += 6
             elif debt_to_equity <= 1.2: fund_score += 4
@@ -2439,7 +2554,11 @@ def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_
             elif cfo_latest < 0: fund_notes.append("CFO âm")
         else:
             fundamental_missing_groups.append("CFO và chất lượng lợi nhuận (10 điểm)")
-        if nd.get("bctc_balance_sheet_valid", False) and is_valid_debt_to_equity(debt_to_equity):
+        if (
+            nd.get("bctc_balance_sheet_valid", False)
+            and nd.get("debt_to_equity_available", False) is True
+            and is_valid_debt_to_equity(debt_to_equity)
+        ):
             fundamental_score_available += 5
             if debt_to_equity <= 0.5: fund_score += 5
             elif debt_to_equity <= 1.0: fund_score += 4
@@ -2496,7 +2615,11 @@ def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_
             fundamental_score_available += 5
         else:
             fundamental_missing_groups.append("Chất lượng lợi nhuận/CFO TTM (5 điểm)")
-        if nd.get("bctc_balance_sheet_valid", False) and is_valid_debt_to_equity(debt_to_equity):
+        if (
+            nd.get("bctc_balance_sheet_valid", False)
+            and nd.get("debt_to_equity_available", False) is True
+            and is_valid_debt_to_equity(debt_to_equity)
+        ):
             fundamental_score_available += 5
         else:
             fundamental_missing_groups.append("Đòn bẩy và cấu trúc vốn (5 điểm)")
@@ -2513,7 +2636,11 @@ def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_
                 fund_notes.append("CFO âm")
             elif net_profit_ttm == 0:
                 fund_notes.append("Chưa đủ dữ liệu LNST TTM để đánh giá chất lượng lợi nhuận")
-        if nd.get("bctc_balance_sheet_valid", False) and is_valid_debt_to_equity(debt_to_equity):
+        if (
+            nd.get("bctc_balance_sheet_valid", False)
+            and nd.get("debt_to_equity_available", False) is True
+            and is_valid_debt_to_equity(debt_to_equity)
+        ):
             if 0 < debt_to_equity <= 1.0: fund_score += 5
             elif debt_to_equity > 2.5: fund_score -= 5; fund_notes.append("D/E cao")
     else:
@@ -2679,7 +2806,26 @@ def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_
         "fundamental_missing_groups": fundamental_missing_groups,
         "fundamental_scorecard": {
             "version": "2.0.0",
-            "profile_id": str(group_label or sector or "UNCLASSIFIED").upper(),
+            "profile_id": profile_id,
+            "profile_status": (
+                sector_profile.get("status") if sector_profile else "not_configured"
+            ),
+            "profile_version": (
+                sector_profile.get("profile_version") if sector_profile else None
+            ),
+            "profile_weights": (
+                dict(sector_profile.get("weights") or {}) if sector_profile else {}
+            ),
+            "required_metric_groups": (
+                {
+                    key: list(value)
+                    for key, value in (sector_profile.get("metric_groups") or {}).items()
+                }
+                if sector_profile else {}
+            ),
+            "profile_data_gaps": (
+                list(sector_profile.get("data_gaps") or []) if sector_profile else []
+            ),
             "status": (
                 "insufficient_data"
                 if fundamental_score_coverage_pct < 65
@@ -2789,7 +2935,10 @@ def build_bctc_quarterly_trend(bctc_doc, max_periods=8):
             "revenue": revenue, "npat": npat, "cfo": cfo,
             "gross_margin": (
                 (revenue + cogs) / revenue * 100
-                if revenue is not None and cogs is not None and revenue > 0
+                if (
+                    revenue is not None and cogs is not None
+                    and revenue > 0 and cogs <= 0
+                )
                 else None
             )
         }
@@ -2885,13 +3034,17 @@ def build_fallback_narrative(symbol, stock_metrics, screener_item, sector):
     npat = _finite_float(stock_metrics.get("net_profit_ttm"))
     de = _finite_float(stock_metrics.get("debt_to_equity"))
     gm = _finite_float(stock_metrics.get("gross_margin"))
+    gm_available = (
+        stock_metrics.get("gross_margin_available") is True
+        and _is_finite_number(stock_metrics.get("gross_margin"))
+    )
     div_yield = _finite_float(stock_metrics.get("dividend_yield"))
     roe_available = _has_reported_ratio(stock_metrics, "roe")
     roa_available = _has_reported_ratio(stock_metrics, "roa")
     cfo_available = stock_metrics.get("bctc_cfo_ttm_complete") is True
     npat_available = stock_metrics.get("bctc_income_ttm_complete") is True
     de_available = (
-        stock_metrics.get("bctc_balance_sheet_valid") is True
+        stock_metrics.get("debt_to_equity_available") is True
         and is_valid_debt_to_equity(de)
     )
 
@@ -2923,7 +3076,7 @@ def build_fallback_narrative(symbol, stock_metrics, screener_item, sector):
         bctc_parts.append(f"{pe_text} và {pb_text} phản ánh mức định giá của định chế tài chính. {de_text} cần được đọc theo đặc thù ngành.")
     else:
         bctc_parts.append(f"Định giá {pe_text} và {pb_text}.")
-        if gm > 0:
+        if gm_available:
             bctc_parts.append(f"Biên lợi nhuận gộp {gm:.1f}%.")
         else:
             bctc_parts.append("Biên lợi nhuận gộp chưa xác minh.")
@@ -3526,7 +3679,7 @@ def _load_screener_bctc(symbols, chunk_size=10):
             {"symbol": {"$in": chunk}},
             {
                 "_id": 0, "symbol": 1,
-                "income_statement": 1, "cash_flow": 1, "balance_sheet": 1
+                "source": 1, "income_statement": 1, "cash_flow": 1, "balance_sheet": 1
             }
         ).batch_size(chunk_size)
         for doc in cursor:
@@ -5054,6 +5207,124 @@ def api_admin_sector_scoring_readiness():
         }), 500
 
 
+def _build_screener_diagnostics_pipeline():
+    """Compact, read-only aggregate for validating persisted Screener results."""
+    return [
+        {
+            "$group": {
+                "_id": {"$ifNull": ["$sub_sector", "UNCLASSIFIED"]},
+                "symbol_count": {"$sum": 1},
+                "avg_fundamental_coverage_pct": {
+                    "$avg": "$fundamental_scorecard.coverage_pct"
+                },
+                "complete_scorecard_count": {
+                    "$sum": {"$cond": [
+                        {"$eq": ["$fundamental_scorecard.status", "complete"]}, 1, 0
+                    ]}
+                },
+                "partial_scorecard_count": {
+                    "$sum": {"$cond": [
+                        {"$eq": ["$fundamental_scorecard.status", "partial"]}, 1, 0
+                    ]}
+                },
+                "insufficient_scorecard_count": {
+                    "$sum": {"$cond": [
+                        {"$eq": ["$fundamental_scorecard.status", "insufficient_data"]}, 1, 0
+                    ]}
+                },
+                "current_bctc_count": {
+                    "$sum": {"$cond": [{"$eq": ["$bctc_period_is_current", True]}, 1, 0]}
+                },
+                "stale_or_unverified_bctc_count": {
+                    "$sum": {"$cond": [{"$ne": ["$bctc_period_is_current", True]}, 1, 0]}
+                },
+            }
+        },
+        {"$sort": {"_id": 1}},
+    ]
+
+
+@app.get("/api/version")
+def api_version():
+    """Expose a non-secret release fingerprint and scoring mode for deployment checks."""
+    try:
+        readiness = summarize_all_sector_scoring_readiness()
+        return jsonify({
+            "status": "success",
+            "service": "quant-price-api",
+            "release": os.getenv("RENDER_GIT_COMMIT") or os.getenv("GITHUB_SHA") or "unknown",
+            "engines": {
+                "scoring": SCORING_ENGINE_VERSION,
+                "valuation": VALUATION_ENGINE_VERSION,
+                "decision": DECISION_ENGINE_VERSION,
+                "report": REPORT_TEMPLATE_VERSION,
+            },
+            "sector_profile_count": readiness.get("profile_count", 0),
+            "legacy_sector_path_count": readiness.get("legacy_path_count", 0),
+            "new_profile_engine_enabled": False,
+            "production_score_ready_profile_count": readiness.get(
+                "production_score_ready_count", 0
+            ),
+            "scoring_mode": "legacy_deterministic_with_sector_blueprint_metadata",
+        }), 200
+    except Exception as e:
+        log_exception("[API VERSION]", e)
+        return jsonify({"status": "error", "message": "Không đọc được thông tin phiên bản."}), 500
+
+
+@app.get("/api/screener/diagnostics")
+def api_screener_diagnostics():
+    """Compact production diagnostics; does not expose raw BCTC or issuer data."""
+    try:
+        rows = list(screener_col.aggregate(
+            _build_screener_diagnostics_pipeline(),
+            allowDiskUse=False,
+            maxTimeMS=5000,
+        ))
+        by_sector = []
+        total_symbols = 0
+        total_current_bctc = 0
+        total_stale_bctc = 0
+        for row in rows:
+            item = {
+                "sector": row.get("_id") or "UNCLASSIFIED",
+                "symbol_count": int(row.get("symbol_count") or 0),
+                "avg_fundamental_coverage_pct": (
+                    round(float(row["avg_fundamental_coverage_pct"]), 1)
+                    if row.get("avg_fundamental_coverage_pct") is not None else None
+                ),
+                "complete_scorecard_count": int(row.get("complete_scorecard_count") or 0),
+                "partial_scorecard_count": int(row.get("partial_scorecard_count") or 0),
+                "insufficient_scorecard_count": int(row.get("insufficient_scorecard_count") or 0),
+                "current_bctc_count": int(row.get("current_bctc_count") or 0),
+                "stale_or_unverified_bctc_count": int(row.get("stale_or_unverified_bctc_count") or 0),
+            }
+            by_sector.append(item)
+            total_symbols += item["symbol_count"]
+            total_current_bctc += item["current_bctc_count"]
+            total_stale_bctc += item["stale_or_unverified_bctc_count"]
+        return jsonify({
+            "status": "success" if total_symbols else "empty",
+            "scoring_mode": "legacy_deterministic_with_sector_blueprint_metadata",
+            "new_profile_engine_enabled": False,
+            "total_symbols": total_symbols,
+            "current_bctc_count": total_current_bctc,
+            "stale_or_unverified_bctc_count": total_stale_bctc,
+            "sector_count": len(by_sector),
+            "by_sector": by_sector,
+            "note": (
+                "Số liệu tổng hợp từ kết quả đã lưu. Profile ngành mới vẫn ở trạng thái "
+                "design_only; không đồng nhất scorecard legacy với engine mới đã phê duyệt."
+            ),
+        }), 200
+    except Exception as e:
+        log_exception("[API SCREENER DIAGNOSTICS]", e)
+        return jsonify({
+            "status": "error",
+            "message": "Không tạo được báo cáo kiểm tra Screener."
+        }), 500
+
+
 # FIX BUG #10: /api/screener trả 503 khi đang trong quá trình ghi, thay vì [] gây frontend crash
 @app.get("/api/screener")
 def api_get_screener():
@@ -5482,9 +5753,13 @@ def crawl_ratios():
                 print(f"[RATIO-CRAWL] [{i+1}/{len(target)}] Đang lấy ratio cho {sym}...", flush=True)
                 
                 ratios = {}
+                ratio_available = {}
                 for key, code in VNDIRECT_RATIOS.items():
                     val = get_vndirect_ratio(sym, code)
-                    ratios[key] = val if val is not None else 0
+                    # Availability follows an actual finite provider observation.
+                    # A returned zero is valid; a missing/invalid response is not.
+                    ratio_available[key] = _is_finite_number(val)
+                    ratios[key] = val if ratio_available[key] else 0
                     time.sleep(0.2)
 
                 roe_val = ratios.get("roe", 0)
@@ -5507,7 +5782,9 @@ def crawl_ratios():
                     
                     "eps": eps_final, 
                     "roe": round(roe_val, 1),
+                    "roe_available": ratio_available.get("roe", False),
                     "roa": round(roa_val, 1),
+                    "roa_available": ratio_available.get("roa", False),
                     "dividend_yield": round(div_val, 2),
                     "ratio_updated_at": _now_str()
                 }}, upsert=True)
@@ -5549,7 +5826,7 @@ def api_score_single():
 
         bctc_doc = bctc_col.find_one(
             {"symbol": symbol},
-            {"_id": 0, "income_statement": 1, "cash_flow": 1, "balance_sheet": 1}
+            {"_id": 0, "source": 1, "income_statement": 1, "cash_flow": 1, "balance_sheet": 1}
         ) or {}
         stock_doc["bctc_history"] = bctc_doc.get("income_statement", []) or []
         extracted = extract_metrics_from_bctc_data(bctc_doc)
