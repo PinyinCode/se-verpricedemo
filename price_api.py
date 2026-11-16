@@ -3422,6 +3422,39 @@ def api_admin_bctc_summary():
         }), 500
 
 
+def _build_bctc_bank_income_pipeline(periods):
+    """Return only verified bank income-statement source fields for selected quarters."""
+    source_fields = [
+        "isb25", "isb26", "isb27", "isb28", "isb29", "isb30",
+        "isb31", "isb32", "isb33", "isb34", "isb35", "isb36",
+        "isb37", "isb38", "isb39", "isb40", "isb41",
+        "isa16", "isa20", "isa22",
+    ]
+    return [
+        {"$match": {}},
+        {"$project": {
+            "_id": 0,
+            "symbol": 1,
+            "updated_at": 1,
+            "latest_period": 1,
+            "source": 1,
+            "income_statement": {
+                "$filter": {
+                    "input": {"$ifNull": ["$income_statement", []]},
+                    "as": "row",
+                    "cond": {
+                        "$and": [
+                            {"$in": ["$row.source_field", source_fields]},
+                            {"$in": ["$row.period", list(periods)]},
+                        ]
+                    },
+                }
+            },
+        }},
+        {"$limit": 1},
+    ]
+
+
 def _build_bctc_selected_fields_pipeline(period=None):
     """Build Mongo aggregation that returns only selected diagnostic balance-sheet rows."""
     selected_period = period if period else "$latest_period"
@@ -3448,6 +3481,55 @@ def _build_bctc_selected_fields_pipeline(period=None):
         }},
         {"$limit": 1},
     ]
+
+
+@app.get("/api/admin/bctc-bank-income")
+def api_admin_bctc_bank_income():
+    """Return a compact set of bank income-statement fields across selected quarters."""
+    if not ADMIN_SECRET_KEY or request.args.get("key") != ADMIN_SECRET_KEY:
+        return jsonify({"status": "error", "message": "Không có quyền truy cập."}), 403
+
+    symbol = request.args.get("symbol", "").upper().strip()
+    periods_raw = request.args.get(
+        "periods",
+        "2025-Q1,2025-Q2,2025-Q3,2025-Q4,2026-Q1,2026-Q2,2026-Q3"
+    )
+    periods = [item.strip() for item in periods_raw.split(",") if item.strip()]
+    if not re.fullmatch(r"[A-Z0-9]{2,10}", symbol):
+        return jsonify({"status": "error", "message": "Mã cổ phiếu không hợp lệ."}), 400
+    if not periods or len(periods) > 12 or any(
+        not re.fullmatch(r"\d{4}-Q[1-4]", item) for item in periods
+    ):
+        return jsonify({"status": "error", "message": "Danh sách kỳ BCTC không hợp lệ (tối đa 12 kỳ)."}), 400
+    if len(set(periods)) != len(periods):
+        return jsonify({"status": "error", "message": "Danh sách kỳ BCTC bị trùng."}), 400
+
+    try:
+        pipeline = _build_bctc_bank_income_pipeline(periods)
+        pipeline[0]["$match"] = {"symbol": symbol}
+        doc = next(bctc_col.aggregate(pipeline, maxTimeMS=8000), None)
+        if not doc:
+            return jsonify({"status": "error", "message": f"Không tìm thấy BCTC của {symbol}."}), 404
+
+        rows = doc.get("income_statement") or []
+        return jsonify({
+            "status": "success",
+            "symbol": symbol,
+            "source": doc.get("source"),
+            "updated_at": doc.get("updated_at"),
+            "latest_period": doc.get("latest_period"),
+            "requested_periods": periods,
+            "fields": rows,
+            "field_count": len(rows),
+            "source_field_count": 20,
+            "note": "Chỉ trả 20 trường thu nhập ngân hàng đã chọn trong các kỳ yêu cầu; chưa tự tính điểm hoặc kết luận CIR."
+        }), 200
+    except Exception as e:
+        log_exception(f"[API BCTC BANK INCOME] Lỗi đọc {symbol}", e)
+        return jsonify({
+            "status": "error",
+            "message": "Không đọc được các trường BCTC đã chọn. Kiểm tra log backend."
+        }), 500
 
 
 @app.get("/api/admin/bctc-bank-loans")
