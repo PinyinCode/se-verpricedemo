@@ -6,14 +6,32 @@ assign canonical mappings or enable any scoring.
 """
 import re
 import unicodedata
+from math import isfinite
 
 
 _KEYWORDS = {
+    # Ratios are separated from monetary NPL balances to prevent mixing units.
+    "NPL_RATIO": (
+        "ty le no xau", "no xau ratio", "npl ratio",
+        "non-performing loan ratio",
+    ),
     "NPL": (
-        "no xau", "du no xau", "no duoi tieu chuan", "du no duoi tieu chuan",
-        "no nghi ngo", "du no nghi ngo", "no co kha nang mat von",
-        "du no co kha nang mat von", "non performing loan",
-        "non-performing loan", "impaired loan", "bad debt",
+        "no xau", "du no xau",
+        "no duoi tieu chuan", "du no duoi tieu chuan",
+        "no nghi ngo", "du no nghi ngo",
+        "no co kha nang mat von", "du no co kha nang mat von",
+        "non performing loan", "non-performing loan",
+        "impaired loan", "bad debt",
+    ),
+    # Group 3-5 are NPL components, not automatically the consolidated NPL total.
+    "NPL_GROUP_3": (
+        "no nhom 3", "du no nhom 3", "group 3 loan", "group 3 debt",
+    ),
+    "NPL_GROUP_4": (
+        "no nhom 4", "du no nhom 4", "group 4 loan", "group 4 debt",
+    ),
+    "NPL_GROUP_5": (
+        "no nhom 5", "du no nhom 5", "group 5 loan", "group 5 debt",
     ),
     "GROUP_2": (
         "no nhom 2", "du no nhom 2", "no can chu y",
@@ -22,7 +40,8 @@ _KEYWORDS = {
     ),
     "DEMAND_DEPOSITS": (
         "tien gui khong ky han", "tien gui thanh toan",
-        "demand deposit", "current account deposit",
+        "demand deposit", "demand deposits",
+        "current account deposit", "current account deposits",
         "non-term customer deposit",
     ),
 }
@@ -66,6 +85,12 @@ def discover_bank_asset_quality_fields(rows, max_periods=12, max_fields=30):
         period = str(row.get("period") or "").strip().upper()
         if not source_field or not re.fullmatch(r"\d{4}-Q[1-4]", period):
             continue
+        try:
+            value = float(row.get("value"))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if not isfinite(value):
+            continue
         key = (category, source_field)
         item = candidates.setdefault(key, {
             "category": category,
@@ -76,10 +101,6 @@ def discover_bank_asset_quality_fields(rows, max_periods=12, max_fields=30):
             "period_values": {},
             "conflicting_periods": [],
         })
-        try:
-            value = float(row.get("value"))
-        except (TypeError, ValueError, OverflowError):
-            continue
         previous = item["period_values"].get(period)
         if previous is not None and previous != value:
             if period not in item["conflicting_periods"]:
@@ -116,6 +137,8 @@ def discover_bank_asset_quality_metadata(catalog, max_fields=100):
     if not isinstance(catalog, dict):
         catalog = {}
     for section, fields in catalog.items():
+        if str(section or "").strip().upper() != "BALANCE_SHEET":
+            continue
         if not isinstance(fields, dict):
             continue
         for source_field, title in fields.items():
