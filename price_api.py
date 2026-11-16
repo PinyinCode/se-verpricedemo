@@ -42,12 +42,16 @@ from data_quality import (
     parse_quarter,
 )
 from industry_profiles import (
+    INDUSTRY_PROFILES,
     get_industry_profile,
     normalize_profile_id,
     summarize_all_sector_scoring_readiness,
     validate_industry_profiles,
 )
-from scoring_engine import SCORING_ENGINE_VERSION
+from scoring_engine import (
+    SCORING_ENGINE_VERSION,
+    assess_all_sector_formula_readiness,
+)
 from valuation_engine import VALUATION_ENGINE_VERSION
 from decision_engine import DECISION_ENGINE_VERSION
 from report_templates import REPORT_TEMPLATE_VERSION
@@ -3855,6 +3859,16 @@ def screener_worker():
                     for r in results:
                         sym = r["symbol"]
                         nd_final = normalized_db.get(sym, {})
+                        # Persist BCTC freshness provenance with each Screener row.
+                        # Previously diagnostics queried this field, but the worker
+                        # never copied it into the result document; missing fields
+                        # were therefore misreported as stale for every symbol.
+                        r["bctc_latest_income_period"] = nd_final.get("bctc_latest_income_period", "")
+                        r["bctc_expected_period"] = nd_final.get("bctc_expected_period", "")
+                        r["bctc_period_is_current"] = (
+                            bool(nd_final.get("bctc_period_is_current"))
+                            if nd_final.get("bctc_latest_income_period") else None
+                        )
                         
                         fd_label, fd_color, fd_reason = compute_final_decision(
                             fund_score=r.get("fundamental_score", 0),
@@ -5186,9 +5200,11 @@ def api_admin_sector_scoring_readiness():
         report = summarize_all_sector_scoring_readiness()
         profile_validation = validate_industry_profiles()
         catalog_validation = validate_metric_catalog()
+        formula_readiness = assess_all_sector_formula_readiness()
         return jsonify({
             "status": "success",
             "scoring_readiness": report,
+            "formula_readiness": formula_readiness,
             "profile_registry_valid": profile_validation["valid"],
             "profile_registry_errors": profile_validation["errors"],
             "metric_catalog_valid": catalog_validation["valid"],
@@ -5235,8 +5251,14 @@ def _build_screener_diagnostics_pipeline():
                 "current_bctc_count": {
                     "$sum": {"$cond": [{"$eq": ["$bctc_period_is_current", True]}, 1, 0]}
                 },
-                "stale_or_unverified_bctc_count": {
-                    "$sum": {"$cond": [{"$ne": ["$bctc_period_is_current", True]}, 1, 0]}
+                "stale_bctc_count": {
+                    "$sum": {"$cond": [{"$eq": ["$bctc_period_is_current", False]}, 1, 0]}
+                },
+                "unverified_bctc_count": {
+                    "$sum": {"$cond": [
+                        {"$in": [{"$type": "$bctc_period_is_current"}, ["missing", "null"]]},
+                        1, 0
+                    ]}
                 },
             }
         },
@@ -5285,6 +5307,7 @@ def api_screener_diagnostics():
         total_symbols = 0
         total_current_bctc = 0
         total_stale_bctc = 0
+        total_unverified_bctc = 0
         for row in rows:
             item = {
                 "sector": row.get("_id") or "UNCLASSIFIED",
@@ -5297,19 +5320,22 @@ def api_screener_diagnostics():
                 "partial_scorecard_count": int(row.get("partial_scorecard_count") or 0),
                 "insufficient_scorecard_count": int(row.get("insufficient_scorecard_count") or 0),
                 "current_bctc_count": int(row.get("current_bctc_count") or 0),
-                "stale_or_unverified_bctc_count": int(row.get("stale_or_unverified_bctc_count") or 0),
+                "stale_bctc_count": int(row.get("stale_bctc_count") or 0),
+                "unverified_bctc_count": int(row.get("unverified_bctc_count") or 0),
             }
             by_sector.append(item)
             total_symbols += item["symbol_count"]
             total_current_bctc += item["current_bctc_count"]
-            total_stale_bctc += item["stale_or_unverified_bctc_count"]
+            total_stale_bctc += item["stale_bctc_count"]
+            total_unverified_bctc += item["unverified_bctc_count"]
         return jsonify({
             "status": "success" if total_symbols else "empty",
             "scoring_mode": "legacy_deterministic_with_sector_blueprint_metadata",
             "new_profile_engine_enabled": False,
             "total_symbols": total_symbols,
             "current_bctc_count": total_current_bctc,
-            "stale_or_unverified_bctc_count": total_stale_bctc,
+            "stale_bctc_count": total_stale_bctc,
+            "unverified_bctc_count": total_unverified_bctc,
             "sector_count": len(by_sector),
             "by_sector": by_sector,
             "note": (
@@ -5326,6 +5352,194 @@ def api_screener_diagnostics():
 
 
 # FIX BUG #10: /api/screener trả 503 khi đang trong quá trình ghi, thay vì [] gây frontend crash
+
+@app.get("/api/bctc/live-validation")
+def api_bctc_live_validation():
+    """Read-only validation of real BCTC documents against the extraction pipeline.
+
+    Returns aggregate counts only; raw statements and issuer-level financial values
+    are never exposed. This endpoint does not write to MongoDB or run production scoring.
+    """
+    try:
+        try:
+            requested_limit = int(request.args.get("limit", "100"))
+        except (TypeError, ValueError):
+            requested_limit = 100
+        limit = max(1, min(requested_limit, 250))
+        expected_period = _expected_latest_bctc_period()
+
+        symbol_docs = list(
+            collection.find({}, {"_id": 0, "symbol": 1})
+            .sort("symbol", 1)
+            .limit(limit)
+        )
+        symbols = [
+            str(item.get("symbol") or "").strip().upper()
+            for item in symbol_docs
+            if item.get("symbol")
+        ]
+        bctc_docs = {}
+        if symbols:
+            cursor = bctc_col.find(
+                {"symbol": {"$in": symbols}},
+                {
+                    "_id": 0, "symbol": 1, "source": 1,
+                    "income_statement": 1, "cash_flow": 1, "balance_sheet": 1,
+                },
+            ).batch_size(25)
+            for item in cursor:
+                symbol = str(item.get("symbol") or "").strip().upper()
+                if symbol:
+                    bctc_docs[symbol] = item
+
+        by_profile = {
+            profile_id: {
+                "symbol_count": 0,
+                "bctc_document_count": 0,
+                "missing_bctc_document_count": 0,
+                "valid_income_document_count": 0,
+                "current_period_count": 0,
+                "stale_period_count": 0,
+                "unverified_period_count": 0,
+                "income_ttm_complete_count": 0,
+                "cfo_ttm_complete_count": 0,
+                "latest_npat_available_count": 0,
+                "latest_revenue_available_count": 0,
+                "gross_margin_available_count": 0,
+                "source_counts": {},
+                "latest_period_counts": {},
+            }
+            for profile_id in INDUSTRY_PROFILES
+        }
+        by_profile["UNCLASSIFIED"] = {
+            "symbol_count": 0,
+            "bctc_document_count": 0,
+            "missing_bctc_document_count": 0,
+            "valid_income_document_count": 0,
+            "current_period_count": 0,
+            "stale_period_count": 0,
+            "unverified_period_count": 0,
+            "income_ttm_complete_count": 0,
+            "cfo_ttm_complete_count": 0,
+            "latest_npat_available_count": 0,
+            "latest_revenue_available_count": 0,
+            "gross_margin_available_count": 0,
+            "source_counts": {},
+            "latest_period_counts": {},
+        }
+
+        totals = {
+            "symbols_scanned": len(symbols),
+            "bctc_document_count": 0,
+            "missing_bctc_document_count": 0,
+            "valid_income_document_count": 0,
+            "current_period_count": 0,
+            "stale_period_count": 0,
+            "unverified_period_count": 0,
+            "income_ttm_complete_count": 0,
+            "cfo_ttm_complete_count": 0,
+            "latest_npat_available_count": 0,
+            "latest_revenue_available_count": 0,
+            "gross_margin_available_count": 0,
+        }
+
+        for symbol in symbols:
+            profile_id = normalize_profile_id(get_sub_sector(symbol)) or "UNCLASSIFIED"
+            if profile_id not in by_profile:
+                profile_id = "UNCLASSIFIED"
+            row = by_profile[profile_id]
+            row["symbol_count"] += 1
+            bctc = bctc_docs.get(symbol)
+            if not bctc:
+                row["missing_bctc_document_count"] += 1
+                totals["missing_bctc_document_count"] += 1
+                continue
+
+            row["bctc_document_count"] += 1
+            totals["bctc_document_count"] += 1
+            source_name = str(bctc.get("source") or "UNKNOWN").strip().upper()[:40]
+            row["source_counts"][source_name] = row["source_counts"].get(source_name, 0) + 1
+
+            income_rows = bctc.get("income_statement") or []
+            cashflow_rows = bctc.get("cash_flow") or []
+            balance_rows = bctc.get("balance_sheet") or []
+            valid_periods = _valid_income_statement_periods(income_rows)
+            metrics = extract_metrics_from_bctc_data(bctc)
+            latest_period = metrics.get("bctc_latest_income_period") or ""
+            row["latest_period_counts"][latest_period or "MISSING"] = (
+                row["latest_period_counts"].get(latest_period or "MISSING", 0) + 1
+            )
+
+            if valid_periods:
+                row["valid_income_document_count"] += 1
+                totals["valid_income_document_count"] += 1
+            if latest_period:
+                if _bctc_period_is_current(latest_period, expected_period):
+                    row["current_period_count"] += 1
+                    totals["current_period_count"] += 1
+                else:
+                    row["stale_period_count"] += 1
+                    totals["stale_period_count"] += 1
+            else:
+                row["unverified_period_count"] += 1
+                totals["unverified_period_count"] += 1
+
+            checks = {
+                "income_ttm_complete_count": metrics.get("bctc_income_ttm_complete") is True,
+                "cfo_ttm_complete_count": metrics.get("bctc_cfo_ttm_complete") is True,
+                "latest_npat_available_count": (
+                    metrics.get("net_profit_latest_quarter") is not None
+                    and bool(latest_period)
+                ),
+                "latest_revenue_available_count": (
+                    metrics.get("revenue_latest_quarter") is not None
+                    and bool(latest_period)
+                ),
+                "gross_margin_available_count": metrics.get("gross_margin_available") is True,
+            }
+            for key, passed in checks.items():
+                if passed:
+                    row[key] += 1
+                    totals[key] += 1
+
+        for row in by_profile.values():
+            row["bctc_coverage_pct"] = round(
+                row["bctc_document_count"] / row["symbol_count"] * 100, 1
+            ) if row["symbol_count"] else None
+            row["current_period_pct_of_bctc"] = round(
+                row["current_period_count"] / row["bctc_document_count"] * 100, 1
+            ) if row["bctc_document_count"] else None
+
+        return jsonify({
+            "status": "success",
+            "mode": "read_only_live_bctc_validation",
+            "expected_latest_period": expected_period,
+            "limit": limit,
+            "truncated": collection.count_documents({}) > len(symbols),
+            "totals": totals,
+            "profile_count_with_symbols": sum(
+                1 for key, value in by_profile.items()
+                if key != "UNCLASSIFIED" and value["symbol_count"] > 0
+            ),
+            "by_profile": {
+                key: value for key, value in sorted(by_profile.items())
+                if value["symbol_count"] > 0
+            },
+            "writes_performed": False,
+            "production_scoring_executed": False,
+            "note": (
+                "Dữ liệu đọc trực tiếp từ MongoDB bctc_data; chỉ trả số lượng và trạng thái "
+                "kiểm tra, không trả BCTC thô, không ghi dữ liệu và không chạy chấm điểm production."
+            ),
+        }), 200
+    except Exception as e:
+        log_exception("[API BCTC LIVE VALIDATION]", e)
+        return jsonify({
+            "status": "error",
+            "message": "Không kiểm tra được dữ liệu BCTC thực tế.",
+        }), 500
+
+
 @app.get("/api/screener")
 def api_get_screener():
     print("[API] 🏆 Gọi API /api/screener (Lấy điểm số)", flush=True)
