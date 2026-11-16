@@ -6148,124 +6148,138 @@ def api_score_single():
 def force_screener():
     if not ADMIN_SECRET_KEY or request.headers.get("X-Admin-Key") != ADMIN_SECRET_KEY:
         return jsonify({"status": "error", "message": "Sai mật khẩu Admin!"}), 403
-        
-    print(f"\n[API] 📥 Gọi API /api/force-screener", flush=True)
-    if not _claim_screener_job():
-        return jsonify({"status": "error", "message": "Screener đang chạy (worker hoặc API khác), vui lòng đợi!"}), 409
 
-    print(f"[SCREENER] 🚀 Bắt đầu chấm điểm lại toàn bộ (Chế độ tối ưu)...", flush=True)
-    
+    print("\n[API] 📥 Gọi API /api/force-screener", flush=True)
+    if not _claim_screener_job():
+        return jsonify({"status": "error", "message": "Screener đang chạy, vui lòng đợi!"}), 409
+
+    print("[SCREENER] 🚀 Bắt đầu chấm điểm toàn bộ (RAM-safe)...", flush=True)
+
     def _run():
         try:
             today_str = _vn_now().strftime("%Y-%m-%d")
-            
-            # TỐI ƯU: Preload dữ liệu
-            print("[SCREENER] ⚡ Đang tải trước toàn bộ dữ liệu...", flush=True)
-            all_stocks = list(collection.find({}))
-            screener_symbols = [doc["symbol"] for doc in all_stocks if doc.get("symbol")]
-            all_bctc = _load_screener_bctc(screener_symbols, chunk_size=10)
-            all_hist = _load_screener_history(screener_symbols, chunk_size=5, bars_limit=1400)
-            
+            symbols = [
+                d["symbol"] for d in collection.find(
+                    {"symbol": {"$exists": True, "$ne": ""}},
+                    {"_id": 0, "symbol": 1}
+                )
+            ]
+            total = len(symbols)
+            print(f"[SCREENER] 📦 Tổng mã cần chấm: {total}", flush=True)
+
+            # Chỉ giữ dữ liệu đã chuẩn hóa cần cho peer median; không preload BCTC/lịch sử.
+            normalized_db = {}
             stock_db = {}
-            bulk_updates = []
-            
-            for doc in all_stocks:
-                sym = doc["symbol"]
-                bctc = all_bctc.get(sym)
-                doc["bctc_history"] = bctc.get("income_statement", []) if bctc else []
-                
-                if bctc:
-                    extracted = extract_metrics_from_bctc_data(bctc)
+            for index, sym in enumerate(symbols, 1):
+                stock_doc = collection.find_one(
+                    {"symbol": sym},
+                    {"_id": 0, "bctc_history": 0}
+                ) or {}
+
+                bctc_doc = bctc_col.find_one(
+                    {"symbol": sym},
+                    {"_id": 0, "symbol": 1, "source": 1, "income_statement": 1,
+                     "cash_flow": 1, "balance_sheet": 1}
+                )
+                if bctc_doc:
+                    extracted = extract_metrics_from_bctc_data(bctc_doc)
                     if extracted:
-                        doc.update(extracted)
-                        bulk_updates.append(UpdateOne({"symbol": sym}, {"$set": extracted}))
-                
-                stock_db[sym] = doc
+                        stock_doc.update(extracted)
+                        collection.update_one({"symbol": sym}, {"$set": extracted})
 
-            if bulk_updates:
-                collection.bulk_write(bulk_updates)
-                _SECTOR_MEDIAN_CACHE.clear()
-
-            norm_db = {}
-            norm_bulk_updates = []
-            for s, r in stock_db.items():
-                nd = normalize_stock_data(s, r)
+                # Chỉ gắn income statement trong thời gian normalize, không lưu raw BCTC vào RAM.
+                stock_doc["bctc_history"] = (
+                    bctc_doc.get("income_statement", []) if bctc_doc else []
+                )
+                nd = normalize_stock_data(sym, stock_doc)
                 update_fields = nd.pop("_update_fields", {})
                 if update_fields:
-                    norm_bulk_updates.append(UpdateOne({"symbol": s}, {"$set": update_fields}))
-                norm_db[s] = nd
-            
-            if norm_bulk_updates:
-                collection.bulk_write(norm_bulk_updates)
-                _SECTOR_MEDIAN_CACHE.clear()
-            
-            medians = compute_sector_medians(norm_db)
+                    collection.update_one({"symbol": sym}, {"$set": update_fields})
+
+                normalized_db[sym] = nd
+                stock_db[sym] = {
+                    key: stock_doc.get(key)
+                    for key in (
+                        "ai_bctc", "ai_catalyst", "ai_risks", "ai_macro_view",
+                        "ai_outlook", "ai_recommendation", "ai_price_zone",
+                        "ai_updated_at", "ai_source", "price_change_percent",
+                        "volume_percent", "close"
+                    )
+                }
+                del stock_doc, bctc_doc, nd
+                if index % 10 == 0 or index == total:
+                    print(f"[SCREENER] BCTC + normalize: {index}/{total} mã", flush=True)
+
+            _SECTOR_MEDIAN_CACHE.clear()
+            medians = compute_sector_medians(normalized_db)
             results = []
-            
-            for sym, nd in norm_db.items():
+
+            for index, (sym, nd) in enumerate(normalized_db.items(), 1):
                 grp = get_sub_sector(sym)
                 cfg = SUB_SECTOR_CONFIG.get(grp) or SUB_SECTOR_CONFIG.get(get_sector(sym))
                 med, _ = get_median_for_symbol(sym, medians)
-                
-                hist_doc = all_hist.get(sym)
+
+                # Đọc lịch sử từng mã, dùng xong giải phóng ngay.
+                hist_doc = history_col.find_one(
+                    {"symbol": sym},
+                    {"_id": 0, "history_d1": {"$slice": -1400}}
+                )
                 history_bars = hist_doc.get("history_d1", []) if hist_doc else []
                 tech_bars = history_bars[-200:]
-                tech_score_raw, tech_status, pattern, technical_details = 0, "Chưa đủ dữ liệu kỹ thuật", "Chưa xác định", {}
+                tech_score_raw, tech_status = 0, "Chưa đủ dữ liệu kỹ thuật"
+                pattern, technical_details = "Chưa xác định", {}
                 if ProfessionalTechnicalAnalyzer and tech_bars:
                     try:
-                        analyzer = ProfessionalTechnicalAnalyzer(tech_bars)
-                        ptkt_res = analyzer.analyze()
+                        ptkt_res = ProfessionalTechnicalAnalyzer(tech_bars).analyze()
                         tech_score_raw = ptkt_res.get("technical_score", 0)
                         tech_status = ptkt_res.get("technical_status", "Chưa đủ dữ liệu kỹ thuật")
                         pattern = ptkt_res.get("pattern", "Chưa xác định")
                         technical_details = ptkt_res.get("technical_score_breakdown", {})
                     except Exception as tech_error:
-                        print(f"[SCREENER-ALL] {sym} lỗi phân tích kỹ thuật: {tech_error}", flush=True)
-                    
+                        print(f"[SCREENER] {sym} lỗi phân tích kỹ thuật: {tech_error}", flush=True)
+
                 stock_doc = stock_db.get(sym, {})
                 existing_ai = {
-                    "bctc": stock_doc.get("ai_bctc", ""), "catalyst": stock_doc.get("ai_catalyst", ""),
-                    "risks": stock_doc.get("ai_risks", ""), "macro_view": stock_doc.get("ai_macro_view", ""),
-                    "outlook": stock_doc.get("ai_outlook", ""), "recommendation": stock_doc.get("ai_recommendation", ""),
-                    "price_zone": stock_doc.get("ai_price_zone", ""), "ai_updated_at": stock_doc.get("ai_updated_at", "Chưa phân tích"),
+                    "bctc": stock_doc.get("ai_bctc", ""),
+                    "catalyst": stock_doc.get("ai_catalyst", ""),
+                    "risks": stock_doc.get("ai_risks", ""),
+                    "macro_view": stock_doc.get("ai_macro_view", ""),
+                    "outlook": stock_doc.get("ai_outlook", ""),
+                    "recommendation": stock_doc.get("ai_recommendation", ""),
+                    "price_zone": stock_doc.get("ai_price_zone", ""),
+                    "ai_updated_at": stock_doc.get("ai_updated_at", "Chưa phân tích"),
                     "ai_source": stock_doc.get("ai_source", "AI")
                 }
-                
                 res = evaluate_stock_from_db(
-                    sym, nd, med, grp, cfg, 
-                    tech_score_raw=tech_score_raw, tech_status=tech_status, pattern=pattern,
-                    technical_details=technical_details,
-                    existing_ai_data=existing_ai,
-                    history_bars=history_bars
+                    sym, nd, med, grp, cfg,
+                    tech_score_raw=tech_score_raw, tech_status=tech_status,
+                    pattern=pattern, technical_details=technical_details,
+                    existing_ai_data=existing_ai, history_bars=history_bars
                 )
-                if res: 
+                if res:
                     res["date"] = today_str
+                    latest_period = str(nd.get("bctc_latest_income_period") or "").strip()
+                    res["bctc_latest_income_period"] = latest_period
+                    res["bctc_expected_period"] = (
+                        nd.get("bctc_expected_period") or _expected_latest_bctc_period()
+                    )
+                    res["bctc_period_is_current"] = (
+                        bool(nd.get("bctc_period_is_current")) if latest_period else None
+                    )
                     results.append(res)
-            
-            if results:
-                # Persist BCTC freshness provenance just like the scheduled worker.
-                # Diagnostics reads these fields from screener_results; omitting them
-                # makes valid source BCTC appear unverified in persisted results.
-                for r in results:
-                    normalized = norm_db.get(r.get("symbol"), {})
-                    latest_period = str(
-                        normalized.get("bctc_latest_income_period") or ""
-                    ).strip()
-                    r["bctc_latest_income_period"] = latest_period
-                    r["bctc_expected_period"] = (
-                        normalized.get("bctc_expected_period")
-                        or _expected_latest_bctc_period()
-                    )
-                    r["bctc_period_is_current"] = (
-                        bool(normalized.get("bctc_period_is_current"))
-                        if latest_period else None
-                    )
 
-                results = sorted(results, key=lambda x: (x.get("total_score", 0), x.get("fundamental_score", 0)), reverse=True)
-                
+                del hist_doc, history_bars, tech_bars
+                if index % 10 == 0 or index == total:
+                    print(f"[SCREENER] Scoring: {index}/{total} mã", flush=True)
+
+            if results:
+                results.sort(
+                    key=lambda x: (x.get("total_score", 0), x.get("fundamental_score", 0)),
+                    reverse=True
+                )
                 for r in results:
                     existing_stock = stock_db.get(r["symbol"], {})
-                    if existing_stock and existing_stock.get("ai_bctc") and len(existing_stock.get("ai_bctc")) > 100:
+                    if existing_stock.get("ai_bctc") and len(existing_stock.get("ai_bctc")) > 100:
                         r["bctc_evaluation"] = existing_stock.get("ai_bctc", "")
                         r["outlook"] = existing_stock.get("ai_outlook", "")
                         r["ai_recommendation"] = existing_stock.get("ai_recommendation", "")
@@ -6274,12 +6288,19 @@ def force_screener():
                         r["ai_updated_at"] = existing_stock.get("ai_updated_at", "")
                         r["ai_source"] = existing_stock.get("ai_source", "AI")
 
-                if _safe_replace_screener_results(results, tag="force-api"):
-                    commit_multiple_files_to_github({SCREENER_JSON_FILE: results}, f"Force Screener {_now_str()}")
-                    print(f"[SCREENER] ✅ Đã chấm điểm xong {len(results)} mã (Đã bảo vệ bài AI cũ).", flush=True)
+                if _safe_replace_screener_results(results, tag="force-api-ram-safe"):
+                    commit_multiple_files_to_github(
+                        {SCREENER_JSON_FILE: results},
+                        f"Force Screener {_now_str()}"
+                    )
+                    print(f"[SCREENER] ✅ Đã chấm điểm xong {len(results)}/{total} mã.", flush=True)
                 else:
-                    print(f"[SCREENER] ⚠️ Không ghi được kết quả (lock timeout).", flush=True)
+                    print("[SCREENER] ⚠️ Không ghi được kết quả; giữ dữ liệu cũ.", flush=True)
+            else:
+                print("[SCREENER] ⚠️ Không có kết quả để lưu.", flush=True)
+
         except Exception as e:
+            log_exception("[SCREENER FORCE RAM-SAFE]", e)
             print(f"[SCREENER] ❌ Lỗi: {e}", flush=True)
         finally:
             _release_screener_job()
@@ -6289,7 +6310,8 @@ def force_screener():
     except Exception:
         _release_screener_job()
         raise
-    return jsonify({"status": "success", "message": "Đang chấm điểm lại (tối ưu)..."})
+
+    return jsonify({"status": "success", "message": "Đã khởi chạy Screener RAM-safe; xử lý tuần tự từng mã."})
 
 
 @app.get("/api/force-realtime")
