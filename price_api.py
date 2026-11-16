@@ -18,6 +18,7 @@ from flask_cors import CORS
 from flask_compress import Compress
 from pymongo import MongoClient, UpdateOne
 from pymongo.errors import PyMongoError
+from bctc_rules import canonicalize_vci_field, resolve_vci_unit, SECTOR_RULES, DATA_QUALITY_RULES
 
 # ===================== LOGGING CHẨN ĐOÁN =====================
 logger = logging.getLogger("price_api")
@@ -378,38 +379,57 @@ def _are_consecutive_quarters(periods):
 
 
 def _get_bctc_optional_value(report_array, target_ids, period=None):
-    """Trả None nếu thiếu chỉ tiêu; không đánh đồng thiếu dữ liệu với số 0."""
+    """Trả None nếu thiếu hoặc không phân giải được bản ghi; không lấy tùy tiện dòng đầu."""
     if not report_array:
         return None
     if isinstance(target_ids, str):
         target_ids = [target_ids]
 
-    candidates = [
-        item for item in report_array
-        if item.get("id") in target_ids
-        and (period is None or item.get("period") == period)
-    ]
-    if not candidates:
-        return None
-
-    # Một số trường VCI gán chung ID cho cả chỉ tiêu tổng và chỉ tiêu con.
-    # Ưu tiên mã nguồn của dòng tổng; không cộng/trộn các dòng cùng ID.
+    # Một số trường VCI gán chung ID cho dòng tổng và dòng thành phần.
+    # Chỉ chọn dòng tổng khi source_field đã được xác định rõ.
     preferred_fields = {
         "BS_SHORT_TERM_ASSETS": ("bsa1",),
         "BS_LONG_TERM_ASSETS": ("bsa23",),
         "BS_TOTAL_ASSETS": ("bsa53",),
         "BS_LIABILITIES": ("bsa54",),
-        "BS_OWNERS_EQUITY": ("bsa78", "bsa79"),
+        "BS_OWNERS_EQUITY": ("bsa78",),
+        "BS_TOTAL_LIABILITIES_AND_EQUITY": ("bsa96",),
     }
+
+    # target_ids có thứ tự ưu tiên; không phụ thuộc thứ tự tài liệu MongoDB.
     for target_id in target_ids:
+        candidates = [
+            item for item in report_array
+            if item.get("id") == target_id
+            and (period is None or item.get("period") == period)
+        ]
+        if not candidates:
+            continue
+
         preferred = preferred_fields.get(target_id, ())
-        for field in preferred:
-            for item in candidates:
-                if str(item.get("source_field", "")).lower() == field:
-                    raw_value = item.get("value")
-                    return _safe_float(raw_value) if raw_value is not None else None
-    raw_value = candidates[0].get("value")
-    return _safe_float(raw_value) if raw_value is not None else None
+        if preferred:
+            preferred_candidates = [
+                item for item in candidates
+                if str(item.get("source_field", "")).lower() in preferred
+            ]
+            if preferred_candidates:
+                candidates = preferred_candidates
+
+        values = [
+            _safe_float(item.get("value"))
+            for item in candidates
+            if item.get("value") is not None
+        ]
+        if not values:
+            return None
+
+        # Nhiều bản ghi chỉ được chấp nhận khi cùng cho một giá trị.
+        # Nếu khác nhau mà không có source_field ưu tiên, coi là mơ hồ.
+        if any(value != values[0] for value in values[1:]):
+            return None
+        return values[0]
+
+    return None
 
 
 def extract_metrics_from_bctc_data(bctc_doc):
@@ -489,6 +509,25 @@ def extract_metrics_from_bctc_data(bctc_doc):
             )
     else:
         metrics["net_profit_ttm"] = 0.0
+
+    # CIR ngân hàng chỉ tính khi đủ 4 quý và có đủ hai dòng thu nhập/chi phí.
+    # NIM/NPL/CASA/CAR không được suy diễn từ các trường chưa xác minh.
+    bank_income_periods = sorted(
+        {x.get("period") for x in income if _period_quarter_index(x.get("period")) is not None},
+        key=_period_quarter_index,
+        reverse=True
+    )
+    bank_latest_four = bank_income_periods[:4]
+    if _are_consecutive_quarters(list(reversed(bank_latest_four))):
+        bank_oi = values_for(income, "IS_TOTAL_OPERATING_INCOME_BANK", bank_latest_four)
+        bank_opex = values_for(income, "IS_OPERATING_EXPENSE_BANK", bank_latest_four)
+        if all(v is not None for v in bank_oi + bank_opex) and sum(bank_oi) > 0:
+            metrics["bank_cir"] = round(abs(sum(bank_opex)) / sum(bank_oi) * 100, 2)
+            metrics["bank_cir_available"] = True
+        else:
+            metrics["bank_cir_available"] = False
+    else:
+        metrics["bank_cir_available"] = False
 
     cf_periods = sorted(
         {x.get("period") for x in cashflow if _period_quarter_index(x.get("period")) is not None},
@@ -725,61 +764,8 @@ def _fetch_bctc_ssi(symbol: str):
             return None
 
     def canonical_id(report_name, field_code, title):
-        import unicodedata
-
-        label = str(title or field_code or "").strip().lower()
-        label = "".join(
-            ch for ch in unicodedata.normalize("NFD", label)
-            if unicodedata.category(ch) != "Mn"
-        ).replace("đ", "d")
-        label = re.sub(r"[^a-z0-9]+", " ", label).strip()
-        field = str(field_code).upper() if field_code else ""
-
-        if report_name == "income_statement":
-            # Tách LNST cổ đông công ty mẹ khỏi LNST hợp nhất để định giá/EPS
-            # không vô tình dùng nhầm lợi nhuận bao gồm cổ đông không kiểm soát.
-            if field == "ISA22" or (
-                "loi nhuan sau thue" in label
-                and ("co dong cong ty me" in label or "co dong cua cong ty me" in label)
-            ):
-                return "IS_NET_PROFIT_ATTRIBUTABLE"
-
-            if "doanh thu thuan" in label or "net revenue" in label:
-                return "IS_NET_REVENUE"
-            if "gia von hang ban" in label or "cost of goods sold" in label:
-                return "IS_COST_OF_GOODS_SOLD"
-            
-            if field == "ISA20" or "loi nhuan sau thue thu nhap doanh nghiep" in label:
-                return "IS_NET_PROFIT_AFTER_TAX"
-            
-            if field in ["IS_NET_PROFIT_AFTER_TAX", "IS_PROFIT_AFTER_TAX"] or "loi nhuan sau thue" in label:
-                if "co dong thieu so" not in label and "khong kiem soat" not in label:
-                    return "IS_NET_PROFIT_AFTER_TAX"
-
-        elif report_name == "cash_flow":
-            if field == "CFA18":
-                return "CF_NET_CASH_FLOWS_FROM_OPERATING_ACTIVITIES"
-            
-            if "luu chuyen tien te rong" in label or "net cash flows from operating activities" in label:
-                return "CF_NET_CASH_FLOWS_FROM_OPERATING_ACTIVITIES"
-
-        elif report_name == "balance_sheet":
-            if "tong cong tai san" in label or "tong tai san" in label or "total assets" in label:
-                return "BS_TOTAL_ASSETS"
-            if "tai san ngan han" in label or "current assets" in label:
-                return "BS_SHORT_TERM_ASSETS"
-            if "tai san dai han" in label or "non current assets" in label:
-                return "BS_LONG_TERM_ASSETS"
-            
-            if "von chu so huu" in label or "owners equity" in label or "owner equity" in label:
-                return "BS_OWNERS_EQUITY"
-            if "von va cac quy" in label:
-                return "BS_OWNERS_EQUITY"
-                
-            if "no phai tra" in label or "total liabilities" in label:
-                return "BS_LIABILITIES"
-
-        return None
+        # Từ điển VCI dùng chung; mã chưa xác định vẫn được lưu dưới dạng VCI raw.
+        return canonicalize_vci_field(report_name, field_code, title)
     try:
         logger.info("[BCTC VCI] Bắt đầu lấy BCTC cho %s", symbol)
 
@@ -895,13 +881,16 @@ def _fetch_bctc_ssi(symbol: str):
                         if item_id == "IS_COST_OF_GOODS_SOLD" and value > 0:
                             value = -value
 
-                        unit = units.get(str(field_code)) or "VND"
+                        # Không tự gán VND khi metadata không cung cấp đơn vị.
+                        # Unit rỗng được xem là chưa xác minh và không dùng để suy luận tỷ lệ.
+                        unit = resolve_vci_unit(report_name, field_code, units.get(str(field_code)))
                         records.append({
                             "id": item_id,
                             "name": str(title),
                             "period": period,
                             "value": value,
                             "unit": str(unit),
+                            "unit_verified": bool(unit),
                             "source_field": str(field_code),
                             "source_section": section,
                             "is_core": is_core,
@@ -1219,11 +1208,19 @@ FALLBACK_SECTOR_MAPPING = {
 }
 SECTOR_MAPPING = FALLBACK_SECTOR_MAPPING
 SUB_SECTOR_MAPPING = {
+    "TECHNOLOGY": ["FPT"],
+    "ENERGY": ["GAS", "POW", "PC1", "NT2", "GEG"],
     "INSURANCE": ["BVH"], "PETROLEUM": ["PLX", "PVD", "PVS", "BSR"], "MARITIME": ["GMD", "HAH", "PVT"],
-    "AVIATION": ["VJC", "HVN"], "CONSTRUCTION": ["CTD", "VCG", "HHV", "GEX", "DRC", "CSM", "BMP"],
-    "AGRI": ["VHC", "ANV", "DBC", "SBT", "ASM", "APH"],
+    "AVIATION": ["VJC", "HVN"], "CONSTRUCTION": ["CTD", "VCG", "HHV"],
+    "BUILDING_MATERIALS": ["BMP"],
+    "STEEL": ["HPG", "HSG", "NKG"],
+    "FERTILIZER": ["DPM", "DCM"],
+    "CONSUMER": ["VNM", "MSN", "SAB", "KDC"],
+    "AGRI": ["VHC", "ANV", "DBC", "SBT", "ASM"],
+    "HOLDING": ["VIC", "GEX"],
 }
 SUB_SECTOR_CONFIG = {
+    "TECHNOLOGY": {"cap_pe": 25, "cap_pb": 4.0, "mos": 0.20, "primary_metric": "PE"},
     "NGAN_HANG": {"cap_pe": 14, "cap_pb": 1.8, "mos": 0.20, "primary_metric": "PB"},
     "CHUNG_KHOAN": {"cap_pe": 14, "cap_pb": 1.8, "mos": 0.25, "primary_metric": "PB"},
     "BAT_DONG_SAN": {"cap_pe": 12, "cap_pb": 2.0, "mos": 0.30, "primary_metric": "PB"},
@@ -1237,6 +1234,11 @@ SUB_SECTOR_CONFIG = {
     "AVIATION": {"cap_pe": 15, "cap_pb": 3.0, "mos": 0.35, "primary_metric": "PB"},
     "CONSTRUCTION": {"cap_pe": 12, "cap_pb": 1.5, "mos": 0.30, "primary_metric": "PB"},
     "AGRI": {"cap_pe": 14, "cap_pb": 2.0, "mos": 0.25, "primary_metric": "PE"},
+    "BUILDING_MATERIALS": {"cap_pe": 13, "cap_pb": 1.7, "mos": 0.25, "primary_metric": "PB"},
+    "CONSUMER": {"cap_pe": 18, "cap_pb": 2.5, "mos": 0.20, "primary_metric": "PE"},
+    "STEEL": {"cap_pe": 11, "cap_pb": 1.5, "mos": 0.30, "primary_metric": "PB"},
+    "FERTILIZER": {"cap_pe": 12, "cap_pb": 1.7, "mos": 0.30, "primary_metric": "PE"},
+    "HOLDING": {"cap_pe": 14, "cap_pb": 1.5, "mos": 0.30, "primary_metric": "PB"},
 }
 
 def get_sector(symbol):
@@ -1298,6 +1300,8 @@ def normalize_stock_data(symbol, data):
         "bctc_balance_sheet_valid": bool(data.get("bctc_balance_sheet_valid", False)),
         "credit_growth_yoy": credit_growth_yoy,
         "credit_growth_yoy_available": bool(data.get("credit_growth_yoy_available", False)),
+        "bank_cir": float(data.get("bank_cir", 0) or 0),
+        "bank_cir_available": bool(data.get("bank_cir_available", False)),
         "_update_fields": update_fields  # Caller dùng để ghi DB nếu cần
     }
 def compute_sector_medians(normalized_db):
@@ -1334,15 +1338,19 @@ def compute_fair_value_zone(symbol, nd, sector_median, config, group_label):
     med_pe, med_pb, med_roe = sector_median.get("pe") or 12.0, sector_median.get("pb") or 2.0, sector_median.get("roe") or 0.0
     cap_pe, cap_pb, mos = config["cap_pe"], config["cap_pb"], config["mos"]
     is_financial = group_label in ("NGAN_HANG", "CHUNG_KHOAN", "INSURANCE")
+    primary_metric = str(config.get("primary_metric", "PE")).upper()
+    # Ngân hàng, bảo hiểm và holding chỉ dùng P/B trong mô hình hiện tại:
+    # chưa có dữ liệu đủ tin cậy để định giá lợi nhuận/giá trị công ty con bằng P/E hoặc Graham.
+    pb_only_groups = ("NGAN_HANG", "INSURANCE", "HOLDING")
     
-    # Chỉ dùng P/E và Graham khi lợi nhuận TTM dương; tránh định giá từ EPS cũ
-    # hoặc dữ liệu EPS không còn đại diện cho khả năng sinh lời hiện tại.
-    if eps > 0 and npat > 0 and med_pe > 0:
+    # Chỉ dùng P/E khi lợi nhuận TTM dương; P/E là phương pháp chính/phụ theo cấu hình ngành.
+    if group_label not in pb_only_groups and eps > 0 and npat > 0 and med_pe > 0:
         roe_bonus = 1.15 if (roe > 0 and roe > med_roe) else 1.0
         methods["PE_method"] = round(eps * min(med_pe * roe_bonus, cap_pe), 0)
     if bvps > 0 and med_pb > 0:
         methods["PB_method"] = round(bvps * min(med_pb, cap_pb), 0)
-    if not is_financial and eps > 0 and npat > 0 and bvps > 0:
+    # Graham chỉ phù hợp khi P/E là phương pháp chính; tránh áp vào nhóm chu kỳ/PB.
+    if primary_metric == "PE" and not is_financial and group_label != "HOLDING" and eps > 0 and npat > 0 and bvps > 0:
         methods["Graham"] = round((22.5 * eps * bvps) ** 0.5, 0)
 
     # CFO là thước đo chất lượng lợi nhuận, không phải phương pháp định giá độc lập.
@@ -1363,7 +1371,12 @@ def compute_fair_value_zone(symbol, nd, sector_median, config, group_label):
             "verdict": "KHÔNG ĐỦ DỮ LIỆU"
         }
 
-    weights = {"PE_method": 2, "PB_method": 1.5, "Graham": 2}
+    # Ưu tiên phương pháp chính theo cấu hình ngành, phương pháp phụ có trọng số thấp hơn.
+    weights = (
+        {"PB_method": 3, "PE_method": 1, "Graham": 0}
+        if primary_metric == "PB"
+        else {"PE_method": 3, "PB_method": 1, "Graham": 2}
+    )
     weighted = []
     for k, v in valid_methods.items(): weighted.extend([v] * int(weights.get(k, 1) * 2))
     weighted.sort()
@@ -1392,8 +1405,10 @@ def compute_fair_value_zone(symbol, nd, sector_median, config, group_label):
         "verdict": verdict
     }
 
-def compute_final_decision(fund_score, tech_score, val_score, total_score, verdict, cfo, npat, roe, debt_to_equity, discount_to_fair_pct=0.0, close_price=0.0, fair_high=0.0, fair_low=0.0, sector=""):
-    is_bank_or_sec = sector in ("NGAN_HANG", "CHUNG_KHOAN")
+def compute_final_decision(fund_score, tech_score, val_score, total_score, verdict, cfo, npat, roe, debt_to_equity, discount_to_fair_pct=0.0, close_price=0.0, fair_high=0.0, fair_low=0.0, sector="", fundamental_coverage_pct=100.0):
+    is_bank_or_sec = sector in ("NGAN_HANG", "CHUNG_KHOAN", "INSURANCE")
+    if fundamental_coverage_pct < 65:
+        return ("⚠️ THIẾU DỮ LIỆU", "amber", f"Độ bao phủ PTCB chỉ {fundamental_coverage_pct:.1f}%; cần tối thiểu 65% dữ liệu chấm được trước khi kết luận hoặc khuyến nghị mua.")
     if fund_score < 20: return ("❌ TRÁNH", "rose", f"PTCB yếu")
     if npat < 0:
         return ("⚠️ CẢNH BÁO LỢI NHUẬN ÂM", "amber", "LNST TTM âm; chưa đủ cơ sở xác nhận điều kiện mua.")
@@ -1410,17 +1425,34 @@ def compute_final_decision(fund_score, tech_score, val_score, total_score, verdi
 
 def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_score_raw=0, tech_status="Chưa đủ dữ liệu kỹ thuật", pattern="Chưa xác định", technical_details=None, existing_ai_data=None, history_bars=None):
     sector = get_sector(symbol)
+    is_insurance = str(group_label or "").upper() == "INSURANCE"
+    is_financial_group = sector in ("NGAN_HANG", "CHUNG_KHOAN") or is_insurance
+    is_technology = str(group_label or "").upper() == "TECHNOLOGY"
+    is_energy = str(group_label or "").upper() in ("ENERGY", "PETROLEUM")
+    is_utility = sector == "DIEN_NUOC_HA_TANG" and not is_energy
+    is_steel = str(group_label or "").upper() == "STEEL"
+    is_fertilizer = str(group_label or "").upper() == "FERTILIZER"
+    is_cyclical_material = sector == "NGUYEN_VAT_LIEU_CHU_KY" and not is_steel and not is_fertilizer
+    is_maritime = str(group_label or "").upper() == "MARITIME"
+    is_consumer = str(group_label or "").upper() == "CONSUMER"
+    is_building_materials = str(group_label or "").upper() == "BUILDING_MATERIALS"
+    is_agri = str(group_label or "").upper() == "AGRI"
+    is_aviation = str(group_label or "").upper() == "AVIATION"
+    is_construction = str(group_label or "").upper() == "CONSTRUCTION"
+    is_holding = str(group_label or "").upper() == "HOLDING"
+    is_retail = sector == "CONG_NGHE_BAN_LE" and not is_technology
     pe, pb, roe, roa = nd["pe"], nd["pb"], nd["roe"], nd["roa"]
     close_price, cfo_latest, net_profit_ttm = nd["close_price"], nd["cfo_latest"], nd["net_profit_ttm"]
     debt_to_equity, profit_growth_yoy, credit_growth_yoy = nd["debt_to_equity"], nd["profit_growth_yoy"], nd["credit_growth_yoy"]
     
     data_warnings = []
     if close_price <= 0: data_warnings.append("Thiếu Giá")
-    if pe <= 0 and sector not in ["NGAN_HANG", "CHUNG_KHOAN"]: data_warnings.append("Thiếu P/E")
+    if pe <= 0 and sector not in ["NGAN_HANG", "CHUNG_KHOAN"] and not is_insurance and not is_holding: data_warnings.append("Thiếu P/E")
     if pb <= 0: data_warnings.append("Thiếu P/B")
     if roe == 0: data_warnings.append("Thiếu ROE")
     if not nd.get("bctc_income_ttm_complete", False): data_warnings.append("BCTC chưa đủ 4 quý liên tiếp để tính LNST TTM")
-    if not nd.get("bctc_cfo_ttm_complete", False): data_warnings.append("CFO chưa đủ 4 quý liên tiếp để tính CFO TTM")
+    if not nd.get("bctc_cfo_ttm_complete", False) and not is_financial_group:
+        data_warnings.append("CFO chưa đủ 4 quý liên tiếp để tính CFO TTM")
     if not nd.get("bctc_balance_sheet_valid", False): data_warnings.append("Thiếu dữ liệu bảng cân đối kế toán hợp lệ")
     is_data_incomplete = len(data_warnings) > 0
 
@@ -1428,44 +1460,546 @@ def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_
     fund_notes = []
     
     growth_available = bool(nd.get("profit_growth_yoy_available", False))
+    # Group label có thể là ngành con (ví dụ INSURANCE) trong khi sector
+    # tổng quát vẫn là SAN_XUAT_TIEU_DUNG_PHONG_THU.
+    fundamental_score_available = 0
+    fundamental_missing_groups = []
     if sector == "NGAN_HANG":
+        # 8 tăng trưởng, 10 sinh lời, 16 chất lượng tài sản,
+        # 10 vốn/nguồn vốn, 6 hiệu quả. Không phân phối lại điểm thiếu.
         if nd.get("credit_growth_yoy_available", False):
-            if credit_growth_yoy >= 12: fund_score += 18; fund_notes.append("Tín dụng tăng mạnh")
-            elif credit_growth_yoy >= 8: fund_score += 10
-            elif credit_growth_yoy < 0: fund_score -= 5; fund_notes.append("Tín dụng suy giảm")
+            fundamental_score_available += 8
+            if credit_growth_yoy >= 12:
+                fund_score += 8
+                fund_notes.append("Tăng trưởng tín dụng tốt")
+            elif credit_growth_yoy >= 8:
+                fund_score += 5
+            elif credit_growth_yoy > 0:
+                fund_score += 3
+            elif credit_growth_yoy < 0:
+                fund_notes.append("Tín dụng suy giảm")
         else:
-            fund_notes.append("Thiếu tăng trưởng tín dụng")
-        if roe >= 18: fund_score += 17; fund_notes.append("ROE >18%")
-        elif roe >= 14: fund_score += 10
+            fundamental_missing_groups.append("Tăng trưởng tín dụng (8 điểm)")
+            fund_notes.append("Chưa xác minh được tăng trưởng dư nợ cho vay")
+
+        if roe > 0 or roa > 0:
+            fundamental_score_available += 10
+            if roe >= 18: fund_score += 7
+            elif roe >= 14: fund_score += 5
+            elif roe >= 10: fund_score += 3
+            elif roe > 0: fund_score += 1
+            if roa >= 1.5: fund_score += 3
+            elif roa >= 1.0: fund_score += 2
+            elif roa >= 0.5: fund_score += 1
+            fund_notes.append("Đánh giá sinh lời theo ROE/ROA")
+        else:
+            fundamental_missing_groups.append("Sinh lời ROE/ROA (10 điểm)")
+
+        if nd.get("bank_cir_available", False):
+            fundamental_score_available += 6
+            cir = nd.get("bank_cir", 0)
+            if cir <= 40: fund_score += 6
+            elif cir <= 45: fund_score += 5
+            elif cir <= 50: fund_score += 4
+            elif cir <= 55: fund_score += 2
+            else: fund_notes.append("CIR cao, hiệu quả chi phí yếu")
+        else:
+            fundamental_missing_groups.append("Hiệu quả CIR (6 điểm)")
+
+        fundamental_missing_groups.extend([
+            "Chất lượng tài sản: NPL/nợ nhóm 2/bao phủ nợ xấu (16 điểm)",
+            "Vốn và nguồn vốn: CAR/CASA/LDR (10 điểm)"
+        ])
+    elif is_insurance:
+        # Không dùng CFO/D/E kiểu doanh nghiệp sản xuất cho bảo hiểm.
+        if growth_available:
+            fundamental_score_available += 8
+            if profit_growth_yoy >= 15: fund_score += 8
+            elif profit_growth_yoy >= 5: fund_score += 5
+            elif profit_growth_yoy >= 0: fund_score += 2
+            else: fund_notes.append("Lợi nhuận bảo hiểm suy giảm")
+        else:
+            fundamental_missing_groups.append("Tăng trưởng lợi nhuận (8 điểm)")
+        if roe > 0 or roa > 0:
+            fundamental_score_available += 10
+            if roe >= 15: fund_score += 7
+            elif roe >= 10: fund_score += 5
+            elif roe > 0: fund_score += 2
+            if roa >= 1.5: fund_score += 3
+            elif roa >= 0.8: fund_score += 2
+            elif roa > 0: fund_score += 1
+        else:
+            fundamental_missing_groups.append("Sinh lời ROE/ROA (10 điểm)")
+        fundamental_missing_groups.extend([
+            "Dự phòng nghiệp vụ và khả năng thanh toán (14 điểm)",
+            "Hiệu quả khai thác/bồi thường (10 điểm)",
+            "Chất lượng danh mục đầu tư (8 điểm)"
+        ])
     elif sector == "CHUNG_KHOAN":
+        # Công ty chứng khoán: 8 tăng trưởng, 10 sinh lời;
+        # rủi ro margin, thanh khoản/vốn và hiệu quả chưa có dữ liệu chuẩn thì để thiếu.
         if growth_available:
-            if profit_growth_yoy >= 20: fund_score += 20; fund_notes.append("LN tăng mạnh")
-            elif profit_growth_yoy >= 10: fund_score += 10
-            elif profit_growth_yoy < 0: fund_score -= 5; fund_notes.append("LN suy giảm YoY")
-        if roe >= 15: fund_score += 15; fund_notes.append("ROE cao")
-        elif roe >= 10: fund_score += 8
-    elif sector == "BAT_DONG_SAN":
-        if growth_available and profit_growth_yoy >= 10: fund_score += 15
-        elif growth_available and profit_growth_yoy < 0: fund_score -= 5; fund_notes.append("LN suy giảm YoY")
-        if roe >= 12: fund_score += 20; fund_notes.append("ROE chuẩn")
-        elif roe > 0: fund_score += 10
-    elif sector == "CONG_NGHE_BAN_LE":
+            fundamental_score_available += 8
+            if profit_growth_yoy >= 20: fund_score += 8; fund_notes.append("LN tăng mạnh")
+            elif profit_growth_yoy >= 10: fund_score += 5
+            elif profit_growth_yoy >= 0: fund_score += 2
+            else: fund_notes.append("LN suy giảm YoY")
+        else:
+            fundamental_missing_groups.append("Tăng trưởng lợi nhuận (8 điểm)")
+        if roe > 0:
+            fundamental_score_available += 10
+            if roe >= 15: fund_score += 10; fund_notes.append("ROE cao")
+            elif roe >= 10: fund_score += 7
+            elif roe >= 5: fund_score += 4
+            else: fund_score += 1
+        else:
+            fundamental_missing_groups.append("Sinh lời ROE (10 điểm)")
+        fundamental_missing_groups.extend([
+            "Rủi ro dư nợ margin và chất lượng tài sản (12 điểm)",
+            "Thanh khoản và an toàn vốn (12 điểm)",
+            "Hiệu quả chi phí (8 điểm)"
+        ])
+    elif sector == "BAT_DONG_SAN" and not is_holding:
+        # Bất động sản: BCTC hiện chưa có dữ liệu dự án/pháp lý/tồn kho theo dự án.
+        # Không thay RNAV bằng P/B hoặc tự suy diễn presales.
         if growth_available:
-            if profit_growth_yoy >= 20: fund_score += 18; fund_notes.append("Tăng trưởng lõi")
-            elif profit_growth_yoy >= 10: fund_score += 10
-            elif profit_growth_yoy < 0: fund_score -= 5; fund_notes.append("LN suy giảm YoY")
-        if roe >= 18: fund_score += 17
-        elif roe >= 12: fund_score += 10
-    elif sector == "DIEN_NUOC_HA_TANG":
-        if nd["dividend_yield"] >= 6.0: fund_score += 20; fund_notes.append("Cổ tức cao")
-        elif nd["dividend_yield"] > 0: fund_score += 10
-        if roe >= 10: fund_score += 15
-    elif sector == "NGUYEN_VAT_LIEU_CHU_KY":
+            fundamental_score_available += 8
+            if profit_growth_yoy >= 15: fund_score += 8
+            elif profit_growth_yoy >= 5: fund_score += 5
+            elif profit_growth_yoy >= 0: fund_score += 2
+            else: fund_notes.append("Lợi nhuận bất động sản suy giảm")
+        else:
+            fundamental_missing_groups.append("Tăng trưởng lợi nhuận (8 điểm)")
+        if roe > 0:
+            fundamental_score_available += 8
+            if roe >= 15: fund_score += 8
+            elif roe >= 10: fund_score += 5
+            else: fund_score += 2
+        else:
+            fundamental_missing_groups.append("Sinh lời ROE (8 điểm)")
+        if nd.get("bctc_balance_sheet_valid", False) and debt_to_equity > 0:
+            fundamental_score_available += 12
+            if debt_to_equity <= 1.0: fund_score += 12
+            elif debt_to_equity <= 2.0: fund_score += 8
+            elif debt_to_equity <= 3.0: fund_score += 4
+            else: fund_notes.append("Đòn bẩy bất động sản cao")
+        else:
+            fundamental_missing_groups.append("Nợ vay và thanh khoản (12 điểm)")
+        if nd.get("bctc_income_ttm_complete", False) and nd.get("bctc_cfo_ttm_complete", False):
+            fundamental_score_available += 8
+            if net_profit_ttm > 0 and cfo_latest >= net_profit_ttm: fund_score += 8
+            elif net_profit_ttm > 0 and cfo_latest > 0: fund_score += 5
+            else: fund_notes.append("Chuyển đổi tiền mặt yếu")
+        else:
+            fundamental_missing_groups.append("Chuyển đổi lợi nhuận thành tiền (8 điểm)")
+        fundamental_missing_groups.append(
+            "Tồn kho dự án, người mua trả tiền trước, tiến độ bàn giao và pháp lý (14 điểm)"
+        )
+    elif is_maritime:
+        # Cảng/logistics: chưa có throughput, công suất và backlog; không tự ước lượng.
         if growth_available:
-            if profit_growth_yoy >= 15: fund_score += 18
-            elif profit_growth_yoy >= 0: fund_score += 10
-            else: fund_score -= 15; fund_notes.append("Suy thoái chu kỳ")
-        if roe >= 12: fund_score += 17
+            fundamental_score_available += 10
+            if profit_growth_yoy >= 15: fund_score += 10
+            elif profit_growth_yoy >= 5: fund_score += 6
+            elif profit_growth_yoy >= 0: fund_score += 3
+            else: fund_notes.append("Lợi nhuận logistics suy giảm")
+        else:
+            fundamental_missing_groups.append("Tăng trưởng (10 điểm)")
+        if roe > 0:
+            fundamental_score_available += 10
+            if roe >= 15: fund_score += 10
+            elif roe >= 10: fund_score += 7
+            else: fund_score += 3
+        else:
+            fundamental_missing_groups.append("Sinh lời ROE (10 điểm)")
+        if nd.get("bctc_balance_sheet_valid", False) and debt_to_equity > 0:
+            fundamental_score_available += 6
+            if debt_to_equity <= 0.8: fund_score += 6
+            elif debt_to_equity <= 1.5: fund_score += 4
+            elif debt_to_equity <= 2.5: fund_score += 2
+        else:
+            fundamental_missing_groups.append("Đòn bẩy và capex (một phần 6/10 điểm)")
+        if nd.get("bctc_income_ttm_complete", False) and nd.get("bctc_cfo_ttm_complete", False):
+            fundamental_score_available += 10
+            if net_profit_ttm > 0 and cfo_latest >= net_profit_ttm: fund_score += 10
+            elif cfo_latest > 0: fund_score += 5
+        else:
+            fundamental_missing_groups.append("Chuyển đổi lợi nhuận thành tiền (10 điểm)")
+        fundamental_missing_groups.extend([
+            "Sản lượng hàng hóa, công suất khai thác và backlog (10 điểm)",
+            "Phần capex còn lại trong nhóm đòn bẩy/capex (4 điểm)"
+        ])
+    elif is_consumer:
+        # Hàng tiêu dùng: chưa có dữ liệu thị phần/brand mix và vòng quay vốn lưu động.
+        if growth_available:
+            fundamental_score_available += 10
+            if profit_growth_yoy >= 15: fund_score += 10
+            elif profit_growth_yoy >= 5: fund_score += 7
+            elif profit_growth_yoy >= 0: fund_score += 3
+            else: fund_notes.append("Tăng trưởng tiêu dùng suy giảm")
+        else:
+            fundamental_missing_groups.append("Tăng trưởng (10 điểm)")
+        if roe > 0:
+            fundamental_score_available += 12
+            if roe >= 18: fund_score += 12
+            elif roe >= 12: fund_score += 8
+            elif roe >= 8: fund_score += 4
+        else:
+            fundamental_missing_groups.append("Sinh lời ROE (12 điểm)")
+        if nd.get("bctc_income_ttm_complete", False) and nd.get("bctc_cfo_ttm_complete", False):
+            fundamental_score_available += 10
+            if net_profit_ttm > 0 and cfo_latest >= net_profit_ttm: fund_score += 10
+            elif net_profit_ttm > 0 and cfo_latest > 0: fund_score += 6
+            elif cfo_latest > 0: fund_score += 3
+        else:
+            fundamental_missing_groups.append("Chuyển đổi tiền mặt (10 điểm)")
+        fundamental_missing_groups.extend([
+            "Thị phần, sức mạnh thương hiệu và cơ cấu sản phẩm (8 điểm)",
+            "Vòng quay tồn kho và vốn lưu động (10 điểm)"
+        ])
+    elif is_agri:
+        # Nông nghiệp: giá hàng hóa, tồn kho và vốn lưu động chưa có chuỗi chuẩn.
+        if growth_available:
+            fundamental_score_available += 8
+            if profit_growth_yoy >= 15: fund_score += 8
+            elif profit_growth_yoy >= 5: fund_score += 5
+            elif profit_growth_yoy >= 0: fund_score += 2
+        else:
+            fundamental_missing_groups.append("Tăng trưởng theo chu kỳ hàng hóa (8 điểm)")
+        if roe > 0:
+            fundamental_score_available += 12
+            if roe >= 15: fund_score += 12
+            elif roe >= 10: fund_score += 8
+            else: fund_score += 3
+        else:
+            fundamental_missing_groups.append("Sinh lời ROE (12 điểm)")
+        if nd.get("bctc_income_ttm_complete", False) and nd.get("bctc_cfo_ttm_complete", False):
+            fundamental_score_available += 10
+            if net_profit_ttm > 0 and cfo_latest >= net_profit_ttm: fund_score += 10
+            elif cfo_latest > 0: fund_score += 5
+        else:
+            fundamental_missing_groups.append("Chuyển đổi tiền mặt (10 điểm)")
+        fundamental_missing_groups.extend([
+            "Biên lợi nhuận và giá đầu vào/đầu ra (10 điểm)",
+            "Tồn kho và vốn lưu động (10 điểm)"
+        ])
+    elif is_aviation:
+        # Hàng không: chưa có dữ liệu hệ số sử dụng ghế, đội bay và nghĩa vụ thuê.
+        if growth_available:
+            fundamental_score_available += 10
+            if profit_growth_yoy >= 15: fund_score += 10
+            elif profit_growth_yoy >= 5: fund_score += 6
+            elif profit_growth_yoy >= 0: fund_score += 3
+        else:
+            fundamental_missing_groups.append("Tăng trưởng (10 điểm)")
+        if roe > 0:
+            fundamental_score_available += 10
+            if roe >= 15: fund_score += 10
+            elif roe >= 8: fund_score += 6
+            else: fund_score += 2
+        else:
+            fundamental_missing_groups.append("Sinh lời ROE (10 điểm)")
+        if nd.get("bctc_income_ttm_complete", False) and nd.get("bctc_cfo_ttm_complete", False):
+            fundamental_score_available += 10
+            if net_profit_ttm > 0 and cfo_latest >= net_profit_ttm: fund_score += 10
+            elif cfo_latest > 0: fund_score += 5
+        else:
+            fundamental_missing_groups.append("Chuyển đổi tiền mặt (10 điểm)")
+        fundamental_missing_groups.extend([
+            "Hệ số sử dụng ghế và hiệu quả khai thác đội bay (10 điểm)",
+            "Nợ thuê, đội bay và nghĩa vụ vốn (10 điểm)"
+        ])
+    elif is_construction:
+        # Nhà thầu: phải thu, backlog và dòng tiền hợp đồng là rủi ro trọng yếu.
+        if growth_available:
+            fundamental_score_available += 8
+            if profit_growth_yoy >= 15: fund_score += 8
+            elif profit_growth_yoy >= 5: fund_score += 5
+            elif profit_growth_yoy >= 0: fund_score += 2
+        else:
+            fundamental_missing_groups.append("Tăng trưởng (8 điểm)")
+        if roe > 0:
+            fundamental_score_available += 12
+            if roe >= 15: fund_score += 12
+            elif roe >= 10: fund_score += 8
+            else: fund_score += 3
+        else:
+            fundamental_missing_groups.append("Sinh lời ROE (12 điểm)")
+        if nd.get("bctc_balance_sheet_valid", False) and debt_to_equity > 0:
+            fundamental_score_available += 6
+            if debt_to_equity <= 0.7: fund_score += 6
+            elif debt_to_equity <= 1.2: fund_score += 4
+            elif debt_to_equity <= 2: fund_score += 2
+        else:
+            fundamental_missing_groups.append("Đòn bẩy và vốn lưu động (6/10 điểm)")
+        if nd.get("bctc_income_ttm_complete", False) and nd.get("bctc_cfo_ttm_complete", False):
+            fundamental_score_available += 10
+            if net_profit_ttm > 0 and cfo_latest >= net_profit_ttm: fund_score += 10
+            elif cfo_latest > 0: fund_score += 5
+        else:
+            fundamental_missing_groups.append("Chuyển đổi lợi nhuận thành tiền (10 điểm)")
+        fundamental_missing_groups.extend([
+            "Phải thu, backlog và chất lượng hợp đồng (10 điểm)",
+            "Phần vốn lưu động còn thiếu trong nhóm đòn bẩy (4 điểm)"
+        ])
+    elif is_holding:
+        # Holding: chưa có NAV từng công ty con/giá trị hợp lý khoản đầu tư.
+        if roe > 0:
+            fundamental_score_available += 8
+            if roe >= 15: fund_score += 8
+            elif roe >= 10: fund_score += 5
+            else: fund_score += 2
+        else:
+            fundamental_missing_groups.append("ROE hợp nhất/ROE hoạt động cốt lõi (8 điểm)")
+        if nd["dividend_yield"] > 0:
+            fundamental_score_available += 10
+            if nd["dividend_yield"] >= 5: fund_score += 10
+            elif nd["dividend_yield"] >= 3: fund_score += 6
+            else: fund_score += 3
+        else:
+            fundamental_missing_groups.append("Dòng cổ tức tiền mặt (10 điểm)")
+        if nd.get("bctc_balance_sheet_valid", False) and debt_to_equity > 0:
+            fundamental_score_available += 6
+            if debt_to_equity <= 0.5: fund_score += 6
+            elif debt_to_equity <= 1.0: fund_score += 4
+            else: fund_score += 1
+        else:
+            fundamental_missing_groups.append("Đòn bẩy công ty mẹ (6/10 điểm)")
+        if nd.get("bctc_income_ttm_complete", False) and nd.get("bctc_cfo_ttm_complete", False):
+            fundamental_score_available += 10
+            if cfo_latest > 0: fund_score += 10
+        else:
+            fundamental_missing_groups.append("CFO công ty mẹ và cổ tức nhận về (10 điểm)")
+        fundamental_missing_groups.extend([
+            "NAV và giá trị công ty con/liên kết (12 điểm)",
+            "Phân bổ vốn và chất lượng đầu tư (4 điểm)"
+        ])
+    elif is_building_materials:
+        # Vật liệu xây dựng: cần biên lợi nhuận theo chu kỳ, tồn kho và capex.
+        if growth_available:
+            fundamental_score_available += 8
+            if profit_growth_yoy >= 15: fund_score += 8
+            elif profit_growth_yoy >= 5: fund_score += 5
+            elif profit_growth_yoy >= 0: fund_score += 2
+        else:
+            fundamental_missing_groups.append("Tăng trưởng chu kỳ (8 điểm)")
+        if roe > 0:
+            fundamental_score_available += 6
+            if roe >= 15: fund_score += 6
+            elif roe >= 10: fund_score += 4
+            else: fund_score += 2
+        else:
+            fundamental_missing_groups.append("Sinh lời ROE (6 điểm)")
+        if nd.get("bctc_balance_sheet_valid", False) and debt_to_equity > 0:
+            fundamental_score_available += 6
+            if debt_to_equity <= 0.7: fund_score += 6
+            elif debt_to_equity <= 1.2: fund_score += 4
+            elif debt_to_equity <= 2.0: fund_score += 2
+        else:
+            fundamental_missing_groups.append("Nợ vay và capex (một phần 6/10 điểm)")
+        if nd.get("bctc_income_ttm_complete", False) and nd.get("bctc_cfo_ttm_complete", False):
+            fundamental_score_available += 10
+            if net_profit_ttm > 0 and cfo_latest >= net_profit_ttm: fund_score += 10
+            elif cfo_latest > 0: fund_score += 5
+        else:
+            fundamental_missing_groups.append("Chuyển đổi tiền mặt (10 điểm)")
+        fundamental_missing_groups.extend([
+            "Biên lợi nhuận giữa chu kỳ (6 điểm)",
+            "Tồn kho và vốn lưu động (10 điểm)",
+            "Phần capex còn lại trong nhóm nợ vay/capex (4 điểm)"
+        ])
+    elif is_technology:
+        # Công nghệ: tăng trưởng và sinh lời có dữ liệu; recurring revenue
+        # và ROIC chưa được trích xuất nên không tự cộng điểm.
+        if growth_available:
+            fundamental_score_available += 12
+            if profit_growth_yoy >= 20: fund_score += 12
+            elif profit_growth_yoy >= 10: fund_score += 8
+            elif profit_growth_yoy >= 0: fund_score += 4
+            else: fund_notes.append("Lợi nhuận công nghệ suy giảm")
+        else:
+            fundamental_missing_groups.append("Tăng trưởng (12 điểm)")
+        if roe > 0 or roa > 0:
+            fundamental_score_available += 12
+            if roe >= 18: fund_score += 9
+            elif roe >= 12: fund_score += 6
+            elif roe > 0: fund_score += 3
+            if roa >= 5: fund_score += 3
+            elif roa >= 2.5: fund_score += 2
+        else:
+            fundamental_missing_groups.append("Sinh lời (12 điểm)")
+        if nd.get("bctc_income_ttm_complete", False) and nd.get("bctc_cfo_ttm_complete", False):
+            fundamental_score_available += 10
+            if net_profit_ttm > 0 and cfo_latest >= net_profit_ttm:
+                fund_score += 10
+            elif net_profit_ttm > 0 and cfo_latest > 0:
+                fund_score += 6
+            elif cfo_latest > 0:
+                fund_score += 3
+            else:
+                fund_notes.append("Chuyển đổi tiền mặt yếu")
+        else:
+            fundamental_missing_groups.append("Chuyển đổi lợi nhuận thành tiền (10 điểm)")
+        fundamental_missing_groups.extend([
+            "Doanh thu định kỳ và cơ cấu doanh thu (8 điểm)",
+            "ROIC/năng suất vốn (8 điểm)"
+        ])
+    elif is_retail:
+        # Bán lẻ: tồn kho/vòng quay cửa hàng chưa có dữ liệu chuẩn; chỉ chấm
+        # tăng trưởng, sinh lời và chuyển đổi tiền mặt khi đủ kỳ báo cáo.
+        if growth_available:
+            fundamental_score_available += 10
+            if profit_growth_yoy >= 20: fund_score += 10
+            elif profit_growth_yoy >= 10: fund_score += 7
+            elif profit_growth_yoy >= 0: fund_score += 3
+            else: fund_notes.append("Lợi nhuận bán lẻ suy giảm")
+        else:
+            fundamental_missing_groups.append("Tăng trưởng (10 điểm)")
+        if roe > 0:
+            fundamental_score_available += 10
+            if roe >= 18: fund_score += 10
+            elif roe >= 12: fund_score += 7
+            else: fund_score += 3
+        else:
+            fundamental_missing_groups.append("Sinh lời ROE (10 điểm)")
+        if nd.get("bctc_income_ttm_complete", False) and nd.get("bctc_cfo_ttm_complete", False):
+            fundamental_score_available += 10
+            if net_profit_ttm > 0 and cfo_latest >= net_profit_ttm:
+                fund_score += 10
+            elif net_profit_ttm > 0 and cfo_latest > 0:
+                fund_score += 6
+            elif cfo_latest > 0:
+                fund_score += 3
+        else:
+            fundamental_missing_groups.append("Chuyển đổi lợi nhuận thành tiền (10 điểm)")
+        fundamental_missing_groups.extend([
+            "Vòng quay tồn kho và vốn lưu động (10 điểm)",
+            "Năng suất cửa hàng/doanh thu trên diện tích (10 điểm)"
+        ])
+    elif is_energy:
+        # Năng lượng: dữ liệu sản lượng/hợp đồng/phải thu và capex dự án chưa có.
+        if growth_available:
+            fundamental_score_available += 10
+            if profit_growth_yoy >= 15: fund_score += 10
+            elif profit_growth_yoy >= 5: fund_score += 6
+            elif profit_growth_yoy >= 0: fund_score += 3
+            else: fund_notes.append("Lợi nhuận năng lượng suy giảm")
+        else:
+            fundamental_missing_groups.append("Tăng trưởng theo chu kỳ/giá bán (10 điểm)")
+        if roe > 0 or roa > 0:
+            fundamental_score_available += 10
+            if roe >= 15: fund_score += 7
+            elif roe >= 10: fund_score += 5
+            elif roe > 0: fund_score += 2
+            if roa >= 5: fund_score += 3
+            elif roa >= 2.5: fund_score += 2
+        else:
+            fundamental_missing_groups.append("Sinh lời (10 điểm)")
+        if nd.get("bctc_income_ttm_complete", False) and nd.get("bctc_cfo_ttm_complete", False):
+            fundamental_score_available += 10
+            if net_profit_ttm > 0 and cfo_latest >= net_profit_ttm: fund_score += 10
+            elif net_profit_ttm > 0 and cfo_latest > 0: fund_score += 6
+            elif cfo_latest > 0: fund_score += 3
+        else:
+            fundamental_missing_groups.append("Chuyển đổi tiền mặt (10 điểm)")
+        fundamental_missing_groups.extend([
+            "Phải thu và chất lượng hợp đồng (10 điểm)",
+            "Capex, tiến độ và hiệu quả dự án (10 điểm)"
+        ])
+    elif is_utility:
+        # Điện/nước/hạ tầng: cổ tức là tín hiệu phân phối tiền, không thay thế CFO.
+        if growth_available:
+            fundamental_score_available += 8
+            if profit_growth_yoy >= 10: fund_score += 8
+            elif profit_growth_yoy >= 0: fund_score += 5
+            else: fund_notes.append("Lợi nhuận tiện ích suy giảm")
+        else:
+            fundamental_missing_groups.append("Tăng trưởng (8 điểm)")
+        if roe > 0:
+            fundamental_score_available += 10
+            if roe >= 15: fund_score += 10
+            elif roe >= 10: fund_score += 7
+            else: fund_score += 3
+        else:
+            fundamental_missing_groups.append("Sinh lời ROE (10 điểm)")
+        if nd["dividend_yield"] > 0:
+            fundamental_score_available += 6
+            if nd["dividend_yield"] >= 6: fund_score += 6
+            elif nd["dividend_yield"] >= 4: fund_score += 4
+            else: fund_score += 2
+        else:
+            fundamental_missing_groups.append("Lợi suất cổ tức (6 điểm)")
+        fundamental_missing_groups.extend([
+            "Nợ vay và nhu cầu capex (12 điểm)",
+            "CFO, cổ tức tiền mặt và khả năng chi trả (6 điểm)",
+            "Chất lượng tài sản và phải thu (8 điểm)"
+        ])
+    elif is_steel or is_fertilizer:
+        # Tách thép và phân bón vì biên lợi nhuận, tồn kho và chu kỳ giá đầu vào khác nhau.
+        if growth_available:
+            fundamental_score_available += 8
+            if profit_growth_yoy >= 15: fund_score += 8
+            elif profit_growth_yoy >= 0: fund_score += 5
+            else: fund_notes.append("Lợi nhuận giảm theo chu kỳ hàng hóa")
+        else:
+            fundamental_missing_groups.append("Tăng trưởng chu kỳ (8 điểm)")
+        if roe > 0:
+            fundamental_score_available += 8
+            if roe >= (15 if is_steel else 18): fund_score += 8
+            elif roe >= 10: fund_score += 5
+            else: fund_score += 2
+        else:
+            fundamental_missing_groups.append("Hiệu quả vốn ROE (8 điểm)")
+        if nd.get("bctc_balance_sheet_valid", False) and debt_to_equity > 0:
+            fundamental_score_available += 6
+            if debt_to_equity <= 0.7: fund_score += 6
+            elif debt_to_equity <= 1.2: fund_score += 4
+            elif debt_to_equity <= 2.0: fund_score += 2
+        else:
+            fundamental_missing_groups.append("Đòn bẩy tài chính (6 điểm)")
+        if nd.get("bctc_income_ttm_complete", False) and nd.get("bctc_cfo_ttm_complete", False):
+            fundamental_score_available += 6
+            if net_profit_ttm > 0 and cfo_latest >= net_profit_ttm: fund_score += 6
+            elif cfo_latest > 0: fund_score += 3
+        else:
+            fundamental_missing_groups.append("CFO và chất lượng lợi nhuận (6 điểm)")
+        fundamental_missing_groups.extend([
+            "Biên lợi nhuận chuẩn hóa giữa chu kỳ (12 điểm)",
+            "Tồn kho, giá bán/đầu vào và vốn lưu động (10 điểm)"
+        ])
+    elif is_cyclical_material:
+        # Vật liệu chu kỳ: không dùng P/E thấp như bằng chứng rẻ khi lợi nhuận ở đỉnh chu kỳ.
+        if growth_available:
+            fundamental_score_available += 8
+            if profit_growth_yoy >= 15: fund_score += 8
+            elif profit_growth_yoy >= 0: fund_score += 5
+            else: fund_notes.append("Suy giảm lợi nhuận theo chu kỳ")
+        else:
+            fundamental_missing_groups.append("Tăng trưởng chu kỳ (8 điểm)")
+        if roe > 0:
+            fundamental_score_available += 8
+            if roe >= 15: fund_score += 8
+            elif roe >= 10: fund_score += 5
+            else: fund_score += 2
+        else:
+            fundamental_missing_groups.append("Hiệu quả vốn ROE (8 điểm)")
+        if nd.get("bctc_balance_sheet_valid", False) and debt_to_equity > 0:
+            fundamental_score_available += 6
+            if debt_to_equity <= 0.7: fund_score += 6
+            elif debt_to_equity <= 1.2: fund_score += 4
+            elif debt_to_equity <= 2.0: fund_score += 2
+        else:
+            fundamental_missing_groups.append("Đòn bẩy tài chính (6 điểm)")
+        if nd.get("bctc_income_ttm_complete", False) and nd.get("bctc_cfo_ttm_complete", False):
+            fundamental_score_available += 6
+            if net_profit_ttm > 0 and cfo_latest >= net_profit_ttm: fund_score += 6
+            elif cfo_latest > 0: fund_score += 3
+        else:
+            fundamental_missing_groups.append("CFO và chất lượng lợi nhuận (6 điểm)")
+        fundamental_missing_groups.extend([
+            "Biên lợi nhuận giữa chu kỳ (12 điểm)",
+            "Tồn kho, giá nguyên liệu và vốn lưu động (10 điểm)"
+        ])
     else:
         if growth_available:
             if profit_growth_yoy >= 10: fund_score += 15
@@ -1474,10 +2008,34 @@ def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_
         if roe >= 14: fund_score += 20; fund_notes.append("ROE cao")
         elif roe >= 10: fund_score += 10
         
-    if roa >= 5.0: fund_score += 5
-    elif roa >= 2.5: fund_score += 3
+    if sector not in ("NGAN_HANG", "CHUNG_KHOAN", "BAT_DONG_SAN", "NGUYEN_VAT_LIEU_CHU_KY") and not is_insurance and not is_technology and not is_retail and not is_energy and not is_utility and not is_maritime and not is_consumer and not is_building_materials and not is_steel and not is_fertilizer and not is_agri and not is_aviation and not is_construction and not is_holding:
+        if roa >= 5.0: fund_score += 5
+        elif roa >= 2.5: fund_score += 3
 
-    if sector not in ["NGAN_HANG", "CHUNG_KHOAN"]:
+    # Đo độ bao phủ theo đúng các đầu vào hiện hữu; không tự coi thiếu dữ liệu là điểm.
+    if sector not in ("NGAN_HANG", "CHUNG_KHOAN", "BAT_DONG_SAN", "NGUYEN_VAT_LIEU_CHU_KY") and not is_insurance and not is_technology and not is_retail and not is_energy and not is_utility and not is_maritime and not is_consumer and not is_building_materials and not is_steel and not is_fertilizer and not is_agri and not is_aviation and not is_construction and not is_holding:
+        if growth_available:
+            fundamental_score_available += 15
+        else:
+            fundamental_missing_groups.append("Tăng trưởng lợi nhuận (15 điểm)")
+        if roe > 0:
+            fundamental_score_available += 20
+        else:
+            fundamental_missing_groups.append("Sinh lời ROE (20 điểm)")
+        if roa > 0:
+            fundamental_score_available += 5
+        else:
+            fundamental_missing_groups.append("Hiệu quả tài sản ROA (5 điểm)")
+        if nd.get("bctc_income_ttm_complete", False) and nd.get("bctc_cfo_ttm_complete", False):
+            fundamental_score_available += 5
+        else:
+            fundamental_missing_groups.append("Chất lượng lợi nhuận/CFO TTM (5 điểm)")
+        if nd.get("bctc_balance_sheet_valid", False) and debt_to_equity > 0:
+            fundamental_score_available += 5
+        else:
+            fundamental_missing_groups.append("Đòn bẩy và cấu trúc vốn (5 điểm)")
+
+    if sector not in ["NGAN_HANG", "CHUNG_KHOAN", "BAT_DONG_SAN", "NGUYEN_VAT_LIEU_CHU_KY"] and not is_insurance and not is_technology and not is_retail and not is_energy and not is_utility and not is_maritime and not is_consumer and not is_building_materials and not is_steel and not is_fertilizer and not is_agri and not is_aviation and not is_construction and not is_holding:
         if net_profit_ttm < 0:
             fund_score -= 10
             fund_notes.append("LNST TTM âm")
@@ -1495,6 +2053,15 @@ def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_
         if not nd.get("bctc_balance_sheet_valid", False):
             fund_notes.append("Thiếu dữ liệu bảng cân đối để đánh giá đòn bẩy")
     fund_score = int(np.clip(fund_score, 0, 50))
+    fundamental_score_coverage_pct = round(
+        min(100.0, fundamental_score_available / 50 * 100), 1
+    )
+    coverage_note = (
+        f"Bao phủ dữ liệu PTCB: {fundamental_score_available}/50 "
+        f"({fundamental_score_coverage_pct}%)."
+    )
+    if fundamental_missing_groups:
+        coverage_note += " Chưa chấm được: " + "; ".join(fundamental_missing_groups)
 
     # Không có điểm định giá mặc định: chỉ chấm khi có chỉ tiêu hợp lệ.
     # P/E chỉ hợp lệ khi LNST TTM dương và BCTC đủ 4 quý; P/B cần dữ liệu PB dương.
@@ -1503,11 +2070,38 @@ def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_
     valid_pb = pb > 0
     valid_dividend = nd["dividend_yield"] > 0
 
-    if sector == "BAT_DONG_SAN":
-        if valid_pb:
-            if pb < 1.5: val_score = 30
-            elif pb < 2.2: val_score = 18
-            elif pb < 3.0: val_score = 8
+    if sector == "BAT_DONG_SAN" and not is_holding:
+        # RNAV chưa được tính do chưa có dữ liệu pháp lý/tiến độ từng dự án.
+        # Chấm P/B thận trọng cùng ROE, không coi P/B thấp là đủ rẻ.
+        if valid_pb and roe > 0:
+            if pb <= 0.8 and roe >= 12: val_score = 30
+            elif pb <= 1.0 and roe >= 10: val_score = 24
+            elif pb <= 1.3 and roe >= 12: val_score = 18
+            elif pb <= 1.8 and roe >= 10: val_score = 10
+            elif pb <= 2.2: val_score = 5
+    elif is_steel or is_fertilizer:
+        # P/E có thể thấp giả tạo ở đỉnh chu kỳ; chỉ cho điểm cao khi P/B cũng hợp lý.
+        if valid_pb and roe > 0:
+            if pb <= 0.8 and roe >= 12: val_score = 25
+            elif pb <= 1.1 and roe >= 10: val_score = 20
+            elif pb <= 1.5: val_score = 12
+        if valid_pe and pe < (10 if is_steel else 12) and profit_growth_yoy <= 15:
+            val_score = max(val_score, 15)
+    elif is_holding:
+        # NAV/holding discount chưa thể tính khi chưa có giá trị từng công ty con.
+        if valid_pb and roe > 0:
+            if pb <= 0.8 and roe >= 12: val_score = 25
+            elif pb <= 1.1 and roe >= 10: val_score = 20
+            elif pb <= 1.5: val_score = 12
+    elif is_building_materials:
+        if valid_pe:
+            if pe < 12: val_score = 30
+            elif pe < 16: val_score = 20
+            elif pe < 22: val_score = 10
+        elif valid_pb and roe > 0:
+            if pb <= 1.0 and roe >= 12: val_score = 22
+            elif pb <= 1.5 and roe >= 10: val_score = 15
+            elif pb <= 2.0: val_score = 7
     elif sector == "NGUYEN_VAT_LIEU_CHU_KY":
         if valid_pe:
             if pe < 12: val_score = 30
@@ -1515,12 +2109,29 @@ def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_
             elif pe < 25: val_score = 8
         elif valid_pb and pb < 1.5:
             val_score = 12
-    elif sector == "CONG_NGHE_BAN_LE":
+    elif is_technology:
         if valid_pe:
-            if pe < 18 or (nd.get("profit_growth_yoy_available") and profit_growth_yoy > 20 and pe < 25): val_score = 30
-            elif pe < 25: val_score = 18
-            elif pe < 35: val_score = 8
-    elif sector in ["NGAN_HANG", "CHUNG_KHOAN"]:
+            if nd.get("profit_growth_yoy_available") and profit_growth_yoy >= 20 and pe < 30: val_score = 30
+            elif pe < 22: val_score = 24
+            elif pe < 28: val_score = 15
+            elif pe < 35: val_score = 7
+    elif is_retail:
+        if valid_pe:
+            if pe < 16: val_score = 30
+            elif pe < 21: val_score = 22
+            elif pe < 27: val_score = 12
+            elif pe < 35: val_score = 5
+    elif sector == "NGAN_HANG" or is_insurance:
+        # Ngân hàng và bảo hiểm: P/B phải xét cùng ROE; không dùng P/E đơn lẻ.
+        if valid_pb and roe > 0:
+            if pb <= 0.8 and roe >= 10: val_score = 30
+            elif pb <= 1.0 and roe >= 12: val_score = 27
+            elif pb <= 1.2 and roe >= 15: val_score = 25
+            elif pb <= 1.5 and roe >= 18: val_score = 23
+            elif pb <= 1.5 and roe >= 12: val_score = 18
+            elif pb <= 2.0 and roe >= 15: val_score = 14
+            elif pb <= 2.5 and roe >= 12: val_score = 8
+    elif sector == "CHUNG_KHOAN":
         if valid_pb:
             if pb < 1.3 or (roe >= 16 and pb < 1.8): val_score = 30
             elif pb < 2.0: val_score = 18
@@ -1536,7 +2147,7 @@ def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_
     potential_zone = "VÙNG TÍCH SẢN TỐI ƯU (A+)" if total_score >= 75 else ("VÙNG MUA AN TOÀN (B)" if total_score >= 60 else "THEO DÕI THÊM")
     
     fv = compute_fair_value_zone(symbol, nd, sector_median, config, group_label)
-    decision, color, reason = compute_final_decision(fund_score, tech_score, val_score, total_score, fv["verdict"], cfo_latest, net_profit_ttm, roe, debt_to_equity, fv["discount_to_fair_pct"], close_price, fv["fair_high"], fv["fair_low"], sector=sector)
+    decision, color, reason = compute_final_decision(fund_score, tech_score, val_score, total_score, fv["verdict"], cfo_latest, net_profit_ttm, roe, debt_to_equity, fv["discount_to_fair_pct"], close_price, fv["fair_high"], fv["fair_low"], sector=("INSURANCE" if is_insurance else sector), fundamental_coverage_pct=fundamental_score_coverage_pct)
 
     sim_data = get_historical_return_rate_with_details(symbol, history_bars)
     meta = VN100_METADATA.get(symbol, {})
@@ -1573,10 +2184,15 @@ def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_
         "symbol": symbol, "sector": sector, "sub_sector": group_label, "close_price": close_price, "pe": pe, "pb": pb,
         "roe": roe, "roa": roa, "eps": round(nd["eps"], 0), "bvps": round(nd["bvps"], 0), "dividend_yield": nd["dividend_yield"], "profit_growth_yoy": profit_growth_yoy,
         "cfo_latest": cfo_latest, "net_profit_ttm": net_profit_ttm, "debt_to_equity": debt_to_equity, "gross_margin": nd["gross_margin"],
+        "bank_cir": nd.get("bank_cir", 0),
+        "bank_cir_available": bool(nd.get("bank_cir_available", False)),
         "fundamental_score": fund_score, "valuation_score": val_score, "technical_score": tech_score, "total_score": total_score,
+        "fundamental_score_available": fundamental_score_available,
+        "fundamental_score_coverage_pct": fundamental_score_coverage_pct,
+        "fundamental_missing_groups": fundamental_missing_groups,
         "potential_zone": potential_zone, "pattern": pattern, "technical_status": tech_status,
         "technical_score_breakdown": technical_details or {},
-        "fundamental_notes": " | ".join(fund_notes), "fair_value_high": fv["fair_high"], "fair_value_low": fv["fair_low"], "graham_number": fv["graham"],
+        "fundamental_notes": " | ".join(fund_notes + [coverage_note]), "fair_value_high": fv["fair_high"], "fair_value_low": fv["fair_low"], "graham_number": fv["graham"],
         "margin_of_safety_pct": fv["margin_of_safety_pct"],
         "mos_target_pct": fv["mos_target_pct"],
         "fair_value_methods": fv["methods"], "fair_value_rationale": fv["rationale"],
@@ -2508,7 +3124,8 @@ def screener_worker():
                             close_price=r.get("close_price", 0),
                             fair_high=r.get("fair_value_high", 0),
                             fair_low=r.get("fair_value_low", 0),
-                            sector=get_sector(sym)
+                            sector=get_sub_sector(sym),
+                            fundamental_coverage_pct=float(r.get("fundamental_score_coverage_pct", 0) or 0)
                         )
                         r["final_decision"] = fd_label
                         r["final_decision_color"] = fd_color
@@ -2802,6 +3419,74 @@ def api_admin_bctc_summary():
         return jsonify({
             "status": "error",
             "message": "Không đọc được tóm tắt BCTC. Kiểm tra log backend."
+        }), 500
+
+
+def _build_bctc_selected_fields_pipeline(period=None):
+    """Build Mongo aggregation that returns only selected diagnostic balance-sheet rows."""
+    selected_period = period if period else "$latest_period"
+    return [
+        {"$match": {}},
+        {"$project": {
+            "_id": 0,
+            "symbol": 1,
+            "updated_at": 1,
+            "latest_period": 1,
+            "source": 1,
+            "balance_sheet": {
+                "$filter": {
+                    "input": {"$ifNull": ["$balance_sheet", []]},
+                    "as": "row",
+                    "cond": {
+                        "$and": [
+                            {"$in": ["$$row.source_field", ["bsb103", "bsb104", "bsb105"]]},
+                            {"$eq": ["$$row.period", selected_period]},
+                        ]
+                    },
+                }
+            },
+        }},
+        {"$limit": 1},
+    ]
+
+
+@app.get("/api/admin/bctc-bank-loans")
+def api_admin_bctc_bank_loans():
+    """Return only CTG-style customer-loan fields for one period; never the full BCTC."""
+    if not ADMIN_SECRET_KEY or request.args.get("key") != ADMIN_SECRET_KEY:
+        return jsonify({"status": "error", "message": "Không có quyền truy cập."}), 403
+
+    symbol = request.args.get("symbol", "").upper().strip()
+    period = request.args.get("period", "").strip()
+    if not re.fullmatch(r"[A-Z0-9]{2,10}", symbol):
+        return jsonify({"status": "error", "message": "Mã cổ phiếu không hợp lệ."}), 400
+    if period and not re.fullmatch(r"\d{4}-Q[1-4]", period):
+        return jsonify({"status": "error", "message": "Kỳ BCTC không hợp lệ."}), 400
+
+    try:
+        pipeline = _build_bctc_selected_fields_pipeline(period or None)
+        pipeline[0]["$match"] = {"symbol": symbol}
+        doc = next(bctc_col.aggregate(pipeline, maxTimeMS=8000), None)
+        if not doc:
+            return jsonify({"status": "error", "message": f"Không tìm thấy BCTC của {symbol}."}), 404
+
+        rows = doc.get("balance_sheet") or []
+        return jsonify({
+            "status": "success",
+            "symbol": symbol,
+            "source": doc.get("source"),
+            "updated_at": doc.get("updated_at"),
+            "latest_period": doc.get("latest_period"),
+            "requested_period": period or doc.get("latest_period"),
+            "fields": rows,
+            "field_count": len(rows),
+            "note": "Chỉ trả bsb103, bsb104, bsb105 của một kỳ; chưa tự kết luận dư nợ gộp/net.",
+        }), 200
+    except Exception as e:
+        log_exception(f"[API BCTC BANK LOANS] Lỗi đọc {symbol}", e)
+        return jsonify({
+            "status": "error",
+            "message": "Không đọc được các trường BCTC đã chọn. Kiểm tra log backend."
         }), 500
 
 
