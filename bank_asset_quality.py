@@ -10,12 +10,14 @@ import unicodedata
 
 _KEYWORDS = {
     "NPL": (
-        "no xau", "no duoi tieu chuan", "no nghi ngo",
-        "no co kha nang mat von", "non performing loan",
+        "no xau", "du no xau", "no duoi tieu chuan", "du no duoi tieu chuan",
+        "no nghi ngo", "du no nghi ngo", "no co kha nang mat von",
+        "du no co kha nang mat von", "non performing loan",
         "non-performing loan", "impaired loan", "bad debt",
     ),
     "GROUP_2": (
-        "no nhom 2", "group 2 debt", "group 2 loan",
+        "no nhom 2", "du no nhom 2", "no can chu y",
+        "du no can chu y", "group 2 debt", "group 2 loan",
         "special mention loan", "special mention debt",
     ),
     "DEMAND_DEPOSITS": (
@@ -99,4 +101,37 @@ def discover_bank_asset_quality_fields(rows, max_periods=12, max_fields=30):
         "candidates": result[:max_fields],
         "truncated": len(result) > max_fields,
         "mapping_status": "DISCOVERY_ONLY_NOT_VERIFIED",
+    }
+
+
+
+def discover_bank_asset_quality_metadata(catalog, max_fields=100):
+    """Find matching labels in the VCI metadata catalog, including fields
+    that have no numeric value in the stored quarterly statements.
+    """
+    if not isinstance(max_fields, int) or not 1 <= max_fields <= 300:
+        raise ValueError("max_fields must be between 1 and 300")
+
+    results = []
+    if not isinstance(catalog, dict):
+        catalog = {}
+    for section, fields in catalog.items():
+        if not isinstance(fields, dict):
+            continue
+        for source_field, title in fields.items():
+            category = classify_bank_candidate(title)
+            if not category:
+                continue
+            results.append({
+                "category": category,
+                "source_section": str(section),
+                "source_field": str(source_field),
+                "name": str(title),
+            })
+    results.sort(key=lambda x: (x["category"], x["source_section"], x["source_field"]))
+    return {
+        "candidate_count": len(results),
+        "candidates": results[:max_fields],
+        "truncated": len(results) > max_fields,
+        "mapping_status": "METADATA_DISCOVERY_ONLY_NOT_VERIFIED",
     }
