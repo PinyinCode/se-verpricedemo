@@ -57,10 +57,11 @@ VCI_FIELD_MAP = {
         "bsb100": "BS_TRADING_SECURITIES",
         "bsb101": "BS_PROVISION_FOR_TRADING_SECURITIES",
         "bsb102": "BS_DERIVATIVE_AND_OTHER_FINANCIAL_ASSETS",
-        # VCI trả hai dòng cùng tên "Cho vay khách hàng". Chưa đủ căn cứ
-        # xác nhận bsb103 là dư nợ gộp hay dư nợ sau dự phòng.
-        "bsb103": "BS_CUSTOMER_LOANS_UNVERIFIED",
-        "bsb104": "BS_CUSTOMER_LOANS_DETAIL_UNVERIFIED",
+        # Đã đối chiếu số liệu VCI trực tiếp: CTG Q2/Q3-2026,
+        # VCB Q3-2026 và BID Q3-2026. bsb103 = bsb104 + bsb105
+        # (bsb105 mang dấu âm trong dữ liệu nguồn).
+        "bsb103": "BS_CUSTOMER_LOANS_NET",
+        "bsb104": "BS_CUSTOMER_LOANS_GROSS",
         "bsb105": "BS_PROVISION_FOR_CUSTOMER_LOANS",
         "bsb106": "BS_INVESTMENT_SECURITIES",
         "bsb107": "BS_AVAILABLE_FOR_SALE_SECURITIES",
@@ -105,7 +106,7 @@ VCI_FIELD_MAP = {
         "isb38": "IS_TOTAL_OPERATING_INCOME_BANK",
         # VCI có thể đặt nhãn "Chi phí quản lý doanh nghiệp"; chỉ dùng cho CIR
         # khi metadata xác nhận đúng dòng "Chi phí hoạt động".
-        "isb39": "IS_OPERATING_EXPENSE_BANK_UNVERIFIED",
+        "isb39": "IS_OPERATING_EXPENSE_BANK",
         "isb40": "IS_PROFIT_BEFORE_CREDIT_PROVISIONS",
         "isb41": "IS_CREDIT_LOSS_PROVISION",
     },
@@ -192,11 +193,6 @@ def canonicalize_vci_field(report_name, field_code, title):
     section = str(report_name or "").lower()
     field = str(field_code or "").lower()
     exact = VCI_FIELD_MAP.get(section, {}).get(field)
-    if section == "income_statement" and field == "isb39":
-        label = normalize_label(title or "")
-        if label in ("chi phi hoat dong", "operating expenses", "operating expense"):
-            return "IS_OPERATING_EXPENSE_BANK"
-        return "IS_OPERATING_EXPENSE_BANK_UNVERIFIED"
     if exact:
         return exact
     label = normalize_label(title or "")
@@ -251,8 +247,10 @@ DATA_QUALITY_RULES = {
     "car_requires_regulatory_capital_and_risk_weighted_assets": True,
     "npl_ratio_requires_npl_and_gross_customer_loans": True,
     "npl_coverage_requires_credit_provisions_and_npl": True,
-    "gross_customer_loans_mapping_verified": False,
+    "gross_customer_loans_mapping_verified": True,
     "bank_cir_requires_verified_operating_expense_label": True,
+    "bank_isb39_verified_by_ppop_reconciliation": True,
+    "bank_income_quarter_basis_verified": True,
     "group_2_loans_mapping_verified": False,
     "demand_deposits_mapping_verified": False,
     "regulatory_car_must_not_be_inferred_from_equity_assets": True,
@@ -276,8 +274,9 @@ VERIFIED_CURRENCY_FIELDS = {
     if key not in PER_SHARE_FIELDS
 }
 
-# Never sum a subtotal with its child rows. The customer-loan pair remains
-# unresolved until raw CTG values and the full VCI hierarchy are inspected.
+# Never sum a subtotal with its child rows. Customer loans: bsb104 is gross,
+# bsb103 is net after the negative contra-asset bsb105; these are alternatives
+# for different calculations and must never be added together.
 NO_DOUBLE_COUNT_GROUPS = {
     ("balance_sheet", "bsa29"): ("bsa30", "bsa33", "bsa36"),
     ("balance_sheet", "bsa30"): ("bsa31", "bsa32"),
@@ -286,6 +285,7 @@ NO_DOUBLE_COUNT_GROUPS = {
     ("balance_sheet", "bsa40"): ("bsa41", "bsa42"),
     ("balance_sheet", "bsa43"): ("bsa44", "bsa45", "bsa46", "bsa47"),
     ("balance_sheet", "bsb100"): ("bsb101",),
+    ("balance_sheet", "bsb104"): ("bsb103", "bsb105"),
     ("balance_sheet", "bsb106"): ("bsb107", "bsb108", "bsb109"),
     ("balance_sheet", "bsa96"): ("bsa54", "bsa78"),
 }
@@ -304,9 +304,6 @@ def resolve_vci_unit(report_name, source_field, metadata_unit=None):
     return ""
 
 UNVERIFIED_CANONICAL_IDS = {
-    "BS_CUSTOMER_LOANS_UNVERIFIED",
-    "BS_CUSTOMER_LOANS_DETAIL_UNVERIFIED",
-    "IS_OPERATING_EXPENSE_BANK_UNVERIFIED",
 }
 
 def get_vci_field_rule(report_name, source_field):
@@ -364,6 +361,8 @@ METRIC_FORMULAS = {
     "CASA": {"formula": "demand_deposits / customer_deposits", "source": "UNAVAILABLE_UNTIL_DEMAND_DEPOSIT_FIELD_IS_VERIFIED", "higher_is_better": True},
     "LDR": {"formula": "customer_loans / customer_deposits", "source": "BCTC_if_both_fields_verified", "interpretation": "compare_with_regulatory_and_peer_context"},
     "CIR": {"formula": "operating_expenses / operating_income", "source": "BCTC_if_bank_lines_verified", "lower_is_better": True},
+    "BANK_NON_INTEREST_INCOME_SHARE": {"formula": "(total_operating_income_TTM - net_interest_income_TTM) / total_operating_income_TTM", "source": "BCTC_if_same_basis_and_positive_total_operating_income", "interpretation": "income diversification; assess alongside recurring quality and volatility"},
+    "BANK_PPOP_MARGIN": {"formula": "profit_before_credit_provisions_TTM / total_operating_income_TTM", "source": "BCTC_if_same_basis_and_positive_total_operating_income", "higher_is_better": True, "interpretation": "pre-provision operating profitability; not a substitute for ROA or ROE"},
     "CREDIT_GROWTH": {"formula": "latest_period_gross_loans / prior_year_same_period_gross_loans - 1", "source": "BCTC_if_comparable_periods", "interpretation": "growth_not_quality_by_itself"},
     "MARGIN_LOAN_RATIO": {"formula": "margin_loans / equity_or_total_assets", "source": "BROKER_DISCLOSURE", "interpretation": "higher_can_mean_higher_risk"},
     "BROKERAGE_SHARE": {"formula": "brokerage_revenue_or_market_share / relevant_market_total", "source": "EXCHANGE_OR_COMPANY_DISCLOSURE"},
@@ -497,8 +496,14 @@ def validate_bctc_rules():
         errors.append("bsa78 must map to BS_OWNERS_EQUITY.")
     if VCI_FIELD_MAP["balance_sheet"].get("bsa96") != "BS_TOTAL_LIABILITIES_AND_EQUITY":
         errors.append("bsa96 must map to BS_TOTAL_LIABILITIES_AND_EQUITY.")
-    if VCI_FIELD_MAP["balance_sheet"].get("bsb103") == "BS_CUSTOMER_LOANS":
-        errors.append("Ambiguous bsb103 must not be treated as verified gross customer loans.")
+    if VCI_FIELD_MAP["balance_sheet"].get("bsb103") != "BS_CUSTOMER_LOANS_NET":
+        errors.append("bsb103 must map to net customer loans.")
+    if VCI_FIELD_MAP["balance_sheet"].get("bsb104") != "BS_CUSTOMER_LOANS_GROSS":
+        errors.append("bsb104 must map to gross customer loans.")
+    if VCI_FIELD_MAP["balance_sheet"].get("bsb105") != "BS_PROVISION_FOR_CUSTOMER_LOANS":
+        errors.append("bsb105 must map to customer-loan provisions.")
+    if not DATA_QUALITY_RULES["gross_customer_loans_mapping_verified"]:
+        errors.append("Gross customer-loan mapping must remain verified after cross-bank reconciliation.")
     if any(
         "cho vay khach hang" in normalize_label(phrase)
         for phrases, _canonical in TITLE_RULES.get("balance_sheet", [])
