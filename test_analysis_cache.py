@@ -31,6 +31,22 @@ class TestTTLCache(unittest.TestCase):
         self.assertEqual(cache.stats()["hits"], 1)
         self.assertEqual(cache.stats()["misses"], 1)
 
+
+    def test_non_finite_ttl_and_non_integer_capacity_are_rejected(self):
+        for value in (float("nan"), float("inf"), float("-inf"), 0, -1, True):
+            with self.subTest(ttl=value):
+                with self.assertRaises(ValueError):
+                    TTLCache(ttl_seconds=value)
+        with self.assertRaises(ValueError):
+            TTLCache(max_items=1.5)
+        with self.assertRaises(ValueError):
+            TTLCache(ttl_seconds=True)
+        cache = TTLCache()
+        for value in (float("nan"), float("inf"), float("-inf"), 0, -1):
+            with self.subTest(set_ttl=value):
+                with self.assertRaises(ValueError):
+                    cache.set("x", 1, ttl_seconds=value)
+
     def test_invalid_configuration_is_rejected(self):
         with self.assertRaises(ValueError):
             TTLCache(max_items=0)
