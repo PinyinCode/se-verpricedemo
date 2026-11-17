@@ -1851,6 +1851,8 @@ def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_
         and not is_agri_processing
     )
     pe, pb, roe, roa = nd["pe"], nd["pb"], nd["roe"], nd["roa"]
+    # Xác minh ROE trước khi dùng trong các nhánh chấm điểm định giá.
+    roe_is_verified = nd.get("roe_available", False) is True
     close_price, cfo_latest, net_profit_ttm = nd["close_price"], nd["cfo_latest"], nd["net_profit_ttm"]
     debt_to_equity, profit_growth_yoy, credit_growth_yoy = nd["debt_to_equity"], nd["profit_growth_yoy"], nd["credit_growth_yoy"]
     
