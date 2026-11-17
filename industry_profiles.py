@@ -341,6 +341,12 @@ def summarize_all_sector_scoring_readiness():
                 LEGACY_SCORING_AVAILABLE_WEIGHTS.get(profile_id, 0)
                 >= float(profile.get("score_weight", 50) or 50) * 0.65
             ),
+            "legacy_coverage_gate_status": (
+                "can_clear_65pct"
+                if LEGACY_SCORING_AVAILABLE_WEIGHTS.get(profile_id, 0)
+                >= float(profile.get("score_weight", 50) or 50) * 0.65
+                else "below_65pct"
+            ),
             "legacy_trial_status": (
                 "trial_partial"
                 if path and LEGACY_SCORING_AVAILABLE_WEIGHTS.get(profile_id, 0)
@@ -352,6 +358,16 @@ def summarize_all_sector_scoring_readiness():
             "metric_group_count": len(profile.get("metric_groups") or {}),
             "required_metric_count": metric_readiness.get("required_metric_count", 0),
             "source_verified_count": metric_readiness.get("source_verified_count", 0),
+            "source_mapping_coverage_pct": metric_readiness.get(
+                "source_mapping_coverage_pct", 0.0
+            ),
+            "metric_readiness_status": metric_readiness.get(
+                "readiness_status", "unknown_sector"
+            ),
+            "verified_metric_ids": list(metric_readiness.get("verified_metric_ids") or []),
+            "unavailable_metric_ids": list(metric_readiness.get("unavailable_metric_ids") or []),
+            "unsupported_metric_ids": list(metric_readiness.get("unsupported_metric_ids") or []),
+            "uncatalogued_metric_ids": list(metric_readiness.get("uncatalogued_metric_ids") or []),
             "unavailable_count": metric_readiness.get("unavailable_count", 0),
             "unsupported_or_uncatalogued_count": metric_readiness.get(
                 "unsupported_or_uncatalogued_count", 0
@@ -374,7 +390,7 @@ def summarize_all_sector_scoring_readiness():
         ),
         "legacy_trial_coverage_possible_count": sum(
             1 for item in rows.values()
-            if item["legacy_trial_status"] == "trial_bctc_coverage_possible"
+            if item["legacy_can_clear_65pct_gate"]
         ),
         "legacy_trial_below_65pct_count": sum(
             1 for item in rows.values() if not item["legacy_can_clear_65pct_gate"]
