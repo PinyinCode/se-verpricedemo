@@ -493,6 +493,27 @@ def validate_metric_catalog():
                 "metric_id": metric_id,
                 "code": "canonical_metric_formula_missing",
             })
+        if status.startswith("verified"):
+            if not isinstance(definition.get("source_fields"), (list, tuple)) or not definition.get("source_fields"):
+                errors.append({
+                    "metric_id": metric_id,
+                    "code": "verified_metric_source_fields_missing",
+                })
+            if not isinstance(definition.get("source_sections"), dict) or not definition.get("source_sections"):
+                errors.append({
+                    "metric_id": metric_id,
+                    "code": "verified_metric_source_sections_missing",
+                })
+            if not str(definition.get("formula") or "").strip():
+                errors.append({
+                    "metric_id": metric_id,
+                    "code": "verified_metric_formula_missing",
+                })
+            if not str(definition.get("unit") or "").strip():
+                errors.append({
+                    "metric_id": metric_id,
+                    "code": "verified_metric_unit_missing",
+                })
         if not str(definition.get("notes") or "").strip():
             errors.append({
                 "metric_id": metric_id,
