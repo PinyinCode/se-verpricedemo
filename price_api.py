@@ -3755,7 +3755,33 @@ def screener_worker():
                 print("[SCREENER] ⚡ Đang tải trước toàn bộ dữ liệu (Stocks, BCTC, History)...", flush=True)
                 # Không tải bctc_history cũ từ collection stocks: dữ liệu này được thay
                 # bằng BCTC đã preload ngay bên dưới, tránh nhân đôi RAM.
-                all_stocks = list(collection.find({}, {"bctc_history": 0}))
+                # Chỉ nạp các trường thực sự dùng cho chuẩn hóa, chấm điểm và AI.
+                # Projection này loại bỏ payload thừa (lịch sử/metadata/field crawl)
+                # khỏi RAM, tránh giữ toàn bộ document stocks khi Screener chạy.
+                screener_stock_projection = {
+                    "_id": 0, "symbol": 1,
+                    "close": 1, "close_price": 1, "pe": 1, "pb": 1,
+                    "roe": 1, "roe_available": 1, "roa": 1, "roa_available": 1,
+                    "eps": 1, "bvps": 1, "dividend_yield": 1,
+                    "profit_growth_yoy": 1, "profit_growth_yoy_available": 1,
+                    "credit_growth_yoy": 1, "credit_growth_yoy_available": 1,
+                    "cfo_ttm": 1, "cfo_latest": 1, "net_profit_ttm": 1,
+                    "debt_to_equity": 1, "debt_to_equity_available": 1,
+                    "total_liabilities_to_equity": 1,
+                    "total_liabilities_to_equity_available": 1,
+                    "gross_margin": 1, "gross_margin_available": 1,
+                    "gross_margin_ttm": 1, "gross_margin_ttm_available": 1,
+                    "bctc_latest_income_period": 1,
+                    "bctc_income_ttm_complete": 1, "bctc_cfo_ttm_complete": 1,
+                    "bctc_balance_sheet_valid": 1,
+                    "bank_cir": 1, "bank_cir_available": 1,
+                    "ai_bctc": 1, "ai_catalyst": 1, "ai_risks": 1,
+                    "ai_macro_view": 1, "ai_outlook": 1,
+                    "ai_recommendation": 1, "ai_price_zone": 1,
+                    "ai_updated_at": 1, "ai_source": 1,
+                    "price_change_percent": 1, "volume_percent": 1,
+                }
+                all_stocks = list(collection.find({}, screener_stock_projection).batch_size(100))
                 screener_symbols = [doc["symbol"] for doc in all_stocks if doc.get("symbol")]
                 all_bctc = _load_screener_bctc(screener_symbols, chunk_size=10)
                 all_hist = _load_screener_history(screener_symbols, chunk_size=5, bars_limit=1400)
