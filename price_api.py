@@ -9,6 +9,7 @@ import logging
 import numpy as np
 import pandas as pd
 import re
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Optional, Set
 
@@ -60,6 +61,13 @@ else:
     logger.warning("⚠️ CẢNH BÁO: Thiếu SSI_API_KEY hoặc SSI_API_SECRET. Có thể không lấy được giá realtime!")
 
 ADMIN_SECRET_KEY = os.environ.get("ADMIN_SECRET_KEY")
+
+def _admin_key_valid() -> bool:
+    """Xác thực tác vụ quản trị bằng header; vẫn nhận query key cho client cũ."""
+    configured = str(ADMIN_SECRET_KEY or "").strip()
+    supplied = str(request.headers.get("X-Admin-Key", "") or request.args.get("key", "")).strip()
+    return bool(configured and supplied) and secrets.compare_digest(supplied, configured)
+
 ENV_FHSC_API_KEY = os.environ.get("FHSC_API_KEY", "").strip()
 GITHUB_TOKEN = os.environ.get("GITHUB_TOKEN", "").strip()
 GITHUB_USERNAME = os.environ.get("GITHUB_USERNAME", "").strip()
@@ -159,6 +167,7 @@ is_full_data_running = False
 # History backfills use a dedicated sequential queue. 30-day and 10-year jobs
 # must never write history_d1 concurrently.
 _history_job_lock = threading.RLock()
+_history_write_lock = threading.RLock()  # Serialize D1 backfill with realtime D1 commits
 _history_job_queue = []
 _history_job_state = {
     "status": "idle", "job_type": None, "current_symbol": None,
@@ -562,6 +571,20 @@ def _fetch_history_ssi(symbol: str, start_date: str, end_date: str):
             return None
         df = df.copy()
         df.columns = [str(c).lower().strip() for c in df.columns]
+
+        # Vnstock versions may expose the timestamp as a column or DatetimeIndex.
+        if "time" not in df.columns:
+            date_alias = next((c for c in ("date", "datetime", "trading_date", "tradingdate") if c in df.columns), None)
+            if date_alias:
+                df = df.rename(columns={date_alias: "time"})
+            elif isinstance(df.index, pd.DatetimeIndex) or df.index.name:
+                df = df.reset_index()
+                df.columns = [str(c).lower().strip() for c in df.columns]
+                if "time" not in df.columns:
+                    index_alias = next((c for c in ("index", "date", "datetime", "trading_date", "tradingdate") if c in df.columns), None)
+                    if index_alias:
+                        df = df.rename(columns={index_alias: "time"})
+
         required = {"time", "open", "high", "low", "close", "volume"}
         missing = required.difference(df.columns)
         if missing:
@@ -572,6 +595,13 @@ def _fetch_history_ssi(symbol: str, start_date: str, end_date: str):
             df[col] = pd.to_numeric(df[col], errors="coerce")
         df = df.dropna(subset=["time", "open", "high", "low", "close", "volume"])
         df = df[(df["open"] > 0) & (df["high"] > 0) & (df["low"] > 0) & (df["close"] > 0) & (df["volume"] >= 0)]
+
+        # Match _fetch_one(): Mongo history prices are stored in thousand VND.
+        if not df.empty and float(df["close"].median()) >= 1000:
+            df[["open", "high", "low", "close"]] = df[["open", "high", "low", "close"]] / 1000.0
+        volume_mask = (df["volume"] > 0) & (df["volume"] < 100000)
+        df.loc[volume_mask, "volume"] = df.loc[volume_mask, "volume"] * VOLUME_MULTIPLIER
+
         df = df[(df["high"] >= df[["open", "low", "close"]].max(axis=1)) &
                 (df["low"] <= df[["open", "high", "close"]].min(axis=1))]
         df = df.drop_duplicates(subset=["time"], keep="last").sort_values("time")
@@ -1013,29 +1043,33 @@ def _execute_crawl(symbols: list, is_retry: bool = False, is_manual: bool = Fals
                                     f"H={bar_today['high']} L={bar_today['low']} C={bar_today['close']}"
                                 )
 
-                            d1_bars = list(hist_doc.get("history_d1", []) if hist_doc else [])
-                            d1_bars = [b for b in d1_bars if b.get("time") != real_today]
-                            d1_bars.append(bar_today)
-                            d1_bars.sort(key=lambda x: x.get("time", ""))
+                            with _history_write_lock:
+                                # Re-read under the shared lock; the preloaded snapshot may be stale
+                                # if a history backfill updated this symbol during the realtime crawl.
+                                current_hist_doc = history_col.find_one(
+                                    {"symbol": sym}, {"_id": 0, "history_d1": 1}
+                                ) or {"symbol": sym}
+                                d1_bars = list(current_hist_doc.get("history_d1", []) or [])
+                                d1_bars = [b for b in d1_bars if b.get("time") != real_today]
+                                d1_bars.append(bar_today)
+                                d1_bars.sort(key=lambda x: x.get("time", ""))
 
-                            # Ghi Mongo trước; chỉ đánh dấu đã chốt sau khi đọc lại xác nhận.
-                            write_result = history_col.update_one(
-                                {"symbol": sym},
-                                {"$set": {"history_d1": d1_bars}},
-                                upsert=True
-                            )
-                            saved_doc = history_col.find_one(
-                                {"symbol": sym, "history_d1.time": real_today},
-                                {"_id": 0, "symbol": 1, "history_d1": {"$elemMatch": {"time": real_today}}}
-                            )
-                            saved_bars = saved_doc.get("history_d1", []) if saved_doc else []
-                            if not write_result.acknowledged or not saved_bars:
-                                raise RuntimeError("MongoDB chưa xác nhận lưu nến D1")
+                                # Ghi Mongo trước; chỉ đánh dấu đã chốt sau khi đọc lại xác nhận.
+                                write_result = history_col.update_one(
+                                    {"symbol": sym},
+                                    {"$set": {"history_d1": d1_bars}},
+                                    upsert=True
+                                )
+                                saved_doc = history_col.find_one(
+                                    {"symbol": sym, "history_d1.time": real_today},
+                                    {"_id": 0, "symbol": 1, "history_d1": {"$elemMatch": {"time": real_today}}}
+                                )
+                                saved_bars = saved_doc.get("history_d1", []) if saved_doc else []
+                                if not write_result.acknowledged or not saved_bars:
+                                    raise RuntimeError("MongoDB chưa xác nhận lưu nến D1")
 
-                            if hist_doc is None:
-                                hist_doc = {"symbol": sym}
-                            hist_doc["history_d1"] = d1_bars
-                            pending_history_files[f"history/{sym}.json"] = hist_doc
+                                current_hist_doc["history_d1"] = d1_bars
+                                pending_history_files[f"history/{sym}.json"] = current_hist_doc
 
                             # Chỉ chốt trạng thái sau khi nến đã tồn tại trong history_data.
                             collection.update_one(
@@ -2673,6 +2707,8 @@ def api_status():
 
 @app.get("/api/pause-crawl")
 def pause_crawl():
+    if not _admin_key_valid():
+        return jsonify({"status": "error", "message": "Sai mật khẩu Admin hoặc ADMIN_SECRET_KEY chưa cấu hình."}), 403
     global is_auto_crawl_paused, stop_crawl_requested
     is_auto_crawl_paused = True
     stop_crawl_requested = True
@@ -2682,6 +2718,8 @@ def pause_crawl():
 
 @app.get("/api/resume-crawl")
 def resume_crawl():
+    if not _admin_key_valid():
+        return jsonify({"status": "error", "message": "Sai mật khẩu Admin hoặc ADMIN_SECRET_KEY chưa cấu hình."}), 403
     global is_auto_crawl_paused, stop_crawl_requested, holiday_status, holiday_checked_today, is_holiday_paused
     is_auto_crawl_paused = False
     stop_crawl_requested = False
@@ -2718,6 +2756,8 @@ def api_holiday_status():
 
 @app.post("/api/set-fhsc-key")
 def api_set_fhsc_key():
+    if not _admin_key_valid():
+        return jsonify({"status": "error", "message": "Sai mật khẩu Admin hoặc ADMIN_SECRET_KEY chưa cấu hình."}), 403
     print("[API] 🔑 Gọi API /api/set-fhsc-key", flush=True)
     data = request.json
     new_key = data.get("key", "").strip()
@@ -2895,7 +2935,7 @@ def api_ai_analyze():
 
 @app.get("/api/admin/force-ai-single")
 def admin_force_ai_single():
-    if request.args.get("key") != ADMIN_SECRET_KEY:
+    if not _admin_key_valid():
         return jsonify({"status": "error", "message": "Sai mật khẩu Admin!"}), 403
         
     global is_ai_running
@@ -2977,6 +3017,8 @@ def admin_force_ai_single():
 
 @app.get("/api/admin/force-ai")
 def admin_force_ai():
+    if not _admin_key_valid():
+        return jsonify({"status": "error", "message": "Sai mật khẩu Admin hoặc ADMIN_SECRET_KEY chưa cấu hình."}), 403
     global is_ai_running
     if is_ai_running:
         return jsonify({"status": "error", "message": "Đang chạy AI cho toàn bộ mã, vui lòng đợi!"}), 400
@@ -3090,8 +3132,9 @@ def _history_worker():
                 for doc in collection.find({}, {"symbol": 1})
                 if doc.get("symbol")
             ))
-            end_date = datetime.now().strftime("%Y-%m-%d")
-            start_date = (datetime.now() - timedelta(days=job["days"])).strftime("%Y-%m-%d")
+            today_vn = _vn_now().date()
+            end_date = today_vn.strftime("%Y-%m-%d")
+            start_date = (today_vn - timedelta(days=job["days"])).strftime("%Y-%m-%d")
             with _history_job_lock:
                 _history_job_state.update(total=len(target), message=f"Đang cào {len(target)} mã", updated_at=_now_str())
             for index, sym in enumerate(target, 1):
@@ -3109,28 +3152,32 @@ def _history_worker():
                             "low": float(row["low"]), "close": float(row["close"]),
                             "volume": int(row["volume"])
                         } for _, row in df.iterrows()]
-                        # Merge by date rather than replacing the whole history.
-                        history_col.update_one(
-                            {"symbol": sym},
-                            {"$pull": {"history_d1": {"time": {"$in": [b["time"] for b in bars]}}}},
-                            upsert=True
-                        )
-                        history_col.update_one(
-                            {"symbol": sym},
-                            {"$push": {"history_d1": {"$each": bars, "$sort": {"time": 1}, "$slice": -4000}}},
-                            upsert=True
-                        )
-                        doc_hist = history_col.find_one({"symbol": sym}, {"history_d1": 1})
-                        d1 = (doc_hist or {}).get("history_d1", [])
-                        if d1:
-                            d1 = sorted(d1, key=lambda x: x.get("time", ""))
+                        # Serialize against realtime D1 commits to avoid stale $set overwriting a backfill.
+                        with _history_write_lock:
                             history_col.update_one(
                                 {"symbol": sym},
-                                {"$set": {
-                                    "history_w1": aggregate_candles(d1, "W1"),
-                                    "history_mn": aggregate_candles(d1, "MN")
-                                }}
+                                {"$pull": {"history_d1": {"time": {"$in": [b["time"] for b in bars]}}}},
+                                upsert=True
                             )
+                            history_col.update_one(
+                                {"symbol": sym},
+                                {"$push": {"history_d1": {"$each": bars, "$sort": {"time": 1}, "$slice": -4000}}},
+                                upsert=True
+                            )
+                            doc_hist = history_col.find_one({"symbol": sym}, {"history_d1": 1})
+                            d1 = (doc_hist or {}).get("history_d1", [])
+                            if d1:
+                                d1 = sorted(d1, key=lambda x: x.get("time", ""))
+                                history_col.update_one(
+                                    {"symbol": sym},
+                                    {"$set": {
+                                        "history_w1": aggregate_candles(d1, "W1"),
+                                        "history_mn": aggregate_candles(d1, "MN")
+                                    }}
+                                )
+                            with _history_cache["lock"]:
+                                _history_cache["data"] = None
+                                _history_cache["timestamp"] = 0
                         with _history_job_lock:
                             _history_job_state["success"] += 1
                 except Exception:
@@ -3363,7 +3410,7 @@ def api_score_single():
     Không preload BCTC/lịch sử của toàn thị trường và không ghi đè toàn bộ screener.
     """
     symbol = request.args.get("symbol", "").upper().strip()
-    if request.args.get("key") != ADMIN_SECRET_KEY:
+    if not _admin_key_valid():
         return jsonify({"status": "error", "message": "Sai mật khẩu Admin!"}), 403
     if not symbol or not re.fullmatch(r"[A-Z0-9]{3,10}", symbol):
         return jsonify({"status": "error", "message": "Mã cổ phiếu không hợp lệ."}), 400
@@ -3490,7 +3537,7 @@ def api_score_single():
 
 @app.get("/api/force-screener")
 def force_screener():
-    if request.args.get("key") != ADMIN_SECRET_KEY:
+    if not _admin_key_valid():
         return jsonify({"status": "error", "message": "Sai mật khẩu Admin!"}), 403
         
     print(f"\n[API] 📥 Gọi API /api/force-screener", flush=True)
