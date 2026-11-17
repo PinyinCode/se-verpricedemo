@@ -885,30 +885,77 @@ def _execute_crawl(symbols: list, is_retry: bool = False, is_manual: bool = Fals
                         alert_batch.append({"sym": sym, "pct_change": pct_change, "volume_percent": vol_pct, "trend": "🔴 GIẢM" if pct_change < 0 else "🟢 TĂNG"})
                         
                     if is_closing_time:
-                        has_traded_today = (not is_locked) or (data.get("volume", 0) > 0)
-                        
-                        if has_traded_today:
-                            d1_bars = hist_doc.get("history_d1", []) if hist_doc else []
+                        # CHỐT NẾN D1: không phụ thuộc volume/is_locked.
+                        # API giá có thể trả volume=0 hoặc giá không đổi nhưng OHLC vẫn hợp lệ.
+                        try:
+                            bar_today = {
+                                "time": real_today,
+                                "open": float(final_open or 0),
+                                "high": float(final_high or 0),
+                                "low": float(final_low or 0),
+                                "close": float(data.get("close", 0) or 0),
+                                "volume": int(data.get("volume", 0) or 0)
+                            }
+                            valid_bar = (
+                                bar_today["close"] > 0
+                                and bar_today["open"] > 0
+                                and bar_today["high"] > 0
+                                and bar_today["low"] > 0
+                                and bar_today["high"] >= max(bar_today["open"], bar_today["close"], bar_today["low"])
+                                and bar_today["low"] <= min(bar_today["open"], bar_today["close"], bar_today["high"])
+                            )
+                            if not valid_bar:
+                                raise ValueError(
+                                    f"OHLC không hợp lệ: O={bar_today['open']} "
+                                    f"H={bar_today['high']} L={bar_today['low']} C={bar_today['close']}"
+                                )
+
+                            d1_bars = list(hist_doc.get("history_d1", []) if hist_doc else [])
                             d1_bars = [b for b in d1_bars if b.get("time") != real_today]
-                            
-                            d1_bars.append({
-                                "time": real_today, 
-                                "open": final_open, 
-                                "high": final_high, 
-                                "low": final_low, 
-                                "close": data["close"], 
-                                "volume": data["volume"]
-                            })
-                            d1_bars.sort(key=lambda x: x["time"])
-                            
-                            history_col.update_one({"symbol": sym}, {"$set": {"history_d1": d1_bars}}, upsert=True)
-                            collection.update_one({"symbol": sym}, {"$set": {"is_locked": True, "chot_so_today": real_today}})
-                            
-                            if hist_doc is None: hist_doc = {"symbol": sym}
+                            d1_bars.append(bar_today)
+                            d1_bars.sort(key=lambda x: x.get("time", ""))
+
+                            # Ghi Mongo trước; chỉ đánh dấu đã chốt sau khi đọc lại xác nhận.
+                            write_result = history_col.update_one(
+                                {"symbol": sym},
+                                {"$set": {"history_d1": d1_bars}},
+                                upsert=True
+                            )
+                            saved_doc = history_col.find_one(
+                                {"symbol": sym, "history_d1.time": real_today},
+                                {"_id": 0, "symbol": 1, "history_d1": {"$elemMatch": {"time": real_today}}}
+                            )
+                            saved_bars = saved_doc.get("history_d1", []) if saved_doc else []
+                            if not write_result.acknowledged or not saved_bars:
+                                raise RuntimeError("MongoDB chưa xác nhận lưu nến D1")
+
+                            if hist_doc is None:
+                                hist_doc = {"symbol": sym}
                             hist_doc["history_d1"] = d1_bars
                             pending_history_files[f"history/{sym}.json"] = hist_doc
-                        else:
-                            collection.update_one({"symbol": sym}, {"$set": {"is_locked": True, "chot_so_today": real_today}})
+
+                            # Chỉ chốt trạng thái sau khi nến đã tồn tại trong history_data.
+                            collection.update_one(
+                                {"symbol": sym},
+                                {"$set": {"is_locked": True, "chot_so_today": real_today, "is_incomplete": False},
+                                 "$unset": {"history_save_error": "", "history_save_error_at": ""}}
+                            )
+                            print(
+                                f"  💾 [D1 SAVED] {sym} {real_today} | "
+                                f"O:{bar_today['open']} H:{bar_today['high']} "
+                                f"L:{bar_today['low']} C:{bar_today['close']} "
+                                f"V:{bar_today['volume']}",
+                                flush=True
+                            )
+                        except Exception as history_error:
+                            # Không đánh dấu chốt: worker có thể thử lại, tránh mất nến âm thầm.
+                            collection.update_one(
+                                {"symbol": sym},
+                                {"$set": {"is_incomplete": True, "history_save_error": str(history_error),
+                                          "history_save_error_at": _now_str()}},
+                                upsert=True
+                            )
+                            print(f"  ❌ [D1 SAVE FAILED] {sym}: {history_error}", flush=True)
                 else:
                     print(f"  ❌ [LỖI] {sym}: Không lấy được dữ liệu.", flush=True)
                     collection.update_one({"symbol": sym}, {"$set": {"is_incomplete": True, "last_error_at": _now_str()}}, upsert=True)
