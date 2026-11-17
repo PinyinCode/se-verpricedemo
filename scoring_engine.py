@@ -14,7 +14,11 @@ from analysis_core import (
     score_threshold_metric,
 )
 from metric_contract import validate_metric_record
-from metric_catalog import metric_is_supported_for_sector
+from metric_catalog import (
+    metric_is_supported_for_sector,
+    get_metric_definition,
+)
+from bctc_rules import VCI_FIELD_MAP
 
 
 SCORING_ENGINE_VERSION = "1.0.0"
@@ -339,22 +343,134 @@ def assess_sector_formula_readiness(profile_id):
     group_results = {}
     if not contracts or set(contracts) != set(weights):
         errors.append("formula_contract_groups_do_not_match_profile")
+
+    # The formula registry must implement the exact immutable metric IDs in
+    # the profile blueprint. Matching group names alone is not sufficient.
+    required_groups = profile.get("metric_groups") or {}
+    if not isinstance(required_groups, dict) or set(required_groups) != set(weights):
+        errors.append("profile_metric_groups_do_not_match_weights")
+    for group in weights:
+        expected_ids = required_groups.get(group, []) if isinstance(required_groups, dict) else []
+        if not isinstance(expected_ids, (list, tuple)) or not expected_ids:
+            errors.append(f"{group}:profile_metric_requirements_missing")
+            continue
+        actual_metrics = contracts.get(group, [])
+        actual_ids = [
+            str(item.get("metric_id") or "").strip()
+            for item in actual_metrics if isinstance(item, dict)
+        ]
+        normalized_expected = [str(item).strip() for item in expected_ids]
+        if (
+            len(normalized_expected) != len(set(normalized_expected))
+            or len(actual_ids) != len(set(actual_ids))
+            or set(actual_ids) != set(normalized_expected)
+        ):
+            errors.append({
+                "group": group,
+                "code": "formula_metric_ids_do_not_match_profile_requirements",
+                "missing": sorted(set(normalized_expected) - set(actual_ids)),
+                "unexpected": sorted(set(actual_ids) - set(normalized_expected)),
+            })
+
     for group, group_weight in weights.items():
         metrics = contracts.get(group, [])
         metric_count += len(metrics)
-        blocked = [
-            item.get("metric_id") for item in metrics
-            if item.get("scoreable") is not True
-            or item.get("threshold_status") != "approved"
-            or not item.get("source_fields")
-        ]
-        blocked_count += len(blocked)
+        blocked_details = []
+        for item in metrics:
+            reasons = []
+            metric_id = str(item.get("metric_id") or "").strip()
+            if not metric_id:
+                reasons.append("metric_id_missing")
+            if not str(item.get("formula") or "").strip():
+                reasons.append("formula_missing")
+            formula_status = str(item.get("formula_status") or "").strip().lower()
+            if not formula_status.startswith("verified"):
+                reasons.append("formula_not_verified")
+            if not str(item.get("unit") or "").strip():
+                reasons.append("unit_missing")
+            if item.get("scoreable") is not True:
+                reasons.append("formula_not_approved_for_scoring")
+            if item.get("threshold_status") != "approved":
+                reasons.append("thresholds_not_calibrated_and_approved")
+            thresholds = item.get("thresholds")
+            if not isinstance(thresholds, (list, tuple)) or len(thresholds) < 2:
+                reasons.append("approved_threshold_curve_missing")
+            else:
+                valid_points = True
+                previous_x = None
+                for point in thresholds:
+                    if not isinstance(point, (list, tuple)) or len(point) != 2:
+                        valid_points = False
+                        break
+                    try:
+                        x_value, y_value = float(point[0]), float(point[1])
+                    except (TypeError, ValueError, OverflowError):
+                        valid_points = False
+                        break
+                    if not (
+                        x_value == x_value and y_value == y_value
+                        and abs(x_value) != float("inf")
+                        and abs(y_value) != float("inf")
+                        and (previous_x is None or x_value > previous_x)
+                    ):
+                        valid_points = False
+                        break
+                    previous_x = x_value
+                if not valid_points:
+                    reasons.append("approved_threshold_curve_invalid")
+            definition = get_metric_definition(metric_id)
+            if definition is None:
+                reasons.append("metric_not_in_canonical_catalog")
+            else:
+                if not str(definition.get("status") or "").lower().startswith("verified"):
+                    reasons.append("canonical_metric_source_not_verified")
+                if not metric_is_supported_for_sector(metric_id, profile_id):
+                    reasons.append("metric_not_verified_for_sector")
+                contract_unit = str(item.get("unit") or "").strip().lower()
+                catalog_unit = str(definition.get("unit") or "").strip().lower()
+                if contract_unit and catalog_unit and contract_unit != catalog_unit:
+                    reasons.append("metric_unit_mismatch_with_catalog")
+                contract_sources = {
+                    str(field).strip() for field in (item.get("source_fields") or [])
+                    if str(field).strip()
+                }
+                catalog_sources = {
+                    str(field).strip() for field in (definition.get("source_fields") or [])
+                    if str(field).strip()
+                }
+                if contract_sources != catalog_sources:
+                    reasons.append("metric_source_lineage_mismatch_with_catalog")
+            source_fields = item.get("source_fields")
+            if not isinstance(source_fields, (list, tuple)) or not source_fields:
+                reasons.append("verified_source_fields_missing")
+            else:
+                known_fields = {
+                    str(field)
+                    for section in VCI_FIELD_MAP.values()
+                    if isinstance(section, dict)
+                    for field in section
+                }
+                if any(str(field).strip() not in known_fields for field in source_fields):
+                    reasons.append("source_fields_not_in_vci_dictionary")
+            if not str(item.get("source_requirement") or "").strip():
+                reasons.append("source_requirement_missing")
+            if not str(item.get("direction") or "").strip():
+                reasons.append("metric_direction_or_context_missing")
+            if item.get("missing_data_policy") != "exclude_metric_weight_no_redistribution":
+                reasons.append("missing_data_policy_not_explicit")
+            if reasons:
+                blocked_details.append({
+                    "metric_id": item.get("metric_id"),
+                    "reasons": reasons,
+                })
+        blocked_count += len(blocked_details)
         group_results[group] = {
             "group_weight": group_weight,
             "formula_count": len(metrics),
-            "blocked_metric_count": len(blocked),
-            "blocked_metrics": blocked,
-            "status": "blocked" if blocked else "ready",
+            "blocked_metric_count": len(blocked_details),
+            "blocked_metrics": [item["metric_id"] for item in blocked_details],
+            "blocker_details": blocked_details,
+            "status": "blocked" if blocked_details else "ready",
         }
     ready = (
         not errors and metric_count > 0 and blocked_count == 0
