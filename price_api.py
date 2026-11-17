@@ -156,6 +156,16 @@ app.config['COMPRESS_MIN_SIZE'] = 500
 # === BIẾN TRẠNG THÁI ===
 is_crawling = False
 is_full_data_running = False
+# History backfills use a dedicated sequential queue. 30-day and 10-year jobs
+# must never write history_d1 concurrently.
+_history_job_lock = threading.RLock()
+_history_job_queue = []
+_history_job_state = {
+    "status": "idle", "job_type": None, "current_symbol": None,
+    "completed": 0, "total": 0, "success": 0, "failed": 0,
+    "queued": 0, "message": "Chưa có tác vụ lịch sử", "updated_at": None
+}
+_history_worker_running = False
 is_screener_running = False
 is_ai_running = False
 LAST_TELEGRAM_TIME = 0
@@ -357,54 +367,116 @@ def _get_bctc_value(report_array, target_ids, period=None):
         if candidate_periods:
             period = candidate_periods[0]
     
-    for item in report_array:
-        if item.get("id") in target_ids:
-            if period is None or item.get("period") == period:
-                return _safe_float(item.get("value"))
+    # Ưu tiên LNST hợp nhất ISA20; ISA22 là phần phân bổ cho cổ đông công ty mẹ,
+    # không được gộp thành một bản ghi LNST thứ hai.
+    for target_id in target_ids:
+        matches = [
+            item for item in report_array
+            if item.get("id") == target_id
+            and (period is None or item.get("period") == period)
+        ]
+        if not matches:
+            continue
+        if target_id == "IS_NET_PROFIT_AFTER_TAX":
+            non_parent = [
+                item for item in matches
+                if str(item.get("source_field", "")).lower() != "isa22"
+                and "phân bổ cho chủ sở hữu" not in str(item.get("name", "")).lower()
+                and "attributable to parent" not in str(item.get("name", "")).lower()
+            ]
+            isa20 = [
+                item for item in non_parent
+                if str(item.get("source_field", "")).lower() == "isa20"
+            ]
+            selected = isa20 or non_parent
+            if selected:
+                return _safe_float(selected[0].get("value"))
+            continue
+        return _safe_float(matches[0].get("value"))
     return 0.0
 
 def extract_metrics_from_bctc_data(bctc_doc):
     if not bctc_doc: return {}
-    
-    metrics = {}
+
+    metrics = {
+        "net_profit_ttm": 0.0,
+        "net_profit_ttm_periods": 0,
+        "cfo_latest": 0.0,
+        "cfo_ttm_periods": 0,
+        "profit_growth_yoy": 0.0,
+        "profit_growth_periods": 0,
+        "profit_growth_yoy_available": False
+    }
     income = bctc_doc.get("income_statement", [])
     cashflow = bctc_doc.get("cash_flow", [])
     balance = bctc_doc.get("balance_sheet", [])
-    
-    periods = sorted(list(set([item.get("period") for item in income if item.get("period")])), reverse=True)
-    npat_ttm = 0
-    for p in periods[:4]:
-        npat_ttm += _get_bctc_value(income, ["IS_NET_PROFIT_AFTER_TAX", "IS_PROFIT_AFTER_TAX", "IS_NET_PROFIT"], p)
-    metrics["net_profit_ttm"] = round(npat_ttm / 1e9, 2)
-    
-    cf_periods = sorted(list(set([item.get("period") for item in cashflow if item.get("period")])), reverse=True)
-    cfo_ttm = 0
-    for p in cf_periods[:4]:
-        cfo_ttm += _get_bctc_value(cashflow, "CF_NET_CASH_FLOWS_FROM_OPERATING_ACTIVITIES", p)
-    metrics["cfo_latest"] = round(cfo_ttm / 1e9, 2)
-    
+
+    def _periods(rows):
+        return sorted(
+            {item.get("period") for item in rows if item.get("period")},
+            reverse=True
+        )
+
+    periods = _periods(income)
+    profit_ids = ["IS_NET_PROFIT_AFTER_TAX", "IS_PROFIT_AFTER_TAX", "IS_NET_PROFIT"]
+
+    # Chỉ gọi là TTM khi có đủ 4 quý; không cộng 1-3 quý rồi gắn nhãn TTM.
+    if len(periods) >= 4:
+        npat_ttm = sum(_get_bctc_value(income, profit_ids, p) for p in periods[:4])
+        metrics["net_profit_ttm"] = round(npat_ttm / 1e9, 2)
+        metrics["net_profit_ttm_periods"] = 4
+
+        # Tăng trưởng lợi nhuận TTM so với 4 quý liền trước.
+        if len(periods) >= 8:
+            metrics["profit_growth_periods"] = 8
+            previous_ttm = sum(_get_bctc_value(income, profit_ids, p) for p in periods[4:8])
+            # Không tính % tăng trưởng khi mẫu số TTM trước bằng 0/âm.
+            if previous_ttm > 0:
+                metrics["profit_growth_yoy"] = round(
+                    (npat_ttm / previous_ttm - 1) * 100, 2
+                )
+                metrics["profit_growth_yoy_available"] = True
+    else:
+        metrics["net_profit_ttm"] = 0.0
+        metrics["net_profit_ttm_periods"] = len(periods)
+
+    cf_periods = _periods(cashflow)
+    if len(cf_periods) >= 4:
+        cfo_ttm = sum(
+            _get_bctc_value(cashflow, "CF_NET_CASH_FLOWS_FROM_OPERATING_ACTIVITIES", p)
+            for p in cf_periods[:4]
+        )
+        metrics["cfo_latest"] = round(cfo_ttm / 1e9, 2)
+        metrics["cfo_ttm_periods"] = 4
+    else:
+        metrics["cfo_latest"] = 0.0
+        metrics["cfo_ttm_periods"] = len(cf_periods)
+
     latest_period = periods[0] if periods else None
     if latest_period:
         rev = _get_bctc_value(income, "IS_NET_REVENUE", latest_period)
         cogs = _get_bctc_value(income, "IS_COST_OF_GOODS_SOLD", latest_period)
         if rev > 0:
+            # Giá vốn đã được chuẩn hóa âm ở bước thu thập BCTC.
             metrics["gross_margin"] = round((rev + cogs) / rev * 100, 1)
-            
-    bs_periods = sorted(list(set([item.get("period") for item in balance if item.get("period")])), reverse=True)
+
+    bs_periods = _periods(balance)
     latest_bs_period = bs_periods[0] if bs_periods else None
     if latest_bs_period:
         eq = _get_bctc_value(balance, ["BS_OWNERS_EQUITY", "BS_EQUITY"], latest_bs_period)
         total_assets = _get_bctc_value(balance, "BS_TOTAL_ASSETS", latest_bs_period)
         if total_assets == 0:
-            total_assets = _get_bctc_value(balance, "BS_SHORT_TERM_ASSETS", latest_bs_period) + _get_bctc_value(balance, "BS_LONG_TERM_ASSETS", latest_bs_period)
-            
+            total_assets = (
+                _get_bctc_value(balance, "BS_SHORT_TERM_ASSETS", latest_bs_period)
+                + _get_bctc_value(balance, "BS_LONG_TERM_ASSETS", latest_bs_period)
+            )
+
         liab = _get_bctc_value(balance, "BS_LIABILITIES", latest_bs_period)
         if liab == 0 and total_assets > 0 and eq > 0:
             liab = total_assets - eq
-            
         if eq > 0:
             metrics["debt_to_equity"] = round(liab / eq, 2)
-            
+
     return metrics
 
 # ===================== CÀO GIÁ =====================
@@ -476,10 +548,37 @@ def _fetch_one(symbol: str) -> Optional[dict]:
     return data
 
 def _fetch_history_ssi(symbol: str, start_date: str, end_date: str):
+    """Fetch and normalize daily SSI candles; reject malformed/invalid rows."""
+    symbol = str(symbol or "").upper().strip()
+    if not re.fullmatch(r"[A-Z0-9]{2,10}", symbol):
+        logger.warning("[HISTORY] Invalid symbol: %r", symbol)
+        return None
     try:
-        df = Market().equity(symbol).ohlcv(start=start_date, end=end_date, source="ssi")
-        return df if df is not None and not df.empty else None
-    except Exception: return None
+        df = Market().equity(symbol).ohlcv(
+            start=start_date, end=end_date, interval="1D", source="ssi"
+        )
+        if df is None or df.empty:
+            logger.warning("[HISTORY] %s: SSI returned no candles (%s -> %s)", symbol, start_date, end_date)
+            return None
+        df = df.copy()
+        df.columns = [str(c).lower().strip() for c in df.columns]
+        required = {"time", "open", "high", "low", "close", "volume"}
+        missing = required.difference(df.columns)
+        if missing:
+            logger.error("[HISTORY] %s: missing columns %s; got=%s", symbol, sorted(missing), list(df.columns))
+            return None
+        df["time"] = pd.to_datetime(df["time"], errors="coerce")
+        for col in ("open", "high", "low", "close", "volume"):
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        df = df.dropna(subset=["time", "open", "high", "low", "close", "volume"])
+        df = df[(df["open"] > 0) & (df["high"] > 0) & (df["low"] > 0) & (df["close"] > 0) & (df["volume"] >= 0)]
+        df = df[(df["high"] >= df[["open", "low", "close"]].max(axis=1)) &
+                (df["low"] <= df[["open", "high", "close"]].min(axis=1))]
+        df = df.drop_duplicates(subset=["time"], keep="last").sort_values("time")
+        return df.reset_index(drop=True) if not df.empty else None
+    except Exception:
+        logger.exception("[HISTORY] SSI fetch failed for %s (%s -> %s)", symbol, start_date, end_date)
+        return None
 
 # ===================== CÀO BCTC VCI =====================
 def _fetch_bctc_ssi(symbol: str):
@@ -491,7 +590,8 @@ def _fetch_bctc_ssi(symbol: str):
     CORE_IDS = {
         "IS_NET_REVENUE", "IS_COST_OF_GOODS_SOLD", "IS_NET_PROFIT_AFTER_TAX",
         "CF_NET_CASH_FLOWS_FROM_OPERATING_ACTIVITIES", "BS_TOTAL_ASSETS",
-        "BS_SHORT_TERM_ASSETS", "BS_LONG_TERM_ASSETS", "BS_OWNERS_EQUITY", "BS_LIABILITIES"
+        "BS_SHORT_TERM_ASSETS", "BS_LONG_TERM_ASSETS", "BS_OWNERS_EQUITY",
+        "BS_LIABILITIES"
     }
 
     base_url = "https://iq.vietcap.com.vn/api/iq-insight-service"
@@ -573,6 +673,10 @@ def _fetch_bctc_ssi(symbol: str):
             if "gia von hang ban" in label or "cost of goods sold" in label:
                 return "IS_COST_OF_GOODS_SOLD"
             
+            # ISA22 là LNST phân bổ cho cổ đông công ty mẹ, không phải
+            # một bản ghi LNST hợp nhất độc lập; loại khỏi metric tổng LNST.
+            if field == "ISA22" or "loi nhuan sau thue phan bo cho chu so huu" in label or "attributable to parent" in label:
+                return None
             if field == "ISA20" or "loi nhuan sau thue thu nhap doanh nghiep" in label:
                 return "IS_NET_PROFIT_AFTER_TAX"
             
@@ -602,7 +706,6 @@ def _fetch_bctc_ssi(symbol: str):
                 
             if "no phai tra" in label or "total liabilities" in label:
                 return "BS_LIABILITIES"
-
         return None
     try:
         logger.info("[BCTC VCI] Bắt đầu lấy BCTC cho %s", symbol)
@@ -1096,9 +1199,9 @@ def normalize_stock_data(symbol, data):
     if update_fields:
         print(f"    [CHUẨN HÓA] {symbol}: Sửa lỗi đơn vị {list(update_fields.keys())} -> {update_fields}", flush=True)
 
-    bctc = data.get("bctc_history", [])
-    profit_growth_yoy = float(bctc[0].get("profit_growth_yoy", 0)) if bctc else 0.0
-    credit_growth_yoy = float(bctc[0].get("credit_growth_yoy", 0)) if bctc else 0.0
+    # Growth được tính từ chuỗi BCTC theo kỳ, không đọc nhầm field không tồn tại
+    # trên từng dòng income_statement.
+    profit_growth_yoy = float(data.get("profit_growth_yoy", 0) or 0)
     bvps = (close_price / pb) if pb > 0 and close_price > 0 else 0
     
     if eps == 0 and pe > 0 and close_price > 0: 
@@ -1107,45 +1210,90 @@ def normalize_stock_data(symbol, data):
     return {
         "close_price": close_price, "pe": pe, "pb": pb, "roe": roe, "roa": roa, "eps": eps, "bvps": bvps,
         "dividend_yield": float(data.get("dividend_yield", 0)), "cfo_latest": float(data.get("cfo_latest", 0)),
-        "net_profit_ttm": float(data.get("net_profit_ttm", 0)), "debt_to_equity": float(data.get("debt_to_equity", 0)),
-        "gross_margin": float(data.get("gross_margin", 0)), "profit_growth_yoy": profit_growth_yoy, "credit_growth_yoy": credit_growth_yoy,
+        "net_profit_ttm": float(data.get("net_profit_ttm", 0)),
+        "net_profit_ttm_periods": int(data.get("net_profit_ttm_periods", 0) or 0),
+        "profit_growth_periods": int(data.get("profit_growth_periods", 0) or 0),
+        "profit_growth_yoy_available": bool(data.get("profit_growth_yoy_available", False)),
+        "cfo_ttm_periods": int(data.get("cfo_ttm_periods", 0) or 0),
+        "debt_to_equity": float(data.get("debt_to_equity", 0)),
+        "gross_margin": float(data.get("gross_margin", 0)), "profit_growth_yoy": profit_growth_yoy,
         "_update_fields": update_fields  # Caller dùng để ghi DB nếu cần
     }
 def compute_sector_medians(normalized_db):
+    """
+    Trung vị đồng ngành chỉ được công nhận khi có ít nhất 3 DOANH NGHIỆP
+    độc lập. P/E, P/B và ROE được tính mẫu riêng; không cộng số metric
+    để biến một doanh nghiệp thành nhiều quan sát.
+    """
     buckets = {}
     for symbol, nd in normalized_db.items():
         for key in (get_sub_sector(symbol), get_sector(symbol)):
-            b = buckets.setdefault(key, {"pe": [], "pb": [], "roe": []})
-            if nd["pe"] > 0: b["pe"].append(nd["pe"])
-            if nd["pb"] > 0: b["pb"].append(nd["pb"])
-            if nd["roe"] != 0: b["roe"].append(nd["roe"])
+            b = buckets.setdefault(key, {"pe": [], "pb": [], "roe": [], "symbols": set()})
+            b["symbols"].add(symbol)
+            pe = float(nd.get("pe", 0) or 0)
+            pb = float(nd.get("pb", 0) or 0)
+            roe = float(nd.get("roe", 0) or 0)
+            # Loại multiples phi thực tế để tránh làm lệch trung vị.
+            if 0 < pe <= 100: b["pe"].append(pe)
+            if 0 < pb <= 20: b["pb"].append(pb)
+            if -100 <= roe <= 100: b["roe"].append(roe)
+
     medians = {}
     for key, b in buckets.items():
-        if len(b["pe"]) + len(b["pb"]) < 3: continue
+        peer_count = len(b["symbols"])
+        if peer_count < 3:
+            continue
         medians[key] = {
-            "pe": float(np.median(b["pe"])) if b["pe"] else 0.0, 
-            "pb": float(np.median(b["pb"])) if b["pb"] else 0.0, 
-            "roe": float(np.median(b["roe"])) if b["roe"] else 0.0, 
-            "n": len(b["pe"]) + len(b["pb"])
+            "pe": float(np.median(b["pe"])) if len(b["pe"]) >= 3 else 0.0,
+            "pb": float(np.median(b["pb"])) if len(b["pb"]) >= 3 else 0.0,
+            "roe": float(np.median(b["roe"])) if len(b["roe"]) >= 3 else 0.0,
+            "n": peer_count,
+            "pe_n": len(b["pe"]),
+            "pb_n": len(b["pb"]),
+            "roe_n": len(b["roe"])
         }
     return medians
 
 def get_median_for_symbol(symbol, sector_medians):
     sub, sector = get_sub_sector(symbol), get_sector(symbol)
-    if sub in sector_medians and sector_medians[sub]["n"] >= 3: return sector_medians[sub], sub
-    if sector in sector_medians: return sector_medians[sector], sector
-    # Đã bỏ "ps"
-    return {"pe": 12.0, "pb": 2.0, "roe": 12.0, "n": 0}, sector
+    if sub in sector_medians and sector_medians[sub].get("n", 0) >= 3:
+        return sector_medians[sub], sub
+    if sector in sector_medians and sector_medians[sector].get("n", 0) >= 3:
+        return sector_medians[sector], sector
+    # Không tự tạo P/E, P/B giả định khi không có đủ peer thực tế.
+    return {"pe": 0.0, "pb": 0.0, "roe": 0.0, "n": 0, "pe_n": 0, "pb_n": 0, "roe_n": 0}, sector
 
 def compute_fair_value_zone(symbol, nd, sector_median, config, group_label):
     eps, bvps, close = nd["eps"], nd["bvps"], nd["close_price"]
     cfo, npat = nd["cfo_latest"], nd["net_profit_ttm"]
     roe = nd.get("roe", 0)
     methods = {}
-    med_pe, med_pb, med_roe = sector_median.get("pe") or 12.0, sector_median.get("pb") or 2.0, sector_median.get("roe") or 0.0
+    med_pe = float(sector_median.get("pe", 0) or 0)
+    med_pb = float(sector_median.get("pb", 0) or 0)
+    med_roe = float(sector_median.get("roe", 0) or 0)
     cap_pe, cap_pb, mos = config["cap_pe"], config["cap_pb"], config["mos"]
     is_financial = group_label in ("NGAN_HANG", "CHUNG_KHOAN", "INSURANCE")
-    
+    primary_metric = str(config.get("primary_metric", "PE")).upper()
+    peer_count = int(sector_median.get("n", 0) or 0)
+
+    # Không phát hành Fair Value khi thiếu giá, thiếu mẫu peer độc lập,
+    # hoặc thiếu chính chỉ tiêu định giá chủ đạo của ngành.
+    primary_available = (
+        (primary_metric == "PE" and eps > 0 and med_pe > 0)
+        or (primary_metric == "PB" and bvps > 0 and med_pb > 0)
+    )
+    if close <= 0 or peer_count < 3 or not primary_available:
+        missing_reason = (
+            "Thiếu giá hợp lệ" if close <= 0 else
+            "Chưa đủ 3 doanh nghiệp đồng ngành có dữ liệu so sánh" if peer_count < 3 else
+            f"Thiếu dữ liệu {primary_metric} chủ đạo"
+        )
+        return {
+            "fair_low": 0, "fair_high": 0, "graham": 0, "methods": {},
+            "mos_pct": round(mos * 100, 1), "rationale": missing_reason,
+            "discount_to_fair_pct": 0, "verdict": "KHÔNG ĐỦ DỮ LIỆU"
+        }
+
     if eps > 0 and med_pe > 0: 
         roe_bonus = 1.15 if (roe > 0 and roe > med_roe) else 1.0
         methods["PE_method"] = round(eps * min(med_pe * roe_bonus, cap_pe), 0)
@@ -1202,56 +1350,65 @@ def compute_final_decision(fund_score, tech_score, val_score, total_score, verdi
     if (verdict == "RẺ - TRONG VÙNG MUA" and fund_score >= 30 and val_score < 18): return ("⏳ CHỜ ĐỊNH GIÁ TỐT HƠN", "amber", "Định giá chưa hấp dẫn.")
     return ("👀 THEO DÕI", "slate", "Chưa đủ ĐK.")
 
-def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_score_raw=50, tech_status="Tích lũy", pattern="Tích lũy", existing_ai_data=None, history_bars=None):
+def compute_fundamental_score(symbol, nd):
+    """Tính điểm cơ bản 0-50 từ ratio hiện có và metric BCTC đã xác thực."""
     sector = get_sector(symbol)
-    pe, pb, roe, roa = nd["pe"], nd["pb"], nd["roe"], nd["roa"]
-    close_price, cfo_latest, net_profit_ttm = nd["close_price"], nd["cfo_latest"], nd["net_profit_ttm"]
-    debt_to_equity, profit_growth_yoy, credit_growth_yoy = nd["debt_to_equity"], nd["profit_growth_yoy"], nd["credit_growth_yoy"]
-    
-    data_warnings = []
-    if close_price <= 0: data_warnings.append("Thiếu Giá")
-    if pe <= 0 and sector not in ["NGAN_HANG", "CHUNG_KHOAN"]: data_warnings.append("Thiếu P/E")
-    if pb <= 0: data_warnings.append("Thiếu P/B")
-    if roe == 0: data_warnings.append("Thiếu ROE")
-    is_data_incomplete = len(data_warnings) > 0
-
+    roe = float(nd.get("roe", 0) or 0)
+    roa = float(nd.get("roa", 0) or 0)
+    cfo_latest = float(nd.get("cfo_latest", 0) or 0)
+    net_profit_ttm = float(nd.get("net_profit_ttm", 0) or 0)
+    debt_to_equity = float(nd.get("debt_to_equity", 0) or 0)
+    profit_growth_yoy = float(nd.get("profit_growth_yoy", 0) or 0)
+    profit_growth_available = bool(nd.get("profit_growth_yoy_available", False))
+    cfo_ttm_available = nd.get("cfo_ttm_periods", 0) >= 4
+    dividend_yield = float(nd.get("dividend_yield", 0) or 0)
     fund_score = 0
     fund_notes = []
     
     if sector == "NGAN_HANG":
-        if credit_growth_yoy >= 12: fund_score += 18; fund_notes.append("Tín dụng mạnh")
-        elif credit_growth_yoy >= 8: fund_score += 10
+        # Chỉ dùng tăng trưởng LNST tính từ 8 kỳ BCTC đã lưu; không giả định
+        # chỉ tiêu dư nợ/tín dụng khi MongoDB không có trường đó.
+        if profit_growth_available:
+            if profit_growth_yoy >= 20: fund_score += 18; fund_notes.append("LNST TTM tăng mạnh")
+            elif profit_growth_yoy >= 10: fund_score += 10
+            elif profit_growth_yoy < 0: fund_score -= 8; fund_notes.append("LNST TTM suy giảm")
+        else:
+            fund_notes.append("Thiếu 8 quý BCTC để xác nhận tăng trưởng LNST")
         if roe >= 18: fund_score += 17; fund_notes.append("ROE >18%")
         elif roe >= 14: fund_score += 10
     elif sector == "CHUNG_KHOAN":
-        if profit_growth_yoy >= 20: fund_score += 20; fund_notes.append("LN tăng mạnh")
-        elif profit_growth_yoy >= 10: fund_score += 10
+        if profit_growth_available:
+            if profit_growth_yoy >= 20: fund_score += 20; fund_notes.append("LN tăng mạnh")
+            elif profit_growth_yoy >= 10: fund_score += 10
         if roe >= 15: fund_score += 15; fund_notes.append("ROE cao")
         elif roe >= 10: fund_score += 8
     elif sector == "BAT_DONG_SAN":
-        if profit_growth_yoy >= 10: fund_score += 15
+        if profit_growth_available and profit_growth_yoy >= 10: fund_score += 15
         if roe >= 12: fund_score += 20; fund_notes.append("ROE chuẩn")
         elif roe > 0: fund_score += 10
     elif sector == "CONG_NGHE_BAN_LE":
-        if profit_growth_yoy >= 20: fund_score += 18; fund_notes.append("Tăng trưởng lõi")
-        elif profit_growth_yoy >= 10: fund_score += 10
+        if profit_growth_available:
+            if profit_growth_yoy >= 20: fund_score += 18; fund_notes.append("Tăng trưởng lõi")
+            elif profit_growth_yoy >= 10: fund_score += 10
         if roe >= 18: fund_score += 17
         elif roe >= 12: fund_score += 10
     elif sector == "DIEN_NUOC_HA_TANG":
-        if nd["dividend_yield"] >= 6.0: fund_score += 20; fund_notes.append("Cổ tức cao")
-        elif nd["dividend_yield"] > 0: fund_score += 10
+        if dividend_yield >= 6.0: fund_score += 20; fund_notes.append("Cổ tức cao")
+        elif dividend_yield > 0: fund_score += 10
         if roe >= 10: fund_score += 15
         else: fund_score += 8
     elif sector == "NGUYEN_VAT_LIEU_CHU_KY":
-        if profit_growth_yoy >= 15: fund_score += 18
-        elif profit_growth_yoy >= 0: fund_score += 10
-        else: fund_score -= 15; fund_notes.append("Suy thoái chu kỳ")
+        if profit_growth_available:
+            if profit_growth_yoy >= 15: fund_score += 18
+            elif profit_growth_yoy >= 0: fund_score += 10
+            else: fund_score -= 15; fund_notes.append("Suy thoái chu kỳ")
         if roe >= 12: fund_score += 17
         else: fund_score += 8
     else:
-        if profit_growth_yoy >= 10: fund_score += 15
-        elif profit_growth_yoy >= 0: fund_score += 8
-        else: fund_score -= 10
+        if profit_growth_available:
+            if profit_growth_yoy >= 10: fund_score += 15
+            elif profit_growth_yoy >= 0: fund_score += 8
+            else: fund_score -= 10
         if roe >= 14: fund_score += 20; fund_notes.append("ROE cao")
         elif roe >= 10: fund_score += 10
         
@@ -1259,36 +1416,79 @@ def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_
     elif roa >= 2.5: fund_score += 3
 
     if sector not in ["NGAN_HANG", "CHUNG_KHOAN"]:
-        if cfo_latest > 0 and (net_profit_ttm <= 0 or cfo_latest >= net_profit_ttm * 0.8): fund_score += 5
-        elif cfo_latest < 0: fund_score -= 5; fund_notes.append("CFO âm")
+        if cfo_ttm_available:
+            if cfo_latest > 0 and (net_profit_ttm <= 0 or cfo_latest >= net_profit_ttm * 0.8): fund_score += 5
+            elif cfo_latest < 0: fund_score -= 5; fund_notes.append("CFO âm")
         if 0 < debt_to_equity <= 1.0: fund_score += 5
         elif debt_to_equity > 2.5: fund_score -= 5; fund_notes.append("D/E cao")
     else:
         fund_score += 5
     fund_score = int(np.clip(fund_score, 0, 50))
 
+    return fund_score, fund_notes
+
+def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_score_raw=50, tech_status="Tích lũy", pattern="Tích lũy", existing_ai_data=None, history_bars=None):
+    sector = get_sector(symbol)
+    pe, pb, roe, roa = nd["pe"], nd["pb"], nd["roe"], nd["roa"]
+    close_price, cfo_latest, net_profit_ttm = nd["close_price"], nd["cfo_latest"], nd["net_profit_ttm"]
+    debt_to_equity, profit_growth_yoy = nd["debt_to_equity"], nd["profit_growth_yoy"]
+    profit_growth_available = bool(nd.get("profit_growth_yoy_available", False))
+    cfo_ttm_available = nd.get("cfo_ttm_periods", 0) >= 4
+    
+    data_warnings = []
+    primary_metric = str(config.get("primary_metric", "PE")).upper()
+    if close_price <= 0:
+        data_warnings.append("Thiếu Giá")
+    if primary_metric == "PE" and pe <= 0:
+        data_warnings.append("Thiếu P/E chủ đạo")
+    elif primary_metric == "PB" and pb <= 0:
+        data_warnings.append("Thiếu P/B chủ đạo")
+    if roe == 0:
+        data_warnings.append("Thiếu ROE")
+    if nd.get("net_profit_ttm_periods", 0) < 4:
+        data_warnings.append("BCTC chưa đủ 4 quý để tính LNST TTM")
+    if not profit_growth_available:
+        data_warnings.append("Chưa đủ điều kiện tính tăng trưởng LNST TTM (cần 8 quý và TTM kỳ trước dương)")
+    if nd.get("cfo_ttm_periods", 0) < 4:
+        data_warnings.append("BCTC chưa đủ 4 quý để tính CFO TTM")
+    is_data_incomplete = bool(data_warnings)
+
+    fund_score, fund_notes = compute_fundamental_score(symbol, nd)
+    
+    # Điểm định giá dựa trên mức chiết khấu so với trung vị peer cùng ngành.
+    # Thiếu mẫu peer/metric không được chấm điểm mặc định.
     val_score = 0
-    if sector == "BAT_DONG_SAN":
-        if 0 < pb < 1.5: val_score = 30
-        elif 0 < pb < 2.2: val_score = 18
-        else: val_score = 8
-    elif sector == "NGUYEN_VAT_LIEU_CHU_KY":
-        if 0 < pe < 12: val_score = 30
-        elif 0 < pe < 18: val_score = 18
-        else: val_score = 8
-    elif sector == "CONG_NGHE_BAN_LE":
-        if 0 < pe < 18 or (profit_growth_yoy > 20 and pe < 25): val_score = 30
-        elif 0 < pe < 25: val_score = 18
-        else: val_score = 8
-    elif sector in ["NGAN_HANG", "CHUNG_KHOAN"]:
-        if 0 < pb < 1.3 or (roe >= 16 and pb < 1.8): val_score = 30
-        elif 0 < pb < 2.0: val_score = 18
-        else: val_score = 8
+    primary_metric = str(config.get("primary_metric", "PE")).upper()
+    peer_count = int(sector_median.get("n", 0) or 0)
+    primary_value = pb if primary_metric == "PB" else pe
+    peer_value = float(sector_median.get(primary_metric.lower(), 0) or 0)
+    relative_multiple = None
+    if peer_count >= 3 and primary_value > 0 and peer_value > 0:
+        relative_multiple = primary_value / peer_value
+        if relative_multiple <= 0.70:
+            val_score = 30
+        elif relative_multiple <= 0.85:
+            val_score = 26
+        elif relative_multiple <= 1.00:
+            val_score = 22
+        elif relative_multiple <= 1.15:
+            val_score = 16
+        elif relative_multiple <= 1.35:
+            val_score = 9
+        else:
+            val_score = 3
+
+        # Chỉ cộng nhẹ cho cổ tức bền vững ở nhóm không lấy P/B làm chỉ tiêu chính.
+        dividend_yield = float(nd.get("dividend_yield", 0) or 0)
+        if primary_metric == "PE" and dividend_yield >= 5.0:
+            val_score = min(30, val_score + 2)
     else:
-        if 0 < pe < 15 or nd["dividend_yield"] >= 5.0: val_score = 30
-        elif 0 < pe < 20 or nd["dividend_yield"] >= 3.0: val_score = 18
-        else: val_score = 8
+        data_warnings.append(
+            f"Thiếu mẫu peer hoặc {primary_metric} hợp lệ; điểm định giá = 0"
+        )
     val_score = int(np.clip(val_score, 0, 30))
+    # Cập nhật trạng thái đầy đủ dữ liệu sau khi đã kiểm tra định giá.
+    is_data_incomplete = bool(data_warnings)
 
     tech_score = int(np.clip(int(round((tech_score_raw / 100.0) * 20)), 0, 20))
     total_score = fund_score + val_score + tech_score
@@ -1328,8 +1528,13 @@ def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_
     return {
         "symbol": symbol, "sector": sector, "sub_sector": group_label, "close_price": close_price, "pe": pe, "pb": pb,
         "roe": roe, "roa": roa, "eps": round(nd["eps"], 0), "bvps": round(nd["bvps"], 0), "dividend_yield": nd["dividend_yield"], "profit_growth_yoy": profit_growth_yoy,
+        "profit_growth_periods": nd.get("profit_growth_periods", 0),
+        "profit_growth_yoy_available": profit_growth_available,
         "cfo_latest": cfo_latest, "net_profit_ttm": net_profit_ttm, "debt_to_equity": debt_to_equity, "gross_margin": nd["gross_margin"],
         "fundamental_score": fund_score, "valuation_score": val_score, "technical_score": tech_score, "total_score": total_score,
+        "valuation_primary_metric": primary_metric,
+        "valuation_peer_count": peer_count,
+        "valuation_relative_multiple": round(relative_multiple, 3) if relative_multiple is not None else None,
         "potential_zone": potential_zone, "pattern": pattern, "technical_status": tech_status,
         "fundamental_notes": " | ".join(fund_notes), "fair_value_high": fv["fair_high"], "fair_value_low": fv["fair_low"], "graham_number": fv["graham"],
         "margin_of_safety_pct": fv["mos_pct"], "fair_value_methods": fv["methods"], "fair_value_rationale": fv["rationale"],
@@ -1467,15 +1672,27 @@ def build_bctc_quarterly_trend(bctc_doc, max_periods=8):
 
 
 def build_verified_facts(symbol, sm, si, sector, bctc_doc=None):
+    bctc_doc = bctc_doc if isinstance(bctc_doc, dict) else {}
+    growth_available = bool(sm.get("profit_growth_yoy_available", False))
+    growth_periods = int(sm.get("profit_growth_periods", 0) or 0)
+    warnings = sm.get("data_warnings", []) or []
+    if isinstance(warnings, str):
+        warnings = [warnings]
+
     lines = [
         f"MÃ {symbol} — NGÀNH {sector}",
         f"QUYẾT ĐỊNH: {si.get('final_decision')}",
-        f"GIÁ: {sm.get('close',0):,.0f} | P/E {sm.get('pe',0):.2f} | P/B {sm.get('pb',0):.2f}",
-        f"VÙNG MUA: Fair value {sm.get('fair_value_high',0):,.0f} | Vùng mua {sm.get('fair_value_low',0):,.0f} | Verdict: {sm.get('valuation_verdict')}",
-        f"SINH LỜI TTM: ROE {sm.get('roe',0)}% | ROA {sm.get('roa',0)}% | CFO {sm.get('cfo_latest',0):,.0f} tỷ | LNST {sm.get('net_profit_ttm',0):,.0f} tỷ",
-        f"ĐIỂM: Tổng {si.get('total_score')}/100",
-        build_bctc_quarterly_trend(bctc_doc)
+        f"GIÁ: {sm.get('close', sm.get('close_price', 0)):,.0f} | P/E {sm.get('pe',0):.2f} | P/B {sm.get('pb',0):.2f}",
+        f"ĐỊNH GIÁ: Fair High {sm.get('fair_value_high',0):,.0f} | Fair Low {sm.get('fair_value_low',0):,.0f} | Verdict: {sm.get('valuation_verdict')}",
+        f"SINH LỜI: ROE {sm.get('roe',0)}% | ROA {sm.get('roa',0)}% | Biên gộp {sm.get('gross_margin',0)}% | D/E {sm.get('debt_to_equity',0)}",
+        f"DÒNG TIỀN/LỢI NHUẬN: CFO quý gần nhất {sm.get('cfo_latest',0):,.0f} tỷ | LNST TTM {sm.get('net_profit_ttm',0):,.0f} tỷ",
+        f"TĂNG TRƯỞNG LNST TTM YoY: {'ĐỦ ĐIỀU KIỆN' if growth_available else 'CHƯA ĐỦ ĐIỀU KIỆN'} | Số kỳ BCTC: {growth_periods} | Giá trị: {sm.get('profit_growth_yoy', 'không có')}",
+        f"MẪU ĐỊNH GIÁ: {sm.get('valuation_primary_metric', 'không có')} | Số doanh nghiệp peer: {sm.get('valuation_peer_count', 0)}",
+        f"ĐIỂM: Cơ bản {si.get('fundamental_score')}/50 | Định giá {si.get('valuation_score')}/30 | Kỹ thuật {si.get('technical_score')}/20 | Tổng {si.get('total_score')}/100",
     ]
+    if warnings:
+        lines.append("CẢNH BÁO DỮ LIỆU: " + " | ".join(str(x) for x in warnings))
+    lines.append(build_bctc_quarterly_trend(bctc_doc))
     return "\n".join(lines)
 
 def build_fallback_narrative(symbol, stock_metrics, screener_item, sector):
@@ -1514,30 +1731,24 @@ def build_fallback_narrative(symbol, stock_metrics, screener_item, sector):
         bctc_parts.append(f"Định giá P/E {pe:.2f}x và P/B {pb:.2f}x.")
         if gm > 0: bctc_parts.append(f"Biên lợi nhuận gộp {gm:.1f}%.")
 
-    if npat > 0 and cfo != 0:
-        cfo_ratio = cfo / npat
-        if cfo_ratio >= 1.0:
-            bctc_parts.append(f"Chất lượng lợi nhuận tốt với CFO {cfo:,.0f} tỷ ≥ LNST {npat:,.0f} tỷ.")
-        elif cfo_ratio >= 0.5:
-            bctc_parts.append(f"CFO {cfo:,.0f} tỷ so với LNST {npat:,.0f} tỷ — chấp nhận được.")
-        else:
-            bctc_parts.append(f"⚠️ Cảnh báo: CFO/LNST chỉ {cfo_ratio:.2f}x.")
+    if cfo != 0:
+        bctc_parts.append(
+            f"CFO quý gần nhất là {cfo:,.0f} tỷ VNĐ; không so sánh trực tiếp với LNST TTM "
+            "vì khác kỳ báo cáo. Cần dùng CFO TTM cùng kỳ để đánh giá chất lượng lợi nhuận."
+        )
 
     bctc_parts.append(f"EPS đạt {eps:,.0f} VNĐ.")
     if div_yield > 0: bctc_parts.append(f"Cổ tức {div_yield}%/năm.")
     bctc = " ".join(bctc_parts)
 
-    moat_map = {
-        "NGAN_HANG": "tệp khách hàng bán lẻ trung thành và chi phí vốn thấp",
-        "CHUNG_KHOAN": "thị phần môi giới ổn định và quan hệ với nhà đầu tư tổ chức",
-        "BAT_DONG_SAN": "quỹ đất sạch tại vị trí đắc địa và thương hiệu uy tín",
-        "CONG_NGHE_BAN_LE": "thương hiệu mạnh và chuỗi cung ứng tối ưu",
-        "DIEN_NUOC_HA_TANG": "vị thế độc quyền tự nhiên và dòng tiền ổn định",
-        "NGUYEN_VAT_LIEU_CHU_KY": "quy mô sản xuất lớn và chi phí biên thấp",
-        "SAN_XUAT_TIEU_DUNG_PHONG_THU": "thương hiệu quốc dân và mạng lưới phân phối rộng",
-    }
-    moat = moat_map.get(sector, "lợi thế cạnh tranh dài hạn")
-    catalyst = f"Lợi thế cạnh tranh cốt lõi nằm ở {moat}. LNST tăng {growth_yoy:.1f}% YoY."
+    growth_available = bool(
+        screener_item.get("profit_growth_yoy_available",
+                          stock_metrics.get("profit_growth_yoy_available", False))
+    )
+    if growth_available:
+        catalyst = f"LNST TTM tăng trưởng {growth_yoy:.1f}% YoY theo dữ liệu BCTC; cần tiếp tục đối chiếu doanh thu và dòng tiền để xác nhận chất lượng tăng trưởng. Chưa có dữ liệu đủ để xác nhận lợi thế cạnh tranh riêng của doanh nghiệp."
+    else:
+        catalyst = "Chưa đủ chuỗi BCTC để xác nhận tăng trưởng LNST YoY. Dữ liệu hiện có cũng chưa đủ để kết luận doanh nghiệp có lợi thế cạnh tranh riêng."
 
     risk_map = {
         "NGAN_HANG": f"Rủi ro nợ xấu và áp lực thu hẹp NIM. D/E hiện ở mức {de:.2f}.",
@@ -1548,7 +1759,10 @@ def build_fallback_narrative(symbol, stock_metrics, screener_item, sector):
         "NGUYEN_VAT_LIEU_CHU_KY": f"Rủi ro giá hàng hóa đảo chiều làm biên gộp {gm:.1f}% co lại.",
         "SAN_XUAT_TIEU_DUNG_PHONG_THU": "Rủi ro cạnh tranh từ hàng nhập khẩu và sức mua yếu.",
     }
-    risks = risk_map.get(sector, f"Rủi ro chung của ngành {sector_name}.")
+    risks = (
+        "Rủi ro ngành cần theo dõi, chưa được xác nhận là vấn đề đang xảy ra tại riêng doanh nghiệp: "
+        + risk_map.get(sector, f"các biến động chung của ngành {sector_name}.")
+    )
 
     if verdict == "RẺ - TRONG VÙNG MUA":
         outlook = f"Giá {close:,.0f} VNĐ nằm dưới vùng mua an toàn {fair_low:,.0f} VNĐ, biên an toàn {discount_pct:.1f}% (MoS {mos_pct:.0f}%). Đây là vùng định giá hấp dẫn cho tích sản dài hạn. Quyết định: {final_decision}."
@@ -1564,16 +1778,12 @@ def build_fallback_narrative(symbol, stock_metrics, screener_item, sector):
 
     price_zone = f"Vùng mua: {fair_low:,.0f} — {fair_high:,.0f} | Giá: {close:,.0f} | Verdict: {verdict}"
 
-    macro_map = {
-        "NGAN_HANG": "Chu kỳ tín dụng phục hồi khi lãi suất thấp. Rủi ro nợ xấu BĐS còn hiện hữu.",
-        "CHUNG_KHOAN": "Thanh khoản thị trường quyết định doanh thu ngành. Chính sách nâng hạng tạo catalyst.",
-        "BAT_DONG_SAN": "Pháp lý BĐS đang dần tháo gỡ. Chu kỳ phục hồi phụ thuộc niềm tin người mua.",
-        "CONG_NGHE_BAN_LE": "Sức mua tiêu dùng phục hồi. Xu hướng chuyển đổi số tạo dư địa tăng trưởng.",
-        "DIEN_NUOC_HA_TANG": "Nhu cầu điện tăng theo GDP. Chính sách năng lượng tái tạo tạo cơ hội.",
-        "NGUYEN_VAT_LIEU_CHU_KY": "Chu kỳ giá hàng hóa phụ thuộc kinh tế Trung Quốc và chính sách bảo hộ.",
-        "SAN_XUAT_TIEU_DUNG_PHONG_THU": "Tiêu dùng nội địa phục hồi chậm. Cơ hội từ xuất khẩu nếu tỷ giá thuận lợi.",
-    }
-    macro_view = macro_map.get(sector, f"Ngành {sector_name} chịu ảnh hưởng chung từ vĩ mô.")
+    macro_view = (
+        f"Chưa có bộ dữ liệu vĩ mô cập nhật được xác minh trong đầu vào của mã {symbol}. "
+        "Các biến số cần theo dõi tùy ngành gồm lãi suất, tỷ giá, thanh khoản thị trường, "
+        "giá nguyên liệu đầu vào, nhu cầu tiêu thụ và thay đổi chính sách. "
+        "Đây là danh sách yếu tố cần theo dõi, không phải khẳng định chúng đang biến động."
+    )
 
     return {
         "bctc": bctc,
@@ -1595,12 +1805,14 @@ def _call_ai_for_symbol(symbol, sm, si, sector):
         fair_low = float(sm.get("fair_value_low", 0) or 0)
         fair_high = float(sm.get("fair_value_high", 0) or 0)
         
-        # Nếu chưa có vùng định giá, không gọi AI (tránh AI viết rác)
-        if fair_low <= 0 or fair_high <= 0:
-            print(f"  ⚠️ [{symbol}] Bỏ qua gọi AI: Chưa có dữ liệu Fair Value (cần chạy Screener trước).", flush=True)
-            return None
+        # AI vẫn phải phân tích BCTC khi thiếu Fair Value; tuyệt đối không tự tạo giá trị thay thế.
+        fair_value_available = fair_low > 0 and fair_high > 0
+        if not fair_value_available:
+            fair_low = 0.0
+            fair_high = 0.0
+            print(f"  ⚠️ [{symbol}] Thiếu Fair Value: tiếp tục phân tích BCTC, khóa mọi kết luận định giá.", flush=True)
 
-        bctc_doc = bctc_col.find_one({"symbol": symbol}, {"_id": 0, "income_statement": 1, "cash_flow": 1})
+        bctc_doc = bctc_col.find_one({"symbol": symbol}, {"_id": 0, "income_statement": 1, "cash_flow": 1, "balance_sheet": 1})
         verified_facts = build_verified_facts(symbol, sm, si, sector, bctc_doc)
         sector_guidance = get_sector_guidance(sector)
         
@@ -1694,21 +1906,31 @@ Chỉ xuất JSON hợp lệ."""
                     content = re.sub(r"\s*```$", "", content)
                     
                     parsed = json.loads(content)
-                    
-                    # LUÔN GHI ĐÈ PRICE_ZONE BẰNG DỮ LIỆU CHUẨN TỪ HỆ THỐNG
+                    if not isinstance(parsed, dict):
+                        raise ValueError("AI response phải là JSON object")
+
+                    # Bắt buộc đủ các mục phân tích; thiếu mục thì retry, không lưu báo cáo cụt.
+                    required_fields = (
+                        "bctc", "catalyst", "risks", "valuation_verdict",
+                        "outlook", "recommendation", "macro_view"
+                    )
+                    for field in required_fields:
+                        value = parsed.get(field)
+                        if not isinstance(value, str) or not value.strip():
+                            raise ValueError(f"AI thiếu trường bắt buộc hoặc sai kiểu: {field}")
+
+                    # Các quyết định định lượng là bất biến: AI chỉ được diễn giải, không được ghi đè.
+                    parsed["valuation_verdict"] = (
+                        verdict if fair_value_available else "KHÔNG ĐỦ DỮ LIỆU"
+                    )
+                    parsed["recommendation"] = f"{rec_text} — {rec_weight}"
                     parsed["price_zone"] = (
                         f"Vùng mua: {fair_low:,.0f} VNĐ — {fair_high:,.0f} VNĐ | "
-                        f"Giá hiện tại: {close_price:,.0f} VNĐ | Verdict: {verdict}"
+                        f"Giá hiện tại: {close_price:,.0f} VNĐ | "
+                        f"Verdict: {parsed['valuation_verdict']}"
                     )
-
-                    # LUÔN GHI ĐÈ KHUYẾN NGHỊ BẰNG DỮ LIỆU CHUẨN TỪ HỆ THỐNG
-                    ai_rec = parsed.get("recommendation", "").upper()
-                    expected_rec = rec_text.upper()
-                    if expected_rec not in ai_rec:
-                        print(f"  ⚠️ [{symbol}] AI tự đổi khuyến nghị → Ghi đè: '{rec_text}'", flush=True)
-                        parsed["recommendation"] = f"{rec_text} — {rec_weight}"
-
                     parsed["_source"] = "AI"
+                    parsed["_validation"] = "SCHEMA_OK_SYSTEM_DECISIONS_LOCKED"
                     return parsed
                 else:
                     print(f"  ❌ [{symbol}] AI trả về HTTP {res.status_code} (Lần {attempt + 1}/3)", flush=True)
@@ -2440,7 +2662,8 @@ def api_status():
     print("[API] 📊 Gọi API /api/status", flush=True)
     return jsonify({
         "status": "success", 
-        "is_crawling": is_crawling, 
+        "is_crawling": is_crawling,
+        "history_job": _history_job_snapshot(),
         "is_paused": is_auto_crawl_paused,
         "is_holiday_paused": is_holiday_paused,
         "holiday_status": holiday_status,
@@ -2839,57 +3062,138 @@ def admin_force_ai():
     })
 
 
+def _history_job_snapshot():
+    with _history_job_lock:
+        data = dict(_history_job_state)
+        data["queued"] = len(_history_job_queue)
+        return data
+
+
+def _history_worker():
+    global _history_worker_running
+    while True:
+        with _history_job_lock:
+            if not _history_job_queue:
+                _history_worker_running = False
+                if _history_job_state.get("status") not in ("success", "partial", "error"):
+                    _history_job_state.update(status="idle", message="Hàng đợi lịch sử trống")
+                return
+            job = _history_job_queue.pop(0)
+            _history_job_state.update(
+                status="running", job_type=job["job_type"], current_symbol=None,
+                completed=0, total=0, success=0, failed=0,
+                message=f"Bắt đầu cào {job['days']} ngày", updated_at=_now_str()
+            )
+        try:
+            target = sorted(set(
+                str(doc.get("symbol", "")).upper().strip()
+                for doc in collection.find({}, {"symbol": 1})
+                if doc.get("symbol")
+            ))
+            end_date = datetime.now().strftime("%Y-%m-%d")
+            start_date = (datetime.now() - timedelta(days=job["days"])).strftime("%Y-%m-%d")
+            with _history_job_lock:
+                _history_job_state.update(total=len(target), message=f"Đang cào {len(target)} mã", updated_at=_now_str())
+            for index, sym in enumerate(target, 1):
+                with _history_job_lock:
+                    _history_job_state.update(current_symbol=sym, message=f"{sym} ({index}/{len(target)})", updated_at=_now_str())
+                try:
+                    df = _fetch_history_ssi(sym, start_date, end_date)
+                    if df is None or df.empty:
+                        with _history_job_lock:
+                            _history_job_state["failed"] += 1
+                    else:
+                        bars = [{
+                            "time": row["time"].strftime("%Y-%m-%d"),
+                            "open": float(row["open"]), "high": float(row["high"]),
+                            "low": float(row["low"]), "close": float(row["close"]),
+                            "volume": int(row["volume"])
+                        } for _, row in df.iterrows()]
+                        # Merge by date rather than replacing the whole history.
+                        history_col.update_one(
+                            {"symbol": sym},
+                            {"$pull": {"history_d1": {"time": {"$in": [b["time"] for b in bars]}}}},
+                            upsert=True
+                        )
+                        history_col.update_one(
+                            {"symbol": sym},
+                            {"$push": {"history_d1": {"$each": bars, "$sort": {"time": 1}, "$slice": -4000}}},
+                            upsert=True
+                        )
+                        doc_hist = history_col.find_one({"symbol": sym}, {"history_d1": 1})
+                        d1 = (doc_hist or {}).get("history_d1", [])
+                        if d1:
+                            d1 = sorted(d1, key=lambda x: x.get("time", ""))
+                            history_col.update_one(
+                                {"symbol": sym},
+                                {"$set": {
+                                    "history_w1": aggregate_candles(d1, "W1"),
+                                    "history_mn": aggregate_candles(d1, "MN")
+                                }}
+                            )
+                        with _history_job_lock:
+                            _history_job_state["success"] += 1
+                except Exception:
+                    logger.exception("[HISTORY] %s failed during backfill", sym)
+                    with _history_job_lock:
+                        _history_job_state["failed"] += 1
+                finally:
+                    with _history_job_lock:
+                        _history_job_state["completed"] += 1
+                        _history_job_state["updated_at"] = _now_str()
+                time.sleep(0.8 if job["days"] <= 30 else 1.2)
+            with _history_job_lock:
+                failed = _history_job_state["failed"]
+                _history_job_state.update(
+                    status="partial" if failed else "success",
+                    current_symbol=None,
+                    message=f"Hoàn tất: {_history_job_state['success']} thành công, {failed} lỗi",
+                    updated_at=_now_str()
+                )
+            print(f"[HISTORY] Finished {job['job_type']}: {_history_job_state['success']} ok / {_history_job_state['failed']} failed", flush=True)
+        except Exception:
+            logger.exception("[HISTORY] Job crashed")
+            with _history_job_lock:
+                _history_job_state.update(status="error", message="Tác vụ lịch sử gặp lỗi; xem log server", updated_at=_now_str())
+
+
+def _enqueue_history_job(job_type, days):
+    global _history_worker_running
+    with _history_job_lock:
+        # Avoid duplicate queued/running jobs of the same range.
+        active_type = _history_job_state.get("job_type") if _history_job_state.get("status") == "running" else None
+        if active_type == job_type or any(j["job_type"] == job_type for j in _history_job_queue):
+            return False, "Tác vụ cùng loại đang chạy hoặc đã nằm trong hàng đợi"
+        _history_job_queue.append({"job_type": job_type, "days": days})
+        _history_job_state["queued"] = len(_history_job_queue)
+        _history_job_state["updated_at"] = _now_str()
+        if _history_worker_running:
+            message = f"Đã xếp hàng {job_type}; sẽ chạy sau tác vụ hiện tại"
+        else:
+            message = f"Đã nhận tác vụ {job_type}"
+            _history_worker_running = True
+            threading.Thread(target=_history_worker, daemon=True, name="history-backfill").start()
+        _history_job_state["message"] = message
+        return True, message
+
+
+@app.get("/api/history-crawl-status")
+def history_crawl_status():
+    return jsonify({"status": "success", "job": _history_job_snapshot()})
+
+
 @app.get("/api/force-history")
 def force_history():
-    print(f"\n[API] 📥 Gọi API /api/force-history (Ép cào nến 30 ngày)", flush=True)
-    global is_full_data_running
-    if is_full_data_running: return jsonify({"status": "error", "message": "Đang chạy"}), 400
-    is_full_data_running = True
-    def _run():
-        global is_full_data_running
-        try:
-            target = [doc["symbol"] for doc in collection.find({}, {"symbol": 1})]
-            end, start = datetime.now().strftime("%Y-%m-%d"), (datetime.now() - timedelta(days=30)).strftime("%Y-%m-%d")
-            print(f"[HISTORY] 🚀 Bắt đầu cào nến 30 ngày cho {len(target)} mã...", flush=True)
-            for sym in target:
-                df = _fetch_history_ssi(sym, start, end)
-                if df is not None and not df.empty:
-                    bars = [{"time": r['time'].strftime('%Y-%m-%d') if hasattr(r['time'], 'strftime') else str(r['time'])[:10], "open": float(r['open']), "high": float(r['high']), "low": float(r['low']), "close": float(r['close']), "volume": int(r['volume'])} for _, r in df.iterrows()]
-                    for b in bars: history_col.update_one({"symbol": sym}, {"$pull": {"history_d1": {"time": b["time"]}}})
-                    history_col.update_one({"symbol": sym}, {"$push": {"history_d1": {"$each": bars, "$slice": -2500}}}, upsert=True)
-                    doc_hist = history_col.find_one({"symbol": sym})
-                    if doc_hist and doc_hist.get("history_d1"):
-                        d1 = sorted(doc_hist["history_d1"], key=lambda x: x["time"])
-                        history_col.update_one({"symbol": sym}, {"$set": {"history_w1": aggregate_candles(d1, 'W1'), "history_mn": aggregate_candles(d1, 'MN')}})
-                time.sleep(1.0)
-            print(f"[HISTORY] 🏁 Đã cào xong toàn bộ nến 30 ngày.", flush=True)
-        finally: is_full_data_running = False
-    threading.Thread(target=_run, daemon=True).start()
-    return jsonify({"status": "success", "message": "Đang cào 30 ngày nến..."})
+    print("[API] Request history backfill: 30 days", flush=True)
+    ok, message = _enqueue_history_job("history_30d", 30)
+    return jsonify({"status": "success" if ok else "error", "message": message, "job": _history_job_snapshot()}), (202 if ok else 409)
 
 
 @app.get("/api/crawl-full-history")
 def crawl_full_history():
-    print(f"\n[API] 📥 Gọi API /api/crawl-full-history (Ép cào nến 10 năm)", flush=True)
-    global is_full_data_running
-    if is_full_data_running: return jsonify({"status": "error", "message": "Đang chạy"}), 400
-    is_full_data_running = True
-    def _run():
-        global is_full_data_running
-        try:
-            target = [doc["symbol"] for doc in collection.find({}, {"symbol": 1})]
-            end, start = datetime.now().strftime("%Y-%m-%d"), (datetime.now() - timedelta(days=3650)).strftime("%Y-%m-%d")
-            print(f"[HISTORY] 🚀 Bắt đầu cào nến 10 năm cho {len(target)} mã...", flush=True)
-            for sym in target:
-                df = _fetch_history_ssi(sym, start, end)
-                if df is not None and not df.empty:
-                    bars = [{"time": r['time'].strftime('%Y-%m-%d') if hasattr(r['time'], 'strftime') else str(r['time'])[:10], "open": float(r['open']), "high": float(r['high']), "low": float(r['low']), "close": float(r['close']), "volume": int(r['volume'])} for _, r in df.iterrows()]
-                    history_col.update_one({"symbol": sym}, {"$set": {"history_d1": bars, "history_w1": aggregate_candles(bars, 'W1'), "history_mn": aggregate_candles(bars, 'MN')}}, upsert=True)
-                time.sleep(1.5)
-            print(f"[HISTORY] 🏁 Đã cào xong toàn bộ nến 10 năm.", flush=True)
-        finally: is_full_data_running = False
-    threading.Thread(target=_run, daemon=True).start()
-    return jsonify({"status": "success", "message": "Đang cào 10 năm nến..."})
+    print("[API] Request history backfill: 10 years", flush=True)
+    ok, message = _enqueue_history_job("history_10y", 3650)
+    return jsonify({"status": "success" if ok else "error", "message": message, "job": _history_job_snapshot()}), (202 if ok else 409)
 
 
 @app.get("/api/force-bctc")
