@@ -181,6 +181,22 @@ LAST_TELEGRAM_TIME = 0
 stop_crawl_requested = False
 is_auto_crawl_paused = False
 
+_realtime_progress_lock = threading.RLock()
+_realtime_progress = {
+    "status": "idle", "job_type": None, "message": "Chưa có phiên cào",
+    "current_symbol": None, "completed": 0, "total": 0,
+    "success": 0, "failed": 0, "updated_at": None
+}
+
+def _realtime_progress_update(**fields):
+    with _realtime_progress_lock:
+        _realtime_progress.update(fields)
+        _realtime_progress["updated_at"] = _now_str()
+
+def _realtime_progress_snapshot():
+    with _realtime_progress_lock:
+        return dict(_realtime_progress)
+
 # Tiến độ tác vụ quản trị: cập nhật từ chính vòng lặp xử lý, không ước lượng.
 _admin_progress_lock = threading.RLock()
 _admin_progress = {
@@ -939,8 +955,12 @@ def _execute_crawl(symbols: list, is_retry: bool = False, is_manual: bool = Fals
     
     if is_crawling: return
     is_crawling = True
-    stop_crawl_requested = False 
-    
+    stop_crawl_requested = False
+    realtime_job_type = "Cào bù" if is_retry else ("Cào tay" if is_manual else "Cào REALTIME")
+    _realtime_progress_update(status="running", job_type=realtime_job_type,
+        message="Đang khởi tạo phiên cào", current_symbol=None,
+        completed=0, total=len(symbols), success=0, failed=0)
+
     print(f"\n[CRAWL] 🚀 [{'CÀO BÙ' if is_retry else ('CÀO TAY' if is_manual else 'REAL-TIME')}] Bắt đầu xử lý {len(symbols)} mã...", flush=True)
     try:
         vn_now = _vn_now()
@@ -970,9 +990,17 @@ def _execute_crawl(symbols: list, is_retry: bool = False, is_manual: bool = Fals
             chunk = symbols[chunk_idx:chunk_idx+5]
             for sym in chunk:
                 if stop_crawl_requested: break
-                
+
+                _realtime_progress_update(current_symbol=sym, message=f"Đang cào {sym}")
                 doc = preloaded_docs.get(sym)
                 data = _fetch_one(sym)
+                progress_now = _realtime_progress_snapshot()
+                _realtime_progress_update(
+                    completed=progress_now["completed"] + 1,
+                    success=progress_now["success"] + (1 if data else 0),
+                    failed=progress_now["failed"] + (0 if data else 1),
+                    message=f"Đã xử lý {sym}"
+                )
                 
                 if data:
                     hist_doc = preloaded_history.get(sym)
@@ -1149,6 +1177,12 @@ def _execute_crawl(symbols: list, is_retry: bool = False, is_manual: bool = Fals
                 print(f"[TELEGRAM] ⏳ Có {len(alert_batch)} mã đột biến nhưng chưa đủ 2 tiếng, bỏ qua gửi tin.", flush=True)
     finally:
         is_crawling = False
+        stopped = bool(stop_crawl_requested)
+        _realtime_progress_update(
+            status="stopped" if stopped else "completed",
+            current_symbol=None,
+            message="Đã dừng theo yêu cầu" if stopped else "Đã hoàn tất phiên cào"
+        )
         stop_crawl_requested = False
 
 # ===================== GITHUB HELPER =====================
@@ -2721,6 +2755,7 @@ def api_status():
     return jsonify({
         "status": "success", 
         "is_crawling": is_crawling,
+        "realtime_progress": _realtime_progress_snapshot(),
         "history_job": _history_job_snapshot(),
         "is_paused": is_auto_crawl_paused,
         "is_holiday_paused": is_holiday_paused,
