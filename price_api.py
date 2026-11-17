@@ -181,6 +181,30 @@ LAST_TELEGRAM_TIME = 0
 stop_crawl_requested = False
 is_auto_crawl_paused = False
 
+# Tiến độ tác vụ quản trị: cập nhật từ chính vòng lặp xử lý, không ước lượng.
+_admin_progress_lock = threading.RLock()
+_admin_progress = {
+    "status": "idle", "job_type": None, "message": "Chưa có tác vụ quản trị",
+    "current_symbol": None, "completed": 0, "total": 0,
+    "success": 0, "failed": 0, "updated_at": None
+}
+
+def _admin_progress_update(**fields):
+    with _admin_progress_lock:
+        _admin_progress.update(fields)
+        _admin_progress["updated_at"] = _now_str()
+
+def _admin_progress_start(job_type, message="Đang khởi động"):
+    _admin_progress_update(
+        status="running", job_type=job_type, message=message,
+        current_symbol=None, completed=0, total=0, success=0, failed=0
+    )
+
+def _admin_progress_snapshot():
+    with _admin_progress_lock:
+        return dict(_admin_progress)
+
+
 # FIX BUG #1: Lock chống race giữa screener_worker và /api/force-screener
 screener_lock = threading.Lock()
 
@@ -2963,6 +2987,8 @@ def admin_force_ai_single():
     is_ai_running = True
     print(f"\n[ADMIN-AI-SINGLE] 🚀 Bắt đầu chạy AI cho mã {symbol}...", flush=True)
     
+    _admin_progress_start("ai_single", f"Đang chạy AI cho {symbol}")
+    _admin_progress_update(total=1, current_symbol=symbol)
     def _run():
         global is_ai_running
         try:
@@ -3001,9 +3027,14 @@ def admin_force_ai_single():
                     "ai_source": "AI"
                 }})
                 
+                _admin_progress_update(status="success", completed=1, success=1, current_symbol=None, message=f"AI {symbol} đã lưu thành công")
                 print(f"[ADMIN-AI-SINGLE] ✅ {symbol} - Đã lưu phân tích AI thành công vào cả 2 bảng!", flush=True)
             else:
+                _admin_progress_update(status="error", completed=1, failed=1, current_symbol=None, message=f"AI {symbol} thất bại")
                 print(f"[ADMIN-AI-SINGLE] ❌ {symbol} - Gọi AI thất bại.", flush=True)
+        except Exception as job_error:
+            _admin_progress_update(status="error", completed=1, failed=1, current_symbol=None, message=f"AI {symbol}: {job_error}")
+            logger.exception("[ADMIN-AI-SINGLE] Job lỗi")
         finally:
             is_ai_running = False
 
@@ -3029,6 +3060,8 @@ def admin_force_ai():
     all_symbols = [doc["symbol"] for doc in collection.find({}, {"symbol": 1})]
     
     is_ai_running = True
+    _admin_progress_start("ai_full", "Đang chuẩn bị AI toàn bộ")
+    _admin_progress_update(total=len(all_symbols), message=f"Đang chạy AI cho {len(all_symbols)} mã")
     print(f"\n[ADMIN-AI] 🚀 Bắt đầu chạy AI cho toàn bộ {len(all_symbols)} mã...", flush=True)
     
     def _run():
@@ -3038,10 +3071,13 @@ def admin_force_ai():
             count = 0
             
             for i, sym in enumerate(all_symbols, 1):
+                _admin_progress_update(current_symbol=sym, message=f"Đang phân tích AI {sym} ({i}/{total})")
                 sm = collection.find_one({"symbol": sym}, {"_id": 0})
                 si = screener_col.find_one({"symbol": sym}, {"_id": 0})
                 
                 if not sm or not si:
+                    snap = _admin_progress_snapshot()
+                    _admin_progress_update(completed=i, failed=snap["failed"] + 1, message=f"{sym}: thiếu dữ liệu, bỏ qua")
                     print(f"[ADMIN-AI] [{i}/{total}] ⚠️ {sym} - Thiếu dữ liệu, bỏ qua.", flush=True)
                     continue
                 
@@ -3069,12 +3105,17 @@ def admin_force_ai():
                         "ai_updated_at": _now_str()
                     }})
                     count += 1
+                    snap = _admin_progress_snapshot()
+                    _admin_progress_update(completed=i, success=snap["success"] + 1)
                     print(f"[ADMIN-AI] [{i}/{total}] ✅ {sym} - OK", flush=True)
                 else:
+                    snap = _admin_progress_snapshot()
+                    _admin_progress_update(completed=i, failed=snap["failed"] + 1)
                     print(f"[ADMIN-AI] [{i}/{total}] ❌ {sym} - Lỗi", flush=True)
                 
                 time.sleep(3.0)
             
+            _admin_progress_update(message=f"Đã phân tích AI {count}/{total} mã; đang đồng bộ GitHub")
             print(f"[ADMIN-AI] 🏁 Hoàn thành: {count}/{total} mã.", flush=True)
             
             gh_data, _ = get_github_file_data(SCREENER_JSON_FILE)
@@ -3094,6 +3135,12 @@ def admin_force_ai():
                             })
                 commit_multiple_files_to_github({SCREENER_JSON_FILE: gh_data}, f"Update AI toàn bộ {_now_str()}")
                 print(f"[ADMIN-AI] 🚀 Đã đồng bộ AI lên Github.", flush=True)
+            snap = _admin_progress_snapshot()
+            _admin_progress_update(status="success" if snap["failed"] == 0 else "partial",
+                                   current_symbol=None, completed=total, message=f"Hoàn tất AI: {count}/{total} mã thành công")
+        except Exception as job_error:
+            _admin_progress_update(status="error", message=f"Lỗi AI hàng loạt: {job_error}")
+            logger.exception("[ADMIN-AI] Job lỗi")
         finally:
             is_ai_running = False
     
@@ -3224,6 +3271,11 @@ def _enqueue_history_job(job_type, days):
         return True, message
 
 
+@app.get("/api/admin/progress")
+def admin_progress_status():
+    return jsonify({"status": "success", "job": _admin_progress_snapshot()})
+
+
 @app.get("/api/history-crawl-status")
 def history_crawl_status():
     return jsonify({"status": "success", "job": _history_job_snapshot()})
@@ -3266,27 +3318,36 @@ def force_bctc():
                 target = [doc["symbol"] for doc in collection.find({}, {"symbol": 1})][start_idx:start_idx+limit_idx]
                 
             print(f"[BCTC-CRAWL] 🚀 Bắt đầu cào BCTC cho {len(target)} mã...", flush=True)
-            
+            _admin_progress_start("bctc_batch", "Bắt đầu cào BCTC")
+            _admin_progress_update(total=len(target), message=f"Đang cào BCTC: {len(target)} mã")
             for i, sym in enumerate(target):
+                _admin_progress_update(current_symbol=sym, message=f"Đang xử lý BCTC {sym} ({i+1}/{len(target)})")
                 print(f"\n[BCTC-CRAWL] [{i+1}/{len(target)}] Đang xử lý {sym}...", flush=True)
-                res = _fetch_bctc_ssi(sym)
-                
-                if res: 
-                    bctc_col.update_one({"symbol": sym}, {"$set": {**res, "symbol": sym, "updated_at": _now_str()}}, upsert=True)
-                    period = res.get("latest_period", "Không rõ")
-                    print(f"  ✅ [THÀNH CÔNG] {sym} | Kỳ BCTC: {period}", flush=True)
-                    
-                    extracted = extract_metrics_from_bctc_data(res)
-                    if extracted:
-                        collection.update_one({"symbol": sym}, {"$set": extracted})
-                        print(f"  ✅ [FINANCIALS] {sym}: Đã trích xuất thành công (CFO, LNST, D/E, GM)", flush=True)
-                else:
-                    print(f"  ❌ [THẤT BẠI] {sym} | Không lấy được dữ liệu", flush=True)
-                    
+                try:
+                    res = _fetch_bctc_ssi(sym)
+                    if res:
+                        bctc_col.update_one({"symbol": sym}, {"$set": {**res, "symbol": sym, "updated_at": _now_str()}}, upsert=True)
+                        extracted = extract_metrics_from_bctc_data(res)
+                        if extracted:
+                            collection.update_one({"symbol": sym}, {"$set": extracted})
+                        _admin_progress_update(success=_admin_progress_snapshot()["success"] + 1)
+                        print(f"  ✅ [THÀNH CÔNG] {sym} | Kỳ BCTC: {res.get('latest_period', 'Không rõ')}", flush=True)
+                    else:
+                        _admin_progress_update(failed=_admin_progress_snapshot()["failed"] + 1)
+                        print(f"  ❌ [THẤT BẠI] {sym} | Không lấy được dữ liệu", flush=True)
+                except Exception as symbol_error:
+                    _admin_progress_update(failed=_admin_progress_snapshot()["failed"] + 1, message=f"{sym}: {symbol_error}")
+                    logger.exception("[BCTC-CRAWL] Lỗi mã %s", sym)
+                finally:
+                    _admin_progress_update(completed=i + 1)
                 time.sleep(3.0)
-                
+            _admin_progress_update(status="success" if _admin_progress_snapshot()["failed"] == 0 else "partial",
+                                   current_symbol=None, message="Đã hoàn tất cào BCTC")
             print(f"\n[BCTC-CRAWL] 🏁 Đã cào xong toàn bộ {len(target)} mã.", flush=True)
-        finally: 
+        except Exception as job_error:
+            _admin_progress_update(status="error", message=f"Lỗi tác vụ BCTC: {job_error}")
+            logger.exception("[BCTC-CRAWL] Job lỗi")
+        finally:
             is_full_data_running = False
             
     threading.Thread(target=_run, daemon=True).start()
@@ -3329,17 +3390,32 @@ def crawl_full_bctc():
         global is_full_data_running
         try:
             target = [doc["symbol"] for doc in collection.find({}, {"symbol": 1})]
+            _admin_progress_start("bctc_full", "Đang chuẩn bị cào full BCTC")
+            _admin_progress_update(total=len(target), message=f"Đang cào full BCTC: {len(target)} mã")
             print(f"[BCTC-CRAWL] 🚀 Bắt đầu cào toàn bộ BCTC cho {len(target)} mã...", flush=True)
             for i, sym in enumerate(target):
-                print(f"[BCTC-CRAWL] [{i+1}/{len(target)}] Đang xử lý {sym}...", flush=True)
-                res = _fetch_bctc_ssi(sym)
-                if res: 
-                    bctc_col.update_one({"symbol": sym}, {"$set": {**res, "symbol": sym, "updated_at": _now_str()}}, upsert=True)
-                    extracted = extract_metrics_from_bctc_data(res)
-                    if extracted:
-                        collection.update_one({"symbol": sym}, {"$set": extracted})
+                _admin_progress_update(current_symbol=sym, message=f"Đang xử lý BCTC {sym} ({i+1}/{len(target)})")
+                try:
+                    res = _fetch_bctc_ssi(sym)
+                    if res:
+                        bctc_col.update_one({"symbol": sym}, {"$set": {**res, "symbol": sym, "updated_at": _now_str()}}, upsert=True)
+                        extracted = extract_metrics_from_bctc_data(res)
+                        if extracted: collection.update_one({"symbol": sym}, {"$set": extracted})
+                        _admin_progress_update(success=_admin_progress_snapshot()["success"] + 1)
+                    else:
+                        _admin_progress_update(failed=_admin_progress_snapshot()["failed"] + 1)
+                except Exception as symbol_error:
+                    _admin_progress_update(failed=_admin_progress_snapshot()["failed"] + 1, message=f"{sym}: {symbol_error}")
+                    logger.exception("[BCTC-FULL] Lỗi mã %s", sym)
+                finally:
+                    _admin_progress_update(completed=i + 1)
                 time.sleep(3.0)
+            _admin_progress_update(status="success" if _admin_progress_snapshot()["failed"] == 0 else "partial",
+                                   current_symbol=None, message="Đã hoàn tất full BCTC")
             print(f"[BCTC-CRAWL] 🏁 Đã cào xong toàn bộ BCTC.", flush=True)
+        except Exception as job_error:
+            _admin_progress_update(status="error", message=f"Lỗi full BCTC: {job_error}")
+            logger.exception("[BCTC-FULL] Job lỗi")
         finally: is_full_data_running = False
     threading.Thread(target=_run, daemon=True).start()
     return jsonify({"status": "success", "message": "Đang cào FULL BCTC..."})
@@ -3356,9 +3432,12 @@ def crawl_ratios():
         global is_full_data_running
         try:
             target = [doc["symbol"] for doc in collection.find({}, {"symbol": 1})]
+            _admin_progress_start("ratios", "Đang chuẩn bị cào chỉ số")
+            _admin_progress_update(total=len(target), message=f"Đang cào chỉ số: {len(target)} mã")
             print(f"[RATIO-CRAWL] 🚀 Bắt đầu cào bảng Ratio cho {len(target)} mã...", flush=True)
             
             for i, sym in enumerate(target):
+                _admin_progress_update(current_symbol=sym, message=f"Đang lấy P/E, ROE... {sym} ({i+1}/{len(target)})")
                 print(f"[RATIO-CRAWL] [{i+1}/{len(target)}] Đang lấy ratio cho {sym}...", flush=True)
                 
                 ratios = {}
@@ -3392,11 +3471,17 @@ def crawl_ratios():
                     "ratio_updated_at": _now_str()
                 }}, upsert=True)
                 
+                _admin_progress_update(success=_admin_progress_snapshot()["success"] + 1, completed=i + 1)
                 print(f"  ✅ [RATIO] {sym} thành công (P/E: {ratios.get('pe', 0)}, EPS: {eps_final}, ROE: {round(roe_val, 1)}%)", flush=True)
                 time.sleep(0.5)
 
+            _admin_progress_update(status="success", current_symbol=None, message="Đã hoàn tất cào chỉ số")
             print(f"[RATIO-CRAWL] 🏁 Đã cào xong toàn bộ bảng Ratio.", flush=True)
-        finally: 
+        except Exception as job_error:
+            snap = _admin_progress_snapshot()
+            _admin_progress_update(status="error", failed=snap["failed"] + 1, message=f"Lỗi cào chỉ số: {job_error}")
+            logger.exception("[RATIO-CRAWL] Job lỗi")
+        finally:
             is_full_data_running = False
 
     threading.Thread(target=_run, daemon=True).start()
@@ -3546,6 +3631,7 @@ def force_screener():
         return jsonify({"status": "error", "message": "Screener đang chạy (worker hoặc API khác), vui lòng đợi!"}), 400
         
     is_screener_running = True
+    _admin_progress_start("screener", "Đang tải dữ liệu Screener")
     print(f"[SCREENER] 🚀 Bắt đầu chấm điểm lại toàn bộ (Chế độ tối ưu)...", flush=True)
     
     def _run():
@@ -3557,6 +3643,7 @@ def force_screener():
             print("[SCREENER] ⚡ Đang tải trước toàn bộ dữ liệu...", flush=True)
             all_stocks = list(collection.find({}))
             screener_symbols = [doc["symbol"] for doc in all_stocks if doc.get("symbol")]
+            _admin_progress_update(total=len(screener_symbols), message=f"Đã tìm thấy {len(screener_symbols)} mã; đang tải BCTC và lịch sử")
             all_bctc = _load_screener_bctc(screener_symbols, chunk_size=10)
             all_hist = _load_screener_history(screener_symbols, chunk_size=5, bars_limit=1400)
             
@@ -3594,7 +3681,9 @@ def force_screener():
             medians = compute_sector_medians(norm_db)
             results = []
             
-            for sym, nd in norm_db.items():
+            _admin_progress_update(message="Đã chuẩn hóa dữ liệu; đang tính điểm từng mã")
+            for score_index, (sym, nd) in enumerate(norm_db.items(), 1):
+                _admin_progress_update(current_symbol=sym, message=f"Đang chấm điểm {sym} ({score_index}/{len(norm_db)})")
                 grp = get_sub_sector(sym)
                 cfg = SUB_SECTOR_CONFIG.get(grp) or SUB_SECTOR_CONFIG.get(get_sector(sym))
                 med, _ = get_median_for_symbol(sym, medians)
@@ -3627,9 +3716,14 @@ def force_screener():
                     existing_ai_data=existing_ai,
                     history_bars=history_bars
                 )
-                if res: 
+                if res:
                     res["date"] = today_str
                     results.append(res)
+                    snap = _admin_progress_snapshot()
+                    _admin_progress_update(completed=score_index, success=snap["success"] + 1)
+                else:
+                    snap = _admin_progress_snapshot()
+                    _admin_progress_update(completed=score_index, failed=snap["failed"] + 1)
             
             if results:
                 results = sorted(results, key=lambda x: (x.get("total_score", 0), x.get("fundamental_score", 0)), reverse=True)
@@ -3645,12 +3739,18 @@ def force_screener():
                         r["ai_updated_at"] = existing_stock.get("ai_updated_at", "")
                         r["ai_source"] = existing_stock.get("ai_source", "AI")
 
+                _admin_progress_update(message=f"Đã tính điểm {len(results)}/{len(norm_db)} mã; đang lưu kết quả")
                 if _safe_replace_screener_results(results, tag="force-api"):
                     commit_multiple_files_to_github({SCREENER_JSON_FILE: results}, f"Force Screener {_now_str()}")
+                    _admin_progress_update(status="success", current_symbol=None, completed=len(norm_db), message=f"Hoàn tất chấm điểm: {len(results)}/{len(norm_db)} mã")
                     print(f"[SCREENER] ✅ Đã chấm điểm xong {len(results)} mã (Đã bảo vệ bài AI cũ).", flush=True)
                 else:
+                    _admin_progress_update(status="error", message="Không ghi được kết quả Screener (lock timeout)")
                     print(f"[SCREENER] ⚠️ Không ghi được kết quả (lock timeout).", flush=True)
+            else:
+                _admin_progress_update(status="success", completed=len(norm_db), message="Không có kết quả mới để lưu")
         except Exception as e:
+            _admin_progress_update(status="error", message=f"Lỗi Screener: {e}")
             print(f"[SCREENER] ❌ Lỗi: {e}", flush=True)
         finally: 
             is_screener_running = False
