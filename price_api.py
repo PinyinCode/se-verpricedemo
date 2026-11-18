@@ -2834,26 +2834,27 @@ def api_get_data():
         for doc in cursor:
             sym = doc.get("symbol")
             if sym:
-                if "prev_close" not in doc:
-                    doc["prev_close"] = 0
-                
-                if "price_change_percent" not in doc or doc["price_change_percent"] == 0:
-                    close_price = doc.get("close", 0)
-                    prev_close = doc.get("prev_close", 0)
-                    pct = 0.0
-                    avail = False
-                    arrow, color = "—", "slate"
-                    if close_price > 0 and prev_close > 0:
-                        raw_pct = ((close_price - prev_close) / prev_close) * 100
-                        if -30.0 <= raw_pct <= 30.0:
-                            pct = round(raw_pct, 2)
-                            avail = True
-                            if pct > 0: arrow, color = "▲", "emerald"
-                            elif pct < 0: arrow, color = "▼", "rose"
-                    doc["price_change_percent"] = pct
-                    doc["price_change_available"] = avail
-                    doc["price_arrow"] = arrow
-                    doc["price_color"] = color
+                prev_close = float(doc.get("prev_close", 0) or 0)
+                close_price = float(doc.get("close", 0) or 0)
+                pct = 0.0
+                avail = False
+                arrow, color = "—", "slate"
+
+                # Luôn tính lại từ close/prev_close hiện có trong cùng bản ghi.
+                # Không giữ price_change_percent cũ vì có thể lệch sau khi giá được cập nhật.
+                if close_price > 0 and prev_close > 0:
+                    raw_pct = ((close_price - prev_close) / prev_close) * 100
+                    if -30.0 <= raw_pct <= 30.0:
+                        pct = round(raw_pct, 2)
+                        avail = True
+                        if pct > 0: arrow, color = "▲", "emerald"
+                        elif pct < 0: arrow, color = "▼", "rose"
+
+                doc["prev_close"] = prev_close
+                doc["price_change_percent"] = pct
+                doc["price_change_available"] = avail
+                doc["price_arrow"] = arrow
+                doc["price_color"] = color
                 
                 doc["volume_percent"] = doc.get("volume_percent", 0.0)
                 data[sym] = doc
