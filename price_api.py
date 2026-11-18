@@ -2468,7 +2468,7 @@ def auto_crawler_worker():
                         try:
                             last_error = datetime.strptime(
                                 last_error_at, "%d/%m/%Y %H:%M:%S"
-                            ).replace(tzinfo=timezone(timedelta(hours=7)))
+                            ).replace(tzinfo=timezone.utc)
                             if (now_vn - last_error).total_seconds() < 120:
                                 continue
                         except (TypeError, ValueError):
