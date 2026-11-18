@@ -2428,8 +2428,73 @@ def auto_crawler_worker():
                 time.sleep(60)
                 continue
 
-            collection.update_many({"chot_so_today": {"$ne": today_str}}, {"$unset": {"chot_so_today": "", "is_locked": ""}})
             all_symbols = [doc["symbol"] for doc in collection.find({}, {"symbol": 1})]
+
+            # Sau giờ đóng cửa: chỉ rà soát D1 khi server thực sự rảnh.
+            # Không chạy song song với realtime, Screener hoặc crawler BCTC/lịch sử.
+            if is_post_close_window:
+                if is_crawling or is_screener_running or is_full_data_running:
+                    time.sleep(30)
+                    continue
+
+                saved_today = {
+                    item.get("symbol")
+                    for item in history_col.find(
+                        {"symbol": {"$in": all_symbols}, "history_d1.time": today_str},
+                        {"_id": 0, "symbol": 1}
+                    )
+                    if item.get("symbol")
+                }
+                stock_states = {
+                    item.get("symbol"): item
+                    for item in collection.find(
+                        {"symbol": {"$in": all_symbols}},
+                        {"_id": 0, "symbol": 1, "last_error_at": 1}
+                    )
+                    if item.get("symbol")
+                }
+                missing_d1 = [
+                    sym for sym in all_symbols
+                    if sym not in saved_today
+                ]
+
+                # Lỗi SSI/429 được giãn tối thiểu 120 giây giữa hai lượt thử
+                # cho cùng mã; mã khác vẫn có thể được rà soát trong lượt này.
+                retry_symbols = []
+                now_vn = _vn_now()
+                for sym in missing_d1:
+                    last_error_at = (stock_states.get(sym) or {}).get("last_error_at")
+                    if last_error_at:
+                        try:
+                            last_error = datetime.strptime(
+                                last_error_at, "%d/%m/%Y %H:%M:%S"
+                            ).replace(tzinfo=timezone(timedelta(hours=7)))
+                            if (now_vn - last_error).total_seconds() < 120:
+                                continue
+                        except (TypeError, ValueError):
+                            pass
+                    retry_symbols.append(sym)
+
+                if not retry_symbols:
+                    if missing_d1:
+                        logger.info(
+                            "[D1 AUDIT] Còn %d mã thiếu nến hôm nay; đang trong thời gian giãn retry.",
+                            len(missing_d1)
+                        )
+                    time.sleep(30 if missing_d1 else 60)
+                    continue
+
+                logger.info(
+                    "[D1 AUDIT] Server rảnh: phát hiện %d/%d mã thiếu nến D1 %s; "
+                    "đang rà soát/lưu bù.",
+                    len(retry_symbols), len(all_symbols), today_str
+                )
+                _execute_crawl(retry_symbols, is_retry=True, is_manual=False)
+                time.sleep(30)
+                continue
+
+            # Trong phiên: giữ nguyên cơ chế cào realtime hiện tại.
+            collection.update_many({"chot_so_today": {"$ne": today_str}}, {"$unset": {"chot_so_today": "", "is_locked": ""}})
             crawled_count = collection.count_documents({"chot_so_today": today_str})
 
             if crawled_count >= len(all_symbols) and len(all_symbols) > 0:
