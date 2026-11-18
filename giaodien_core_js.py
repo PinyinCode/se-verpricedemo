@@ -1587,112 +1587,33 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
 
     let isRefreshingAll = false;
     async function refreshPrices() {
-        if (isRefreshingAll || isRefreshingSingle) { logPriceProgress(`Hệ thống đang bận, vui lòng đợi tiến trình hiện tại xong!`, 'warning'); return; }
+        // Refresh chỉ đọc lại snapshot đã lưu trong MongoDB.
+        // Không gọi /api/sync, không kích hoạt SSI crawl, Screener hay AI.
+        if (isRefreshingAll || isRefreshingSingle) return;
         isRefreshingAll = true;
         const icon = document.getElementById('refresh-icon');
         const headerBtn = icon ? icon.closest('button') : null;
         if (icon) icon.classList.add('spinner');
         if (headerBtn) headerBtn.disabled = true;
-        document.querySelectorAll('[data-refresh-single]').forEach(btn => { btn.disabled = true; btn.classList.add('opacity-50', 'cursor-not-allowed'); });
-        showLogConsole();
-        document.getElementById('log-content').innerHTML = '';
-        setPriceProgress(0, 1);
-        const symbols = screenerResults.map(item => item.symbol);
-        if (symbols.length === 0) {
-            logPriceProgress(`Danh sách trống, không có gì để cập nhật.`, 'warning');
-            isRefreshingAll = false;
-            if (icon) icon.classList.remove('spinner');
-            if (headerBtn) headerBtn.disabled = false;
-            document.querySelectorAll('[data-refresh-single]').forEach(btn => { btn.disabled = false; btn.classList.remove('opacity-50', 'cursor-not-allowed'); });
-            return;
-        }
-        logPriceProgress(`Bắt đầu lấy giá cho ${symbols.length} mã...`, 'processing');
-        setPriceProgress(0, symbols.length);
         try {
-            const chunkSize = Math.max(1, symbols.length);
-            const chunks = [];
-            for (let i = 0; i < symbols.length; i += chunkSize) { chunks.push(symbols.slice(i, i + chunkSize)); }
-            let updatedCount = 0;
-            let processedCount = 0;
-            let lastUpdateTime = "";
-            await Promise.all(chunks.map(async (chunk) => {
-                const symQuery = chunk.join(',');
-                try {
-                    const baselinePrices = await readMongoPriceSnapshot();
-                    const controller = new AbortController();
-                    const timeoutId = setTimeout(() => controller.abort(), 8000);
+            const previousCount = Array.isArray(screenerResults) ? screenerResults.length : 0;
+            await loadData(true);
+            const updatedCount = Array.isArray(screenerResults) ? screenerResults.length : 0;
 
-                    const res = await fetch(`${PRICE_API_URL}/api/sync?symbols=${symQuery}`, { signal: controller.signal });
-                    clearTimeout(timeoutId);
-
-                    if (res.ok) {
-                        const data = await res.json();
-                        lastUpdateTime = data.updated_at.replace(/\s*\(.*?\)\s*/g, '').trim();
-                        
-                        let mongoPrices = await readMongoPriceSnapshot();
-                        const crawlInProgress = data.crawl_in_progress === true ||
-                            String(data.updated_at || '').includes('Bắt đầu cào');
-                        if (crawlInProgress) {
-                            logPriceProgress('Máy chủ đang cào realtime; chờ dữ liệu mới được ghi vào DB...', 'processing');
-                            mongoPrices = await waitForRealtimePrices(chunk, baselinePrices, 45);
-                        }
-
-                        chunk.forEach(sym => {
-                            const fromSync = data.updated_data && data.updated_data[sym];
-                            const fromMongo = mongoPrices[sym];
-                            // Khi crawl đang chạy, tuyệt đối không dùng snapshot DB cũ từ response /api/sync.
-                            const newData = crawlInProgress ? fromMongo : (fromSync || fromMongo);
-                            const changedAfterRequest = !crawlInProgress ||
-                                (fromMongo && fromMongo.updated_at && (!baselinePrices[sym] || fromMongo.updated_at !== baselinePrices[sym].updated_at));
-                            if (newData && changedAfterRequest && Number(newData.close_price !== undefined ? newData.close_price : newData.close) > 0) {
-                                const item = screenerResults.find(s => s.symbol === sym);
-                                
-                                if (item) { 
-                                    item.close_price = newData.close_price !== undefined ? newData.close_price : newData.close;
-                                    item.prev_close = newData.prev_close;
-                                    item.price_change_percent = newData.price_change_percent;
-                                    item.price_change_available = newData.price_change_available;
-                                    item.price_arrow = newData.price_arrow;
-                                    item.price_color = newData.price_color;
-                                    item.updated_at = newData.updated_at || lastUpdateTime;
-                                    item.trading_date = newData.trading_date || item.trading_date;
-                                    item.is_locked = newData.is_locked === true;
-                                    item.price_source = 'realtime';
-                                }
-                                logPriceProgress(`${sym}: ${formatPrice(newData.close_price !== undefined ? newData.close_price : newData.close)} đ (realtime)`, 'success');
-                                updatedCount++;
-                            } else { logPriceProgress(`${sym}: Không lấy được giá`, 'error'); }
-                            processedCount++;
-                            setPriceProgress(processedCount, symbols.length);
-                        });
-                    } else {
-                        chunk.forEach(sym => {
-                            logPriceProgress(`${sym}: Lỗi server API (${res.status})`, 'error');
-                            processedCount++;
-                            setPriceProgress(processedCount, symbols.length);
-                        });
-                    }
-                } catch (err) {
-                    const isTimeout = err.name === 'AbortError';
-                    chunk.forEach(sym => {
-                        logPriceProgress(`${sym}: ${isTimeout ? 'Server quá tải/Không phản hồi' : 'Lỗi kết nối mạng'}`, 'error');
-                        processedCount++;
-                        setPriceProgress(processedCount, symbols.length);
-                    });
-                }
-            }));
-            renderCards();
-            logPriceProgress(`Hoàn tất toàn bộ! Đã cập nhật ${updatedCount}/${symbols.length} mã.`, 'success');
-            setPriceProgress(symbols.length, symbols.length);
+            // Nếu modal chi tiết đang mở, dựng lại từ dữ liệu MongoDB vừa đọc.
+            const modal = document.getElementById('ai-modal');
+            if (currentSymbol && modal && !modal.classList.contains('hidden')) {
+                openModal(currentSymbol);
+            }
+            logPriceProgress(`Đã đồng bộ lại dữ liệu MongoDB: ${updatedCount || previousCount} mã. Giá, metric, điểm Screener và AI đều được đọc từ dữ liệu đã lưu; không chạy lại phân tích.`, 'success');
         } catch (err) {
-            console.error(err);
-            logPriceProgress(`Lỗi nghiêm trọng khi gọi API.`, 'error');
+            console.error('[REFRESH/MONGO]', err);
+            logPriceProgress('Không thể tải lại dữ liệu từ MongoDB. Vui lòng thử lại.', 'error');
         } finally {
             isRefreshingAll = false;
             if (icon) icon.classList.remove('spinner');
             if (headerBtn) headerBtn.disabled = false;
-            document.querySelectorAll('[data-refresh-single]').forEach(btn => { btn.disabled = false; btn.classList.remove('opacity-50', 'cursor-not-allowed'); });
-            finishPriceProgress(1500);
+            finishPriceProgress(2500);
         }
     }
 
