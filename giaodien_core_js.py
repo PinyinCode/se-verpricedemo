@@ -1592,33 +1592,96 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
 
     let isRefreshingAll = false;
     async function refreshPrices() {
-        // Refresh chỉ đọc lại snapshot đã lưu trong MongoDB.
-        // Không gọi /api/sync, không kích hoạt SSI crawl, Screener hay AI.
-        if (isRefreshingAll || isRefreshingSingle) return;
+        // Giữ nguyên tác vụ đồng bộ giá SSI như trước, sau đó đọc lại TOÀN BỘ
+        // metric/điểm/đánh giá AI đã lưu trong MongoDB. Không chấm điểm hoặc gọi AI.
+        if (isRefreshingAll || isRefreshingSingle) {
+            logPriceProgress('Hệ thống đang bận, vui lòng đợi tiến trình hiện tại xong!', 'warning');
+            return;
+        }
         isRefreshingAll = true;
         const icon = document.getElementById('refresh-icon');
         const headerBtn = icon ? icon.closest('button') : null;
         if (icon) icon.classList.add('spinner');
         if (headerBtn) headerBtn.disabled = true;
+        document.querySelectorAll('[data-refresh-single]').forEach(btn => {
+            btn.disabled = true;
+            btn.classList.add('opacity-50', 'cursor-not-allowed');
+        });
+        showLogConsole();
+        document.getElementById('log-content').innerHTML = '';
+        const symbols = screenerResults.map(item => item.symbol);
+        if (!symbols.length) {
+            logPriceProgress('Danh sách mã trống, không có dữ liệu để đồng bộ.', 'warning');
+            isRefreshingAll = false;
+            if (icon) icon.classList.remove('spinner');
+            if (headerBtn) headerBtn.disabled = false;
+            document.querySelectorAll('[data-refresh-single]').forEach(btn => {
+                btn.disabled = false;
+                btn.classList.remove('opacity-50', 'cursor-not-allowed');
+            });
+            return;
+        }
         try {
-            const previousCount = Array.isArray(screenerResults) ? screenerResults.length : 0;
-            const loaded = await loadData(true);
-            if (!loaded) throw new Error('Không tải được dữ liệu mới từ API/MongoDB');
-            const updatedCount = Array.isArray(screenerResults) ? screenerResults.length : 0;
+            logPriceProgress(`Bắt đầu đồng bộ giá SSI cho ${symbols.length} mã...`, 'processing');
+            const baselinePrices = await readMongoPriceSnapshot();
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 12000);
+            let syncData = null;
+            try {
+                const res = await fetch(`${PRICE_API_URL}/api/sync?symbols=${symbols.join(',')}`, {
+                    signal: controller.signal,
+                    cache: 'no-store'
+                });
+                if (!res.ok) throw new Error(`API đồng bộ giá trả về HTTP ${res.status}`);
+                syncData = await res.json();
+            } finally {
+                clearTimeout(timeoutId);
+            }
 
-            // Nếu modal chi tiết đang mở, dựng lại từ dữ liệu MongoDB vừa đọc.
+            let latestPrices = await readMongoPriceSnapshot();
+            const crawlInProgress = syncData.crawl_in_progress === true ||
+                String(syncData.updated_at || '').includes('Bắt đầu cào');
+            if (crawlInProgress) {
+                logPriceProgress('SSI đang cập nhật dữ liệu; chờ giá mới được ghi vào MongoDB...', 'processing');
+                latestPrices = await waitForRealtimePrices(symbols, baselinePrices, 45);
+            }
+
+            let priceUpdated = 0;
+            symbols.forEach(sym => {
+                const fromSync = syncData.updated_data && syncData.updated_data[sym];
+                const fromMongo = latestPrices[sym];
+                const data = crawlInProgress ? fromMongo : (fromSync || fromMongo);
+                const changedAfterRequest = !crawlInProgress ||
+                    (fromMongo && fromMongo.updated_at &&
+                    (!baselinePrices[sym] || fromMongo.updated_at !== baselinePrices[sym].updated_at));
+                if (data && changedAfterRequest &&
+                    Number(data.close_price !== undefined ? data.close_price : data.close) > 0) {
+                    priceUpdated++;
+                }
+            });
+            logPriceProgress(`Đã đồng bộ giá: ${priceUpdated}/${symbols.length} mã. Đang tải lại metric, điểm và đánh giá đã lưu trên MongoDB...`, 'success');
+
+            // loadData chỉ GET /api/screener, /api/data và /api/history-all.
+            // Không gọi endpoint chấm điểm, không chạy AI, không kích hoạt SSI.
+            const loaded = await loadData(true);
+            if (!loaded) throw new Error('Không tải lại được dữ liệu Screener/MongoDB');
+
             const modal = document.getElementById('ai-modal');
             if (currentSymbol && modal && !modal.classList.contains('hidden')) {
                 openModal(currentSymbol);
             }
-            logPriceProgress(`Đã đồng bộ lại dữ liệu MongoDB: ${updatedCount || previousCount} mã. Giá, metric, điểm Screener và AI đều được đọc từ dữ liệu đã lưu; không chạy lại phân tích.`, 'success');
+            logPriceProgress(`Hoàn tất: đã đồng bộ giá và tải lại toàn bộ chỉ số cùng đánh giá AI đã lưu cho ${screenerResults.length} mã. Không chạy lại Screener/AI.`, 'success');
         } catch (err) {
-            console.error('[REFRESH/MONGO]', err);
-            logPriceProgress('Không thể tải lại dữ liệu từ MongoDB. Vui lòng thử lại.', 'error');
+            console.error('[REFRESH]', err);
+            logPriceProgress(`Lỗi Refresh: ${err.message || 'Không thể đồng bộ dữ liệu'}`, 'error');
         } finally {
             isRefreshingAll = false;
             if (icon) icon.classList.remove('spinner');
             if (headerBtn) headerBtn.disabled = false;
+            document.querySelectorAll('[data-refresh-single]').forEach(btn => {
+                btn.disabled = false;
+                btn.classList.remove('opacity-50', 'cursor-not-allowed');
+            });
             finishPriceProgress(2500);
         }
     }
