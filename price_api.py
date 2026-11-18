@@ -2895,8 +2895,9 @@ def api_sync():
                     "price_color": color, "updated_at": doc.get("updated_at", _now_str())
                 }
         return jsonify({
-            "status": "success", 
-            "updated_at": _now_str() + " (Lấy từ DB)", 
+            "status": "success",
+            "crawl_in_progress": bool(is_crawling),
+            "updated_at": _now_str() + (" (Đang cào - snapshot DB)" if is_crawling else " (Lấy từ DB)"),
             "updated_data": updated_data
         })
 
