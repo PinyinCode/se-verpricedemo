@@ -1378,7 +1378,7 @@ def normalize_stock_data(symbol, data):
         eps = eps / 1000.0
         eps_need_update = True
     if eps_need_update: 
-        update_fields["eps"] = round(eps, 2)
+        update_fields["eps"] = eps
 
     if update_fields:
         print(f"    [CHUẨN HÓA] {symbol}: Sửa lỗi đơn vị {list(update_fields.keys())} -> {update_fields}", flush=True)
@@ -3587,7 +3587,7 @@ def crawl_ratios():
                 eps_raw = ratios.get("eps", 0)
                 if eps_raw >= 1000:
                     eps_raw = eps_raw / 1000.0
-                eps_final = round(eps_raw, 2)
+                eps_final = float(eps_raw or 0)
 
                 collection.update_one({"symbol": sym}, {"$set": {
                     "pe": round(ratios.get("pe", 0), 2),
