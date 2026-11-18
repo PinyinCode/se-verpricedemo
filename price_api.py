@@ -628,7 +628,7 @@ def _fetch_one(symbol: str) -> Optional[dict]:
 
             retry_after = getattr(exc, "retry_after", None)
             if retry_after is None:
-                match = re.search(r"retry_after[=:\\s]+([0-9]+(?:\\.[0-9]+)?)", error_text, re.IGNORECASE)
+                match = re.search(r"retry_after[=:\s]+([0-9]+(?:\.[0-9]+)?)", error_text, re.IGNORECASE)
                 retry_after = float(match.group(1)) if match else 1.0
             try:
                 wait_seconds = max(1.0, min(float(retry_after), 8.0))
