@@ -581,12 +581,14 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
             // Ưu tiên cache biểu đồ cho danh mục MUA, theo dõi và mã có dòng tiền lớn.
             // Chạy nền sau khi dữ liệu màn hình đã hiển thị, không chặn thao tác người dùng.
             schedulePriorityChartPrefetch(1500);
+            return true;
         } catch (error) {
             console.error("Lỗi tải dữ liệu:", error);
             const container = document.getElementById('stock-container');
             if (container && showSpinner) {
                 container.innerHTML = `<div class="col-span-full text-center py-8 text-rose-400 font-semibold bg-rose-500/10 rounded-xl border border-rose-500/30">⚠️ Chưa có file screener_results.json hoặc lỗi kết nối API!</div>`;
             }
+            return false;
         } finally {
             if (showSpinner && icon) icon.classList.remove('spinner');
         }
@@ -1600,7 +1602,8 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
         if (headerBtn) headerBtn.disabled = true;
         try {
             const previousCount = Array.isArray(screenerResults) ? screenerResults.length : 0;
-            await loadData(true);
+            const loaded = await loadData(true);
+            if (!loaded) throw new Error('Không tải được dữ liệu mới từ API/MongoDB');
             const updatedCount = Array.isArray(screenerResults) ? screenerResults.length : 0;
 
             // Nếu modal chi tiết đang mở, dựng lại từ dữ liệu MongoDB vừa đọc.
