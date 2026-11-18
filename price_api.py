@@ -1711,7 +1711,7 @@ def evaluate_stock_from_db(symbol, nd, sector_median, group_label, config, tech_
 
     return {
         "symbol": symbol, "sector": sector, "sub_sector": group_label, "close_price": close_price, "pe": pe, "pb": pb,
-        "roe": roe, "roa": roa, "eps": round(nd["eps"], 0), "bvps": round(nd["bvps"], 0), "dividend_yield": nd["dividend_yield"], "profit_growth_yoy": profit_growth_yoy,
+        "roe": roe, "roa": roa, "eps": float(nd["eps"] or 0), "bvps": float(nd["bvps"] or 0), "dividend_yield": nd["dividend_yield"], "profit_growth_yoy": profit_growth_yoy,
         "profit_growth_periods": nd.get("profit_growth_periods", 0),
         "profit_growth_yoy_available": profit_growth_available,
         "cfo_latest": cfo_latest, "net_profit_ttm": net_profit_ttm, "debt_to_equity": debt_to_equity, "gross_margin": nd["gross_margin"],
