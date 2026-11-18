@@ -530,71 +530,89 @@ def extract_metrics_from_bctc_data(bctc_doc):
 
 # ===================== CÀO GIÁ =====================
 def _fetch_one(symbol: str) -> Optional[dict]:
+    """
+    Lấy snapshot giá trong đúng ngày giao dịch Việt Nam từ SSI 1 phút.
+    Không fallback sang nến của ngày cũ: dữ liệu cũ không được phép đóng dấu
+    thành giá realtime hoặc ghi đè trading_date hiện tại.
+    """
     print(f"    [FETCH] Đang lấy giá {symbol}...", flush=True)
+
     def _do():
         try:
-            today = datetime.now().strftime("%Y-%m-%d")
-            past_7d = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-            
+            vn_today = _vn_now().strftime("%Y-%m-%d")
+            past_7d = (_vn_now() - timedelta(days=7)).strftime("%Y-%m-%d")
             df = Market().equity(symbol).ohlcv(
-                start=past_7d, 
-                end=today, 
-                interval="1m", 
-                source="ssi"
+                start=past_7d, end=vn_today, interval="1m", source="ssi"
             )
-            
-            if df is not None and not df.empty:
-                df['time'] = pd.to_datetime(df['time'])
-                df['date_str'] = df['time'].dt.strftime('%Y-%m-%d')
-                
-                df_today = df[df['date_str'] == today]
-                
-                if not df_today.empty:
-                    latest_candle = df_today.iloc[-1]
-                    total_volume_today = int(df_today['volume'].sum())
-                    
-                    return {
-                        "close": float(latest_candle["close"]), 
-                        "open": float(latest_candle["open"]), 
-                        "high": float(latest_candle["high"]), 
-                        "low": float(latest_candle["low"]), 
-                        "volume": total_volume_today
-                    }
-                else:
-                    latest_candle = df.iloc[-1]
-                    return {
-                        "close": float(latest_candle["close"]), 
-                        "open": float(latest_candle["open"]), 
-                        "high": float(latest_candle["high"]), 
-                        "low": float(latest_candle["low"]), 
-                        "volume": int(latest_candle["volume"])
-                    }
-            return None
+            if df is None or df.empty:
+                return None
+
+            frame = df.copy()
+            if "time" not in frame.columns:
+                frame = frame.reset_index()
+                if "time" not in frame.columns:
+                    first_col = frame.columns[0]
+                    frame = frame.rename(columns={first_col: "time"})
+            if "time" not in frame.columns:
+                return None
+
+            frame["time"] = pd.to_datetime(frame["time"], errors="coerce")
+            frame = frame.dropna(subset=["time"])
+            if frame.empty:
+                return None
+
+            frame["date_str"] = frame["time"].dt.strftime("%Y-%m-%d")
+            today_rows = frame[frame["date_str"] == vn_today].sort_values("time")
+            if today_rows.empty:
+                logger.warning("[FETCH STALE] %s: SSI không có nến 1m ngày %s", symbol, vn_today)
+                return None
+
+            for col in ("open", "high", "low", "close", "volume"):
+                if col not in today_rows.columns:
+                    return None
+                today_rows[col] = pd.to_numeric(today_rows[col], errors="coerce")
+            today_rows = today_rows.dropna(subset=["open", "high", "low", "close"])
+            today_rows = today_rows[
+                (today_rows["open"] > 0) & (today_rows["high"] > 0) &
+                (today_rows["low"] > 0) & (today_rows["close"] > 0)
+            ]
+            if today_rows.empty:
+                return None
+
+            first, last = today_rows.iloc[0], today_rows.iloc[-1]
+            return {
+                "close": float(last["close"]),
+                "open": float(first["open"]),
+                "high": float(today_rows["high"].max()),
+                "low": float(today_rows["low"].min()),
+                "volume": int(today_rows["volume"].fillna(0).clip(lower=0).sum()),
+                "source_time": last["time"].strftime("%Y-%m-%d %H:%M:%S"),
+                "source_date": vn_today
+            }
         except Exception as e:
-            print(f"    ❌ [FETCH ERROR] Lỗi gọi Vnstock cho {symbol}: {e}", flush=True)
+            log_exception(f"[FETCH ERROR] SSI/Vnstock {symbol}", e)
             return None
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
-        try: 
+        try:
             data = ex.submit(_do).result(timeout=15)
         except concurrent.futures.TimeoutError:
-            print(f"    ❌ [FETCH TIMEOUT] Quá 15s không lấy được giá {symbol}", flush=True)
+            logger.warning("[FETCH TIMEOUT] Quá 15s không lấy được giá %s", symbol)
             return None
         except Exception as e:
-            print(f"    ❌ [FETCH THREAD ERROR] {symbol}: {e}", flush=True)
+            log_exception(f"[FETCH THREAD ERROR] {symbol}", e)
             return None
 
-    if not data or data["close"] <= 0 or data["open"] <= 0: 
+    if not data or data.get("close", 0) <= 0 or data.get("open", 0) <= 0:
         return None
-        
+
     if data["close"] >= 1000:
-        for k in ["close", "open", "high", "low"]: 
-            data[k] /= 1000.0
-            
-    if 0 < data["volume"] < 100000: 
+        for key in ("close", "open", "high", "low"):
+            data[key] /= 1000.0
+    if 0 < data["volume"] < 100000:
         data["volume"] *= VOLUME_MULTIPLIER
-        
     return data
+
 
 def _fetch_history_ssi(symbol: str, start_date: str, end_date: str):
     """Fetch and normalize daily SSI candles; reject malformed/invalid rows."""
@@ -1023,8 +1041,10 @@ def _execute_crawl(symbols: list, is_retry: bool = False, is_manual: bool = Fals
                         valid_vols = [b.get("volume", 0) for b in bars_sorted[-20:] if b.get("volume", 0) > 0]
                         if valid_vols: avg_vol_20 = sum(valid_vols) / len(valid_vols)
 
+                    # Dùng prev_close đã lưu làm dự phòng; không lấy close cũ
+                    # làm giá tham chiếu vì có thể tạo phần trăm biến động sai.
                     if prev_close <= 0 and doc:
-                        prev_close = float(doc.get("close", 0))
+                        prev_close = float(doc.get("prev_close", 0) or 0)
 
                     vol_pct = round(data["volume"] / avg_vol_20 * 100, 2) if avg_vol_20 > 0 else 0
                     pct_change = round(((data["close"] - prev_close) / prev_close) * 100, 2) if prev_close > 0 else 0
