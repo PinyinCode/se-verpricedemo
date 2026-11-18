@@ -505,6 +505,9 @@ def build_core_js(price_api_url, firebase_config, cheap_symbols, cheap_stocks_gr
 
                 return {
                     ...item,
+                    // Lấy toàn bộ metric/điểm/đánh giá đã lưu trong MongoDB Screener,
+                    // không chỉ các trường được liệt kê riêng bên dưới.
+                    ...mongoSI,
                     company_name: extraData.company_name !== undefined ? extraData.company_name : (item.company_name || extraData.organ_name || item.organ_name || ""),
                     market_cap: extraData.market_cap !== undefined ? extraData.market_cap : (item.market_cap || 0),
                     total_shares: extraData.total_shares !== undefined ? extraData.total_shares : (item.total_shares || 0),
