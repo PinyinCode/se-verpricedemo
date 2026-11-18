@@ -140,7 +140,16 @@ try:
     screener_col = db["screener_results"]
     settings_col = db["settings"]
     logger.info("MongoDB đã kết nối thành công!")
-    
+
+    # Đồng bộ đúng các index đã tạo trên Atlas; dùng cùng tên để create_index
+    # có thể chạy lặp an toàn khi Render khởi động lại.
+    logger.info("[MONGODB] Kiểm tra index symbol cho 4 collection...")
+    collection.create_index([("symbol", 1)], name="idx_symbol_1")
+    history_col.create_index([("symbol", 1)], name="idx_symbol_1")
+    bctc_col.create_index([("symbol", 1)], name="idx_symbol_1")
+    screener_col.create_index([("symbol", 1)], name="idx_symbol_1")
+    logger.info("[MONGODB] Index symbol sẵn sàng cho stocks/history_data/bctc_data/screener_results.")
+
     if os.path.exists(SYMBOLS_JSON_FILE):
         with open(SYMBOLS_JSON_FILE, "r", encoding="utf-8") as f:
             json_symbols = set(str(s).upper().strip() for s in json.load(f))
@@ -990,15 +999,78 @@ def _execute_crawl(symbols: list, is_retry: bool = False, is_manual: bool = Fals
 
         alert_batch, pending_history_files = [], {}
 
-        # FIX BUG #8: Preload tất cả documents cần thiết 1 lần
-        preloaded_docs = {doc["symbol"]: doc for doc in collection.find(
-            {"symbol": {"$in": symbols}}, 
-            {"symbol": 1, "close": 1, "is_locked": 1, "trading_date": 1, "open": 1, "high": 1, "low": 1}
-        )}
-        preloaded_history = {doc["symbol"]: doc for doc in history_col.find(
-            {"symbol": {"$in": symbols}}, 
-            {"symbol": 1, "history_d1": 1}
-        )}
+        # Preload snapshot MongoDB trước khi gọi SSI; ghi log riêng để không còn
+        # khoảng trống log khiến tưởng worker đã dừng sau dòng [CRAWL].
+        preload_started = time.perf_counter()
+        print(f"[CRAWL] 📥 Đang nạp snapshot giá MongoDB cho {len(symbols)} mã...", flush=True)
+
+        def _load_symbol_docs_in_batches(col, projection, stage_name, batch_size=10):
+            loaded = {}
+            for batch_start in range(0, len(symbols), batch_size):
+                if stop_crawl_requested:
+                    break
+                batch = symbols[batch_start:batch_start + batch_size]
+                last_error = None
+                for attempt in range(2):
+                    try:
+                        cursor = col.find(
+                            {"symbol": {"$in": batch}},
+                            projection,
+                            max_time_ms=45000
+                        ).batch_size(batch_size)
+                        for item in cursor:
+                            if item.get("symbol"):
+                                loaded[item["symbol"]] = item
+                        last_error = None
+                        break
+                    except Exception as read_error:
+                        last_error = read_error
+                        print(
+                            f"[CRAWL] ⚠️ {stage_name}: lỗi batch "
+                            f"{batch_start + 1}-{batch_start + len(batch)} "
+                            f"(lần {attempt + 1}/2): {read_error}",
+                            flush=True
+                        )
+                        if attempt == 0:
+                            time.sleep(1.5)
+                if last_error is not None:
+                    raise RuntimeError(
+                        f"{stage_name} thất bại tại batch "
+                        f"{batch_start + 1}-{batch_start + len(batch)}: {last_error}"
+                    ) from last_error
+                done = min(batch_start + len(batch), len(symbols))
+                print(
+                    f"[CRAWL] 📦 {stage_name}: {done}/{len(symbols)} mã "
+                    f"(đã có {len(loaded)} bản ghi)",
+                    flush=True
+                )
+            return loaded
+
+        preloaded_docs = _load_symbol_docs_in_batches(
+            collection,
+            {"symbol": 1, "close": 1, "prev_close": 1, "is_locked": 1,
+             "trading_date": 1, "open": 1, "high": 1, "low": 1},
+            "snapshot giá"
+        )
+        print(
+            f"[CRAWL] ✅ Đã nạp {len(preloaded_docs)}/{len(symbols)} snapshot giá "
+            f"sau {time.perf_counter() - preload_started:.1f}s; đang nạp lịch sử D1...",
+            flush=True
+        )
+
+        history_started = time.perf_counter()
+        # Chỉ đọc 21 nến gần nhất và chia batch nhỏ để tránh một lệnh $in lớn
+        # làm MongoDB Atlas timeout khi collection đang chịu tải.
+        preloaded_history = _load_symbol_docs_in_batches(
+            history_col,
+            {"symbol": 1, "history_d1": {"$slice": -21}},
+            "lịch sử D1"
+        )
+        print(
+            f"[CRAWL] ✅ Đã nạp lịch sử gần nhất của {len(preloaded_history)}/{len(symbols)} mã "
+            f"sau {time.perf_counter() - history_started:.1f}s; bắt đầu gọi SSI...",
+            flush=True
+        )
 
         for chunk_idx in range(0, len(symbols), 5):
             if stop_crawl_requested:
