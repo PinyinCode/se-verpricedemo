@@ -58,7 +58,7 @@ class MacroDataTests(unittest.TestCase):
         self.assertTrue(any("ngân hàng" in query for _, query in banks))
         self.assertTrue(any("bất động sản" in query for _, query in property))
         self.assertTrue(all(len(query.split()) <= 6 for _, query in agriculture))
-        self.assertTrue(any("nông nghiệp Việt Nam" in query for _, query in agriculture))
+        self.assertTrue(any(query == "nông nghiệp" for _, query in agriculture))
         self.assertIn(
             "NV.AGR.TOTL.KD.ZG",
             [item[1] for item in macro_data._industry_context_indicators("AGRI", None)],
