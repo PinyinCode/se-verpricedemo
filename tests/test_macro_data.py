@@ -41,8 +41,8 @@ class MacroDataTests(unittest.TestCase):
         banks = macro_data._industry_queries("Ngân hàng", "OTHER")
         self.assertTrue(any('"Thép và vật liệu"' in q for _, q in steel))
         self.assertTrue(any('"Ngân hàng"' in q for _, q in banks))
-        self.assertTrue(any("sản lượng sản xuất" in q for _, q in steel))
-        self.assertTrue(any("giá nguyên liệu" in q for _, q in banks))
+        self.assertTrue(any("sản lượng" in q for _, q in steel))
+        self.assertTrue(any("giá" in q for _, q in banks))
         self.assertNotEqual(steel, banks)
         # A newly added industry label is handled without adding a sector rule.
         new_sector = macro_data._industry_queries("Dịch vụ giáo dục", None)
@@ -57,6 +57,8 @@ class MacroDataTests(unittest.TestCase):
         self.assertTrue(any("nông nghiệp" in query for _, query in agriculture))
         self.assertTrue(any("ngân hàng" in query for _, query in banks))
         self.assertTrue(any("bất động sản" in query for _, query in property))
+        self.assertTrue(all(len(query.split()) <= 5 for _, query in agriculture))
+        self.assertTrue(any('"nông nghiệp" Việt Nam' in query for _, query in agriculture))
         self.assertIn(
             "NV.AGR.TOTL.KD.ZG",
             [item[1] for item in macro_data._industry_context_indicators("AGRI", None)],
