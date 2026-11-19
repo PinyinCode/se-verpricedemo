@@ -39,8 +39,8 @@ class MacroDataTests(unittest.TestCase):
     def test_industry_queries_are_derived_from_industry_label_not_ticker(self):
         steel = macro_data._industry_queries("Thép và vật liệu", "OTHER")
         banks = macro_data._industry_queries("Ngân hàng", "OTHER")
-        self.assertTrue(any('"Thép và vật liệu"' in q for _, q in steel))
-        self.assertTrue(any('"Ngân hàng"' in q for _, q in banks))
+        self.assertTrue(any("Thép và vật liệu" in q for _, q in steel))
+        self.assertTrue(any("Ngân hàng" in q for _, q in banks))
         self.assertTrue(any("sản lượng" in q for _, q in steel))
         self.assertTrue(any("giá" in q for _, q in banks))
         self.assertNotEqual(steel, banks)
@@ -58,7 +58,7 @@ class MacroDataTests(unittest.TestCase):
         self.assertTrue(any("ngân hàng" in query for _, query in banks))
         self.assertTrue(any("bất động sản" in query for _, query in property))
         self.assertTrue(all(len(query.split()) <= 6 for _, query in agriculture))
-        self.assertTrue(any('"nông nghiệp" Việt Nam' in query for _, query in agriculture))
+        self.assertTrue(any("nông nghiệp Việt Nam" in query for _, query in agriculture))
         self.assertIn(
             "NV.AGR.TOTL.KD.ZG",
             [item[1] for item in macro_data._industry_context_indicators("AGRI", None)],
