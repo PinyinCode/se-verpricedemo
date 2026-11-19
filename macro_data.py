@@ -220,12 +220,12 @@ def _article_date(parser, api_item=None):
 
 def _extract_reference_period(text):
     """Extract an explicitly stated statistical reference period, not publication date."""
-    value = re.sub(r"\\s+", " ", str(text or "")).strip()
+    value = re.sub(r"\s+", " ", str(text or "")).strip()
     patterns = (
-        (r"(\\d{1,2})\\s*tháng\\s*(?:đầu\\s*)?(?:năm\\s*)?(\\d{4})", lambda m: f"{m.group(1)} tháng năm {m.group(2)}"),
-        (r"quý\\s*([1-4ivx]+)\\s*(?:năm|/)\\s*(\\d{4})", lambda m: f"Q{m.group(1).upper()}-{m.group(2)}"),
-        (r"tháng\\s*(\\d{1,2})\\s*[/\\-]\\s*(\\d{4})", lambda m: f"{m.group(1)}-{m.group(2)}"),
-        (r"năm\\s*(\\d{4})", lambda m: m.group(1)),
+        (r"(\d{1,2})\s*tháng\s*(?:đầu\s*)?(?:năm\s*)?(\d{4})", lambda m: f"{m.group(1)} tháng năm {m.group(2)}"),
+        (r"quý\s*([1-4ivx]+)\s*(?:năm|/)\s*(\d{4})", lambda m: f"Q{m.group(1).upper()}-{m.group(2)}"),
+        (r"tháng\s*(\d{1,2})\s*[/\-]\s*(\d{4})", lambda m: f"{m.group(1)}-{m.group(2)}"),
+        (r"năm\s*(\d{4})", lambda m: m.group(1)),
     )
     for pattern, formatter in patterns:
         match = re.search(pattern, value, re.I)
@@ -503,7 +503,7 @@ def _industry_queries(industry, sector):
     """
     labels = []
     for value in (industry, sector):
-        label = re.sub(r"\\s+", " ", str(value or "")).strip()
+        label = re.sub(r"\s+", " ", str(value or "")).strip()
         if label and label.casefold() not in ("unknown", "none", "n/a", "unclassified"):
             if label.casefold() not in {item.casefold() for item in labels}:
                 labels.append(label)
@@ -523,7 +523,7 @@ def _industry_queries(industry, sector):
     deduped = []
     seen = set()
     for category, query in queries:
-        normalized = re.sub(r"\\s+", " ", query).strip()
+        normalized = re.sub(r"\s+", " ", query).strip()
         if normalized and normalized.casefold() not in seen:
             seen.add(normalized.casefold())
             deduped.append((category, normalized))
