@@ -2083,7 +2083,11 @@ def _call_ai_for_symbol(symbol, sm, si, sector):
                 company_meta.get("industry") or company_meta.get("industry_name")
                 or company_meta.get("industryName") or company_meta.get("icb_name")
                 or company_meta.get("icbName") or company_meta.get("sector_name")
-                or company_meta.get("sectorName") or SECTOR_NAMES.get(sector, sector)
+                or company_meta.get("sectorName")
+                or si.get("industry") or si.get("industry_name") or si.get("industryName")
+                or si.get("icb_name") or si.get("icbName") or si.get("sector_name")
+                or si.get("sectorName") or sm.get("industry") or sm.get("industry_name")
+                or SECTOR_NAMES.get(sector, sector)
             )
             macro_bundle = get_macro_context(
                 symbol, sector, industry=industry_label, metadata=company_meta,
