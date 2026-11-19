@@ -1467,7 +1467,7 @@ def _macro_auto_refresh_loop():
                     or stock_doc.get("icb_name") or stock_doc.get("icbName")
                     or stock_doc.get("sub_sector") or stock_doc.get("subSector")
                     or stock_doc.get("sector_name") or stock_doc.get("sectorName")
-                    or SECTOR_NAMES.get(sector, sector)
+                    or sector
                 )
                 industry_labels.add((str(industry), str(sector)))
 
@@ -2150,7 +2150,7 @@ def _call_ai_for_symbol(symbol, sm, si, sector):
                 or si.get("icb_name") or si.get("icbName") or si.get("sector_name")
                 or si.get("sectorName") or si.get("sub_sector") or si.get("subSector")
                 or sm.get("industry") or sm.get("industry_name")
-                or SECTOR_NAMES.get(sector, sector)
+                or sector
             )
             macro_bundle = get_macro_context(
                 symbol, sector, industry=industry_label, metadata=company_meta,
