@@ -63,41 +63,15 @@ GENERAL_PUBLICATION_QUERIES = (
 
 # Industry search intents are generic sector vocabularies. Actual company
 # classification is read from its metadata and is not mapped by ticker here.
-INDUSTRY_SEARCH_HINTS = {
-    "bank": ("tín dụng ngân hàng lãi suất tiền gửi nợ xấu", "tăng trưởng tín dụng"),
-    "ngân hàng": ("tín dụng ngân hàng lãi suất tiền gửi nợ xấu", "tăng trưởng tín dụng"),
-    "securities": ("thanh khoản thị trường chứng khoán phát hành trái phiếu", "margin chứng khoán"),
-    "chứng khoán": ("thanh khoản thị trường chứng khoán phát hành trái phiếu", "margin chứng khoán"),
-    "real estate": ("thị trường bất động sản nhà ở pháp lý nguồn cung", "tín dụng bất động sản"),
-    "bất động sản": ("thị trường bất động sản nhà ở pháp lý nguồn cung", "tín dụng bất động sản"),
-    "steel": ("sản lượng thép giá thép quặng sắt than luyện cốc", "nhu cầu thép xây dựng"),
-    "thép": ("sản lượng thép giá thép quặng sắt than luyện cốc", "nhu cầu thép xây dựng"),
-    "materials": ("giá nguyên vật liệu sản xuất công nghiệp", "sản lượng công nghiệp"),
-    "vật liệu": ("giá nguyên vật liệu sản xuất công nghiệp", "sản lượng công nghiệp"),
-    "oil": ("giá dầu thô sản lượng khai thác dầu khí", "lọc hóa dầu khí tự nhiên"),
-    "dầu": ("giá dầu thô sản lượng khai thác dầu khí", "lọc hóa dầu khí tự nhiên"),
-    "gas": ("giá khí tự nhiên LNG năng lượng", "sản lượng điện khí"),
-    "điện": ("sản lượng điện phụ tải giá điện thủy điện nhiệt điện", "giá nhiên liệu phát điện"),
-    "power": ("sản lượng điện phụ tải giá điện thủy điện nhiệt điện", "giá nhiên liệu phát điện"),
-    "retail": ("bán lẻ tiêu dùng sức mua doanh thu bán lẻ", "thị trường hàng tiêu dùng"),
-    "bán lẻ": ("bán lẻ tiêu dùng sức mua doanh thu bán lẻ", "thị trường hàng tiêu dùng"),
-    "food": ("giá lương thực thực phẩm chăn nuôi nguyên liệu thức ăn", "xuất khẩu nông thủy sản"),
-    "thực phẩm": ("giá lương thực thực phẩm chăn nuôi nguyên liệu thức ăn", "xuất khẩu nông thủy sản"),
-    "seafood": ("xuất khẩu thủy sản giá cá tra tôm thị trường nhập khẩu", "sản lượng nuôi trồng thủy sản"),
-    "thủy sản": ("xuất khẩu thủy sản giá cá tra tôm thị trường nhập khẩu", "sản lượng nuôi trồng thủy sản"),
-    "logistics": ("vận tải hàng hóa cước vận tải cảng biển sản lượng hàng hóa", "xuất nhập khẩu"),
-    "vận tải": ("vận tải hàng hóa cước vận tải cảng biển sản lượng hàng hóa", "xuất nhập khẩu"),
-    "aviation": ("vận tải hàng không lượng khách giá nhiên liệu bay", "du lịch quốc tế"),
-    "hàng không": ("vận tải hàng không lượng khách giá nhiên liệu bay", "du lịch quốc tế"),
-    "technology": ("xuất khẩu điện tử bán dẫn công nghệ thông tin", "đầu tư công nghệ"),
-    "công nghệ": ("xuất khẩu điện tử bán dẫn công nghệ thông tin", "đầu tư công nghệ"),
-    "agriculture": ("giá nông sản phân bón cao su đường", "xuất khẩu nông nghiệp"),
-    "nông nghiệp": ("giá nông sản phân bón cao su đường", "xuất khẩu nông nghiệp"),
-    "fertilizer": ("giá phân bón urê ammonia phosphate khí đầu vào", "xuất khẩu phân bón"),
-    "phân bón": ("giá phân bón urê ammonia phosphate khí đầu vào", "xuất khẩu phân bón"),
-    "insurance": ("thị trường bảo hiểm phí bảo hiểm lãi suất trái phiếu", "lợi suất trái phiếu chính phủ"),
-    "bảo hiểm": ("thị trường bảo hiểm phí bảo hiểm lãi suất trái phiếu", "lợi suất trái phiếu chính phủ"),
-}
+# Generic dimensions applied to every industry label discovered from live company
+# metadata. No ticker allow-list or sector-to-query mapping is maintained.
+INDUSTRY_QUERY_DIMENSIONS = (
+    "sản lượng sản xuất công suất hoạt động",
+    "giá bán giá nguyên liệu chi phí đầu vào",
+    "doanh thu tiêu thụ nhu cầu thị trường",
+    "xuất khẩu nhập khẩu chính sách đầu tư",
+)
+
 
 # World Bank annual series complement, not replace, current official monthly
 # Vietnamese releases. Codes are stable public indicator identifiers.
@@ -502,27 +476,38 @@ def _fetch_world_bank_facts():
 
 
 def _industry_queries(industry, sector):
-    raw = " ".join(str(x or "") for x in (industry, sector)).strip()
-    normalized = raw.casefold()
-    queries = []
-    for key, hints in INDUSTRY_SEARCH_HINTS.items():
-        if key in normalized:
-            queries.extend(hints)
-    # Always include the company's actual classification label when available.
-    industry_label = str(industry or "").strip()
-    if industry_label and industry_label.casefold() not in ("unknown", "none", "n/a"):
-        queries.insert(0, f"{industry_label} Việt Nam sản lượng doanh thu xuất nhập khẩu")
-    # Sector fallback is used only if company metadata has no classification.
-    elif sector:
-        queries.insert(0, f"{sector} Việt Nam dữ liệu ngành")
+    """Build discovery searches from live industry labels, not a static sector map.
+
+    Generic dimensions are applied uniformly to every label. The industry name
+    itself comes from issuer metadata in MongoDB/source profiles.
+    """
+    labels = []
+    for value in (industry, sector):
+        label = re.sub(r"\\s+", " ", str(value or "")).strip()
+        if label and label.casefold() not in ("unknown", "none", "n/a", "unclassified"):
+            if label.casefold() not in {item.casefold() for item in labels}:
+                labels.append(label)
+
+    if not labels:
+        return []
+
+    primary = labels[0]
+    queries = [f'"{primary}" Việt Nam dữ liệu ngành']
+    queries.extend(
+        f'"{primary}" Việt Nam {dimension}'
+        for dimension in INDUSTRY_QUERY_DIMENSIONS
+    )
+    if len(labels) > 1:
+        queries.append(f'"{labels[1]}" Việt Nam {primary} ngành')
+
     deduped = []
     seen = set()
     for query in queries:
-        q = re.sub(r"\s+", " ", query).strip()
-        if q and q.casefold() not in seen:
-            seen.add(q.casefold())
-            deduped.append(q)
-    return [("INDUSTRY", query) for query in deduped[:4]]
+        normalized = re.sub(r"\\s+", " ", query).strip()
+        if normalized and normalized.casefold() not in seen:
+            seen.add(normalized.casefold())
+            deduped.append(normalized)
+    return [("INDUSTRY_DISCOVERY", query) for query in deduped[:5]]
 
 
 def _fetch_industry_pack(industry, sector):
@@ -530,7 +515,7 @@ def _fetch_industry_pack(industry, sector):
     if not searches:
         return [], ["Không có phân loại ngành doanh nghiệp; chỉ áp dụng dữ liệu vĩ mô chung."]
     facts, warnings = _fetch_nso_search_pack(
-        searches, category_prefix="", per_query=3, limit=MAX_INDUSTRY_FACTS
+        searches, category_prefix="", per_query=2, limit=MAX_INDUSTRY_FACTS
     )
     # Keep the raw industry classification on every fact for auditability.
     for fact in facts:
