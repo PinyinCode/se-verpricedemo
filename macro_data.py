@@ -17,6 +17,7 @@ import os
 import re
 import threading
 import time
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from urllib.parse import quote, urljoin
@@ -110,6 +111,49 @@ WORLD_BANK_INDICATORS = (
     ("TRADE_OPENNESS", "NE.TRD.GNFS.ZS", "Trade (% of GDP)"),
     ("GROSS_CAPITAL_FORMATION", "NE.GDI.FTOT.ZS", "Gross capital formation (% of GDP)"),
 )
+
+
+class _NSDPTableParser(HTMLParser):
+    """Read the official NSDP table and discover its SDMX download URLs."""
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.rows = []
+        self._row = None
+        self._cell = None
+        self._anchor = None
+
+    def handle_starttag(self, tag, attrs):
+        attrs = dict(attrs)
+        if tag == "tr":
+            self._row = []
+        elif tag in ("td", "th") and self._row is not None:
+            self._cell = {"text": [], "links": []}
+        elif tag == "a" and self._cell is not None:
+            self._anchor = {"href": attrs.get("href"), "text": []}
+
+    def handle_data(self, data):
+        value = data.strip()
+        if not value:
+            return
+        if self._cell is not None:
+            self._cell["text"].append(value)
+        if self._anchor is not None:
+            self._anchor["text"].append(value)
+
+    def handle_endtag(self, tag):
+        if tag == "a" and self._anchor is not None:
+            self._cell["links"].append({
+                "href": self._anchor.get("href"),
+                "text": " ".join(self._anchor["text"]).strip(),
+            })
+            self._anchor = None
+        elif tag in ("td", "th") and self._cell is not None:
+            self._cell["text"] = " ".join(self._cell["text"]).strip()
+            self._row.append(self._cell)
+            self._cell = None
+        elif tag == "tr" and self._row is not None:
+            self.rows.append(self._row)
+            self._row = None
 
 
 class _ArticleParser(HTMLParser):
@@ -284,6 +328,146 @@ def _fetch_nso_search_pack(searches, category_prefix, per_query=3, limit=24):
     return facts, warnings
 
 
+def _nsdp_category(title):
+    low = str(title or "").casefold()
+    rules = (
+        (("national accounts", "gross domestic product", "gdp"), "GDP"),
+        (("consumer price", "cpi"), "CPI"),
+        (("interest rate",), "INTEREST_RATE"),
+        (("exchange rate",), "EXCHANGE_RATE"),
+        (("merchandise trade", "trade"), "TRADE"),
+        (("production index", "production"), "INDUSTRIAL_PRODUCTION"),
+        (("producer price", "ppi"), "PPI"),
+        (("balance of payments",), "BALANCE_OF_PAYMENTS"),
+        (("government operations",), "FISCAL"),
+        (("gross debt", "external debt"), "PUBLIC_DEBT"),
+        (("labor market", "labour market"), "LABOUR"),
+        (("financial soundness",), "FINANCIAL_STABILITY"),
+        (("stock market",), "CAPITAL_MARKET"),
+    )
+    for terms, category in rules:
+        if any(term in low for term in terms):
+            return category
+    return "MACRO_OTHER"
+
+
+def _local_tag(element):
+    return str(element.tag).split("}")[-1].casefold()
+
+
+def _element_value(element):
+    for key, value in element.attrib.items():
+        if key.casefold() in ("value", "obs_value", "observation_value"):
+            return value
+    return (element.text or "").strip()
+
+
+def _parse_sdmx_observations(xml_content, dataset_title, category, source_url):
+    """Parse common SDMX-ML compact/generic observation layouts conservatively."""
+    try:
+        root = ET.fromstring(xml_content)
+    except Exception:
+        return []
+
+    facts = []
+    series_nodes = [node for node in root.iter() if _local_tag(node) == "series"]
+    for series_index, series in enumerate(series_nodes[:12], 1):
+        series_key = dict(series.attrib)
+        observations = []
+        for node in series.iter():
+            if _local_tag(node) == "value" and node.attrib.get("id"):
+                series_key[node.attrib.get("id")] = node.attrib.get("value", "")
+            if _local_tag(node) != "obs":
+                continue
+            period = None
+            value = None
+            status = None
+            for key, item in node.attrib.items():
+                normalized = key.casefold()
+                if normalized in ("time_period", "time", "period", "obs_dimension"):
+                    period = item
+                elif normalized in ("obs_value", "value", "observation_value"):
+                    value = item
+                elif normalized in ("obs_status", "status"):
+                    status = item
+            for child in node.iter():
+                tag = _local_tag(child)
+                if tag in ("obsdimension", "timedimension") and not period:
+                    period = _element_value(child)
+                elif tag in ("obsvalue", "observationvalue") and value is None:
+                    value = _element_value(child)
+                elif tag in ("attribute", "obsattribute") and child.attrib.get("id", "").casefold() in ("obs_status", "status"):
+                    status = child.attrib.get("value") or _element_value(child)
+            if period and value not in (None, ""):
+                observations.append((str(period), str(value), status))
+        if not observations:
+            continue
+        observations.sort(key=lambda item: item[0])
+        recent = observations[-3:]
+        key_text = ", ".join(f"{k}={v}" for k, v in list(series_key.items())[:8])
+        values_text = "; ".join(
+            f"{period}: {value}" + (f" (status {status})" if status else "")
+            for period, value, status in recent
+        )
+        facts.append({
+            "category": category,
+            "title": dataset_title,
+            "period_or_date": recent[-1][0],
+            "series_key": key_text[:400],
+            "excerpt": f"Chuỗi SDMX {dataset_title}; khóa chuỗi: {key_text}; 3 quan sát mới nhất: {values_text}.",
+            "source": source_url,
+            "source_name": "Vietnam National Summary Data Page (IMF e-GDDS)",
+            "retrieved_at": _now_iso(),
+            "freshness": "OBSERVATION_PERIOD_VERIFIED",
+        })
+    return facts
+
+
+def _fetch_nsdp_sdmx_facts():
+    """Discover and retrieve official Vietnamese macro SDMX datasets from NSDP."""
+    nsdp_url = os.getenv("MACRO_NSDP_URL", "https://nsdp.nso.gov.vn/index.htm")
+    facts = []
+    warnings = []
+    try:
+        response = _get(nsdp_url)
+        parser = _NSDPTableParser()
+        parser.feed(response.text)
+    except Exception as exc:
+        return facts, [f"NSDP: không tải được danh mục SDMX ({type(exc).__name__})."]
+
+    datasets = []
+    for row in parser.rows:
+        if not row:
+            continue
+        title = row[0].get("text", "")
+        category = _nsdp_category(title)
+        for cell in row:
+            for link in cell.get("links", []):
+                label = link.get("text", "").casefold()
+                href = link.get("href")
+                if "sdmx" in label and href:
+                    url = urljoin(nsdp_url, href)
+                    if url.startswith(("https://", "http://")):
+                        datasets.append((title, category, url))
+    seen = set()
+    for title, category, url in datasets:
+        if url in seen:
+            continue
+        seen.add(url)
+        try:
+            response = _get(url)
+            parsed = _parse_sdmx_observations(response.content, title, category, url)
+            facts.extend(parsed)
+        except Exception as exc:
+            warnings.append(
+                f"NSDP {title}: không tải/đọc được SDMX ({type(exc).__name__}); "
+                "không thay bằng số liệu ước tính."
+            )
+    if not facts and not warnings:
+        warnings.append("NSDP: chưa phát hiện được liên kết SDMX có dữ liệu đọc được.")
+    return facts[:48], warnings
+
+
 def _fetch_world_bank_facts():
     facts = []
     warnings = []
@@ -402,11 +586,12 @@ def _fetch_global_bundle():
         GENERAL_PUBLICATION_QUERIES, category_prefix="", per_query=3,
         limit=MAX_GENERAL_FACTS
     )
+    nsdp_facts, nsdp_warnings = _fetch_nsdp_sdmx_facts()
     wb_facts, wb_warnings = _fetch_world_bank_facts()
     return {
         "scope": "GLOBAL_VIETNAM_MACRO",
-        "facts": nso_facts + wb_facts,
-        "warnings": nso_warnings + wb_warnings,
+        "facts": nso_facts + nsdp_facts + wb_facts,
+        "warnings": nso_warnings + nsdp_warnings + wb_warnings,
     }
 
 
