@@ -11,11 +11,12 @@ input string ApiKey = "SET_A_LONG_RANDOM_API_KEY";
 input string ConsumerId = "mt5-demo-vps";
 input int PollSeconds = 3;
 input int HeartbeatSeconds = 15;
-input int MaxSignalAgeSeconds = 300;
+input bool ImportLegacyDivergenceSignal = true;
 
 datetime g_lastHeartbeat = 0;
 datetime g_lastPoll = 0;
 string g_lastSignalId = "";
+string g_lastLegacySignature = "";
 
 string JsonValue(string json, string key)
 {
@@ -74,6 +75,48 @@ void AckSignal(string id,string result,string message)
    HttpRequest("POST","/api/mt5/ack",body,response,status);
    if(!HttpRequest("POST","/api/mt5/ack",body,response,status))
       Print("[SERVER] Ack failed. HTTP=",status," response=",response);
+}
+
+void ImportLegacyDivergenceSignal()
+{
+   if(!ImportLegacyDivergenceSignal) return;
+   string prefix="DIVSIGNAL_";
+   if(!GlobalVariableCheck(prefix+"ACTIVE") || GlobalVariableGet(prefix+"ACTIVE")<0.5) return;
+   if(!GlobalVariableCheck(prefix+"TIME") || !GlobalVariableCheck(prefix+"TYPE") ||
+      !GlobalVariableCheck(prefix+"ENTRY") || !GlobalVariableCheck(prefix+"SL")) return;
+
+   int file=FileOpen("DIVSIGNAL_SYMBOL.txt",FILE_READ|FILE_TXT|FILE_COMMON);
+   if(file==INVALID_HANDLE) return;
+   string line=FileReadString(file);
+   FileClose(file);
+   string parts[];
+   int count=StringSplit(line,'|',parts);
+   if(count<2) return;
+
+   string symbol=parts[0];
+   string timeframe=parts[1];
+   int type=(int)GlobalVariableGet(prefix+"TYPE");
+   double entry=GlobalVariableGet(prefix+"ENTRY");
+   double sl=GlobalVariableGet(prefix+"SL");
+   datetime signalTime=(datetime)GlobalVariableGet(prefix+"TIME");
+   double score=0;
+   if(GlobalVariableCheck(prefix+"SCORE")) score=GlobalVariableGet(prefix+"SCORE");
+
+   string signature=IntegerToString((int)signalTime)+"|"+symbol+"|"+timeframe+"|"+IntegerToString(type);
+   if(signature==g_lastLegacySignature) return;
+   if(symbol=="" || entry<=0 || sl<=0 || signalTime<=0) return;
+
+   string direction=(type>0)?"BUY":"SELL";
+   string body=StringFormat("{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\",\"entry\":%.8f,\"sl\":%.8f,\"score\":%.2f,\"source\":\"legacy-rsi-divergence\"}",symbol,timeframe,direction,entry,sl,score);
+   string response; int status;
+   if(HttpRequest("POST","/api/signals",body,response,status))
+   {
+      g_lastLegacySignature=signature;
+      Print("[SERVER] Imported legacy divergence: ",symbol," ",timeframe," ",direction,
+            " signal_id=",JsonValue(response,"signal_id"));
+   }
+   else
+      Print("[SERVER] Legacy signal import failed. HTTP=",status," response=",response);
 }
 
 void PollSignal()
@@ -135,6 +178,7 @@ void OnTimer()
    if(TimeCurrent()-g_lastPoll>=PollSeconds)
    {
       g_lastPoll=TimeCurrent();
+      ImportLegacyDivergenceSignal();
       PollSignal();
    }
 }
