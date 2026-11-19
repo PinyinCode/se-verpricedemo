@@ -209,6 +209,29 @@ class MacroDataTests(unittest.TestCase):
         self.assertIn("timeout", diagnostics[0]["errors"][0])
         self.assertIn("timeout", diagnostics[0]["errors"][1])
 
+    def test_nso_search_pack_retries_same_url_under_next_candidate_category(self):
+        item = {"link": "https://www.nso.gov.vn/shared", "title": "Báo cáo thống kê"}
+        calls = []
+        def fake_fetch(_item, category, query):
+            calls.append(category)
+            if category == "IIP":
+                return None
+            return {
+                "category": category,
+                "excerpt": "Kim ngạch xuất khẩu tăng 7%.",
+                "source": item["link"],
+            }
+        with patch.object(
+            macro_data, "_discover_nso_publications", return_value=[item]
+        ), patch.object(macro_data, "_fetch_nso_publication", side_effect=fake_fetch):
+            facts, _ = macro_data._fetch_nso_search_pack(
+                [("IIP", "sản xuất công nghiệp"), ("TRADE", "xuất nhập khẩu")],
+                "", per_query=1, limit=1
+            )
+        self.assertEqual(calls, ["IIP", "TRADE"])
+        self.assertEqual(len(facts), 1)
+        self.assertEqual(facts[0]["category"], "TRADE")
+
     def test_nso_search_pack_does_not_count_unreadable_articles_as_facts(self):
         with patch.object(
             macro_data, "_discover_nso_publications",
