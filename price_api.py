@@ -44,7 +44,7 @@ try:
     from macro_data import get_macro_context, format_macro_context
 except Exception as macro_import_error:
     logger.warning("Không nạp được macro_data.py: %s", macro_import_error)
-    def get_macro_context(symbol, sector, force_refresh=False):
+    def get_macro_context(symbol, sector, industry=None, metadata=None, force_refresh=False, cache_store=None):
         return {"symbol": symbol, "facts": [], "warnings": ["Module macro_data.py chưa khả dụng."]}
     def format_macro_context(bundle):
         return "Không có dữ liệu vĩ mô/ngành được truy xuất."
@@ -122,10 +122,23 @@ if os.path.exists(VN100_INFO_FILE):
             for item in data:
                 sym = str(item.get("symbol", "")).upper().strip()
                 if sym:
+                    # Giữ lại phân loại ngành từ hồ sơ nguồn; không bỏ mất metadata
+                    # khi nạp danh sách mã để engine vĩ mô tự nhận diện ngành.
+                    industry_fields = (
+                        "industry", "industry_name", "industryName", "icb", "icb_name",
+                        "icbName", "sector", "sector_name", "sectorName",
+                        "sub_industry", "subIndustry", "industry_code", "industryCode",
+                        "organType", "organTypeName", "company_type", "companyType",
+                    )
+                    industry_profile = {
+                        key: item.get(key) for key in industry_fields
+                        if item.get(key) not in (None, "", [], {})
+                    }
                     VN100_METADATA[sym] = {
                         "company_name": item.get("company_name", "") or item.get("organName", "") or "",
                         "market_cap": float(item.get("market_cap", 0) or item.get("capitalization", 0) or 0),
-                        "total_shares": int(item.get("total_shares", 0) or item.get("shares", 0) or 0)
+                        "total_shares": int(item.get("total_shares", 0) or item.get("shares", 0) or 0),
+                        **industry_profile,
                     }
         logger.info(f"Đã tải metadata cho {len(VN100_METADATA)} mã từ {VN100_INFO_FILE}")
     except Exception as e:
@@ -148,6 +161,7 @@ try:
     bctc_col = db["bctc_data"]
     screener_col = db["screener_results"]
     settings_col = db["settings"]
+    macro_context_col = db["macro_context"]
     logger.info("MongoDB đã kết nối thành công!")
 
     # Đồng bộ đúng các index đã tạo trên Atlas; dùng cùng tên để create_index
@@ -2064,11 +2078,27 @@ def _call_ai_for_symbol(symbol, sm, si, sector):
         # Thu thập dữ kiện vĩ mô/ngành có nguồn trước khi gọi AI.
         # Module tự cache 12 giờ; lỗi nguồn không làm gián đoạn phân tích BCTC.
         try:
-            macro_bundle = get_macro_context(symbol, sector)
+            company_meta = VN100_METADATA.get(symbol, {})
+            industry_label = (
+                company_meta.get("industry") or company_meta.get("industry_name")
+                or company_meta.get("industryName") or company_meta.get("icb_name")
+                or company_meta.get("icbName") or company_meta.get("sector_name")
+                or company_meta.get("sectorName") or SECTOR_NAMES.get(sector, sector)
+            )
+            macro_bundle = get_macro_context(
+                symbol, sector, industry=industry_label, metadata=company_meta,
+                cache_store=macro_context_col
+            )
             macro_facts = format_macro_context(macro_bundle)
             macro_count = len(macro_bundle.get("facts", []) or [])
-            logger.info("[MACRO] %s: %s dữ kiện nguồn, %s cảnh báo",
-                        symbol, macro_count, len(macro_bundle.get("warnings", []) or []))
+            coverage = macro_bundle.get("coverage", {}) or {}
+            logger.info(
+                "[MACRO] %s | ngành=%s | tổng=%s | vĩ mô=%s | ngành=%s | cảnh báo=%s",
+                symbol, industry_label, macro_count,
+                coverage.get("global_fact_count", 0),
+                coverage.get("industry_fact_count", 0),
+                len(macro_bundle.get("warnings", []) or [])
+            )
         except Exception as macro_error:
             logger.warning("[MACRO] %s: không lấy được dữ liệu (%s)",
                            symbol, type(macro_error).__name__)
