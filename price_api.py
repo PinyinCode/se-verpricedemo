@@ -41,6 +41,15 @@ def log_exception(context: str, exc: Exception):
 from vnstock import Market
 
 try:
+    from macro_data import get_macro_context, format_macro_context
+except Exception as macro_import_error:
+    logger.warning("Không nạp được macro_data.py: %s", macro_import_error)
+    def get_macro_context(symbol, sector, force_refresh=False):
+        return {"symbol": symbol, "facts": [], "warnings": ["Module macro_data.py chưa khả dụng."]}
+    def format_macro_context(bundle):
+        return "Không có dữ liệu vĩ mô/ngành được truy xuất."
+
+try:
     from ptkt import ProfessionalTechnicalAnalyzer
 except ImportError:
     logger.warning("Không tìm thấy file ptkt.py. Điểm kỹ thuật sẽ mặc định = 50.")
@@ -2051,6 +2060,19 @@ def _call_ai_for_symbol(symbol, sm, si, sector):
         bctc_doc = bctc_col.find_one({"symbol": symbol}, {"_id": 0, "income_statement": 1, "cash_flow": 1, "balance_sheet": 1})
         verified_facts = build_verified_facts(symbol, sm, si, sector, bctc_doc)
         sector_guidance = get_sector_guidance(sector)
+
+        # Thu thập dữ kiện vĩ mô/ngành có nguồn trước khi gọi AI.
+        # Module tự cache 12 giờ; lỗi nguồn không làm gián đoạn phân tích BCTC.
+        try:
+            macro_bundle = get_macro_context(symbol, sector)
+            macro_facts = format_macro_context(macro_bundle)
+            macro_count = len(macro_bundle.get("facts", []) or [])
+            logger.info("[MACRO] %s: %s dữ kiện nguồn, %s cảnh báo",
+                        symbol, macro_count, len(macro_bundle.get("warnings", []) or []))
+        except Exception as macro_error:
+            logger.warning("[MACRO] %s: không lấy được dữ liệu (%s)",
+                           symbol, type(macro_error).__name__)
+            macro_facts = "Không truy xuất được dữ liệu vĩ mô/ngành trong lần chạy này; không được tự suy diễn."
         
         final_decision = si.get("final_decision", "CHƯA XÁC ĐỊNH")
         rec_text, rec_weight = DECISION_TO_RECOMMENDATION.get(final_decision, ("NẮM GIỮ / THEO DÕI", "Tỷ trọng 0%"))
@@ -2082,6 +2104,9 @@ NGUYÊN TẮC ƯU TIÊN
 --- DỮ KIỆN ĐÃ KIỂM CHỨNG ---
 {verified_facts}
 
+--- DỮ KIỆN VĨ MÔ/NGÀNH ĐƯỢC TRUY XUẤT TỪ NGUỒN ---
+{macro_facts}
+
 --- HƯỚNG DẪN THEO NGÀNH ---
 {sector_guidance}
 
@@ -2100,7 +2125,7 @@ QUY TẮC KHÔNG ĐƯỢC VI PHẠM
 4. Không gọi giá hiện tại là "rẻ" chỉ vì thấp hơn Fair High. Phải đối chiếu đồng thời với Fair Low, Fair High và Verdict.
 5. Chỉ diễn giải Discount/Margin of Safety theo đúng số {discount_pct:.1f}% hệ thống cung cấp; không tự đổi dấu, đổi mẫu số hoặc gọi đó là mức chiết khấu dương nếu không có căn cứ.
 6. Nếu dữ liệu BCTC mới nhất cũ hơn kỳ dự kiến hoặc có cảnh báo trong khối dữ kiện, phải nêu rõ hạn chế này và không mô tả dữ liệu cũ là hiện tại.
-7. Phần vĩ mô chỉ được nêu yếu tố có căn cứ trong dữ kiện. Nếu không có dữ liệu vĩ mô cập nhật, phải ghi rõ chưa có dữ liệu xác minh; có thể nêu các biến số cần theo dõi dưới dạng rủi ro/giả thuyết, không được khẳng định chúng đang tăng, giảm hay đã xảy ra.
+7. Phải sử dụng khối DỮ KIỆN VĨ MÔ/NGÀNH ĐƯỢC TRUY XUẤT nếu có. Mỗi nhận định định lượng phải nêu kỳ dữ liệu, chiều biến động và nguồn; phân biệt dữ liệu Việt Nam với dữ liệu quốc tế, giá benchmark với giá mua thực tế của doanh nghiệp. Với HPG, phân tích riêng nhu cầu xây dựng/đầu tư, sản lượng thép Trung Quốc và Việt Nam nếu có, quặng sắt, than và giá thép benchmark; giải thích kênh tác động có thể đến sản lượng tiêu thụ, giá bán, giá vốn và biên gộp. Không được coi than Australia là giá than luyện cốc thực tế HPG mua. Nếu thiếu dữ liệu HRC, than luyện cốc, tỷ giá hoặc lãi suất thì nói rõ thiếu; tuyệt đối không thay bằng số ước tính hay kiến thức nhớ được. Nếu khối dữ liệu không có nguồn/kỳ hợp lệ, phải ghi rõ chưa xác minh.
 8. Phân biệt nhận định cấp ngành với lợi thế riêng của doanh nghiệp. Không tự gán thị phần, thương hiệu mạnh, độc quyền, năng lực cạnh tranh hoặc catalyst cụ thể khi chưa có dữ kiện.
 9. Tránh lặp lại cùng một con số và cùng một kết luận ở nhiều mục. Mỗi mục phải có nhiệm vụ riêng.
 10. Trả về JSON hợp lệ, không Markdown, không code fence, không lời dẫn. Giá trị của mọi trường là chuỗi tiếng Việt; escape dấu ngoặc kép nếu cần.
@@ -2113,7 +2138,7 @@ QUY TẮC KHÔNG ĐƯỢC VI PHẠM
   "valuation_verdict": "Sao chép nguyên văn verdict do hệ thống cung cấp: '{verdict}'.",
   "outlook": "4-5 câu. Đối chiếu giá {close_price:,.0f} VNĐ với Fair Low {fair_low:,.0f} VNĐ và Fair High {fair_high:,.0f} VNĐ. Nêu rõ giá đang ở dưới, trong hay trên vùng định giá theo đúng dữ kiện. Diễn giải verdict và quyết định '{final_decision}'. Nhắc Discount/Margin of Safety {discount_pct:.1f}% đúng nguyên trạng, không tự suy diễn công thức. Nêu điều kiện cần có để đánh giá lại, không dự báo giá chắc chắn.",
   "recommendation": "BẮT BUỘC giữ nguyên: '{rec_text} — {rec_weight}'.",
-  "macro_view": "3-5 câu. Chỉ phân tích yếu tố vĩ mô/ngành có bằng chứng trong dữ kiện. Nếu không có số liệu cập nhật, nói rõ chưa có dữ liệu xác minh; liệt kê ngắn gọn các biến số cần theo dõi và giải thích kênh tác động có thể có, dùng ngôn ngữ điều kiện như 'có thể', 'cần theo dõi'. Không bịa giá hàng hóa, tỷ giá, lãi suất, chính sách hoặc dự báo."
+  "macro_view": "5-7 câu. Mở đầu bằng bối cảnh vĩ mô/ngành có số liệu và kỳ công bố cụ thể. Phân tích chiều biến động, so sánh YoY/MoM chỉ khi nguồn cung cấp đúng phép so sánh. Với HPG, nối dữ kiện nhu cầu xây dựng/sản xuất thép, sản lượng thép Trung Quốc/Việt Nam và giá nguyên liệu/giá thép benchmark với các kênh doanh thu, giá vốn, biên gộp; phân biệt tác động có thể có với tác động đã thể hiện trong BCTC. Nêu rõ nguồn và độ trễ dữ liệu. Chỉ ra dữ liệu quan trọng còn thiếu như HRC, than luyện cốc thực tế, tỷ giá hoặc lãi suất nếu chưa truy xuất được. Kết luận thuận lợi/bất lợi/trung tính/chưa đủ dữ liệu theo từng yếu tố, không gom thành kết luận chắc chắn và không dự báo tự tạo."
 }}
 
 TỰ KIỂM TRA TRƯỚC KHI TRẢ JSON
