@@ -48,6 +48,23 @@ class MacroDataTests(unittest.TestCase):
         self.assertTrue(new_sector)
         self.assertTrue(all("Dịch vụ giáo dục" in q for _, q in new_sector))
 
+    def test_reference_period_extraction_distinguishes_period_from_publish_date(self):
+        self.assertEqual(macro_data._extract_reference_period("CPI tháng 10 năm 2026"), "10-2026")
+        self.assertEqual(macro_data._extract_reference_period("Sản xuất công nghiệp 9 tháng đầu năm 2026"), "9 tháng năm 2026")
+        self.assertEqual(macro_data._extract_reference_period("GDP quý III/2026"), "QIII-2026")
+        self.assertEqual(macro_data._extract_reference_period("Báo cáo năm 2025"), "2025")
+        self.assertIsNone(macro_data._extract_reference_period("Công bố ngày 19/11/2026"))
+
+    def test_industry_queries_are_categorized_across_common_business_dimensions(self):
+        queries = macro_data._industry_queries("Dịch vụ logistics", "Vận tải")
+        categories = {category for category, _ in queries}
+        self.assertIn("INDUSTRY_OUTPUT", categories)
+        self.assertIn("INDUSTRY_PRICING", categories)
+        self.assertIn("INDUSTRY_DEMAND", categories)
+        self.assertIn("INDUSTRY_TRADE", categories)
+        self.assertIn("INDUSTRY_CAPEX", categories)
+        self.assertTrue(all("Dịch vụ logistics" in query for _, query in queries))
+
     def test_format_macro_context_keeps_period_source_and_freshness(self):
         bundle = {
             "fetched_at": "2026-11-19T04:00:00+00:00",
@@ -154,6 +171,11 @@ class MacroDataTests(unittest.TestCase):
             self.assertEqual(len(result["industries"]), 2)
             self.assertEqual(len(calls), 2)
             self.assertIn("GLOBAL_VIETNAM_MACRO", cache.docs)
+            self.assertIn("MACRO_COVERAGE_REPORT", cache.docs)
+            self.assertTrue(result["coverage_report_persisted"])
+            report = cache.docs["MACRO_COVERAGE_REPORT"]["payload"]
+            self.assertEqual(report["coverage"]["industry_count"], 2)
+            self.assertEqual(len(report["industries"]), 2)
         finally:
             macro_data._fetch_global_bundle = original_global
             macro_data._fetch_industry_pack = original_industry
