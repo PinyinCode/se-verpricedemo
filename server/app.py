@@ -2,7 +2,6 @@
 """Forex AI bridge API. Demo/paper-trading only; no broker order execution."""
 from __future__ import annotations
 
-import json
 import os
 import secrets
 import sqlite3
@@ -20,7 +19,6 @@ from pydantic import BaseModel, Field, field_validator
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("FOREX_DB_PATH", str(BASE_DIR / "forex_demo.db")))
 API_KEY = os.getenv("FOREX_API_KEY", "").strip()
-POLL_LIMIT = 20
 STALE_SECONDS = int(os.getenv("SIGNAL_STALE_SECONDS", "300"))
 
 app = FastAPI(title="Forex AI Demo Server", version="0.1.0",
@@ -207,8 +205,16 @@ def dashboard_data():
             "FROM signals ORDER BY created_at DESC LIMIT 100").fetchall()]
         heartbeats = [dict(r) for r in conn.execute(
             "SELECT component,status,details,updated_at FROM heartbeats ORDER BY component").fetchall()]
+        for item in heartbeats:
+            age = (datetime.now(timezone.utc) - datetime.fromisoformat(item["updated_at"])).total_seconds()
+            item["age_seconds"] = int(max(0, age))
+            if age > 45 and item["status"] == "online":
+                item["status"] = "stale"
         counts = {r["status"]: r["n"] for r in conn.execute(
-            "SELECT status,COUNT(*) AS n FROM signals GROUP BY status").fetchall()}
+            "SELECT status,COUNT(*) AS n FROM signals WHERE status!='completed' GROUP BY status").fetchall()}
+        counts["completed"] = conn.execute(
+            "SELECT COUNT(*) FROM signals WHERE status='completed' AND ack_status='SIMULATED'"
+        ).fetchone()[0]
         events = [dict(r) for r in conn.execute(
             "SELECT event_type,message,created_at FROM events ORDER BY id DESC LIMIT 30").fetchall()]
     return {"mode": "DEMO_ONLY", "signals": signals, "heartbeats": heartbeats,
