@@ -209,6 +209,14 @@ def _parse_date(value):
     return None
 
 
+def _has_quantitative_evidence(text):
+    """Reject years/dates alone; require a value paired with a measurable unit."""
+    return bool(re.search(
+        r"\d+(?:[.,]\d+)?\s*(?:%|tấn|triệu|tỷ|đồng|USD|ha|nghìn|m3|kwh|lượt|doanh nghiệp|lao động|điểm|lần)",
+        str(text or ""), re.I
+    ))
+
+
 def _article_date(parser, api_item=None):
     api_item = api_item or {}
     for key in ("article:published_time", "datepublished", "date", "dc.date", "pubdate"):
@@ -328,7 +336,7 @@ def _fetch_nso_publication(item, category, query):
             "freshness": freshness,
             "evidence_scope": "INDUSTRY_DIRECT_CANDIDATE" if str(category).startswith("INDUSTRY_") else "NATIONAL_MACRO",
             "directness": "DIRECT_CANDIDATE" if str(category).startswith("INDUSTRY_") else "NATIONAL_CONTEXT",
-            "quantitative_evidence": bool(re.search(r"\d+(?:[.,]\d+)?\s*(?:%|tấn|triệu|tỷ|đồng|USD|ha|nghìn)?", body, re.I)),
+            "quantitative_evidence": _has_quantitative_evidence(body),
         }
     except Exception as exc:
         return {
