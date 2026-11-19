@@ -11,7 +11,7 @@ input string ApiKey = "SET_A_LONG_RANDOM_API_KEY";
 input string ConsumerId = "mt5-demo-vps";
 input int PollSeconds = 3;
 input int HeartbeatSeconds = 15;
-input bool ImportLegacyDivergenceSignal = true;
+input bool EnableLegacyDivergenceImport = true;
 
 datetime g_lastHeartbeat = 0;
 datetime g_lastPoll = 0;
@@ -79,7 +79,7 @@ void AckSignal(string id,string result,string message)
 
 void ImportLegacyDivergenceSignal()
 {
-   if(!ImportLegacyDivergenceSignal) return;
+   if(!EnableLegacyDivergenceImport) return;
    string prefix="DIVSIGNAL_";
    if(!GlobalVariableCheck(prefix+"ACTIVE") || GlobalVariableGet(prefix+"ACTIVE")<0.5) return;
    if(!GlobalVariableCheck(prefix+"TIME") || !GlobalVariableCheck(prefix+"TYPE") ||
