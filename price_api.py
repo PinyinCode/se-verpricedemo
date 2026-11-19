@@ -41,13 +41,15 @@ def log_exception(context: str, exc: Exception):
 from vnstock import Market
 
 try:
-    from macro_data import get_macro_context, format_macro_context
+    from macro_data import get_macro_context, format_macro_context, refresh_macro_contexts
 except Exception as macro_import_error:
     logger.warning("Không nạp được macro_data.py: %s", macro_import_error)
     def get_macro_context(symbol, sector, industry=None, metadata=None, force_refresh=False, cache_store=None):
         return {"symbol": symbol, "facts": [], "warnings": ["Module macro_data.py chưa khả dụng."]}
     def format_macro_context(bundle):
         return "Không có dữ liệu vĩ mô/ngành được truy xuất."
+    def refresh_macro_contexts(industry_labels, cache_store=None, force_refresh=True):
+        return {"global_facts": 0, "industries": {}, "error": "macro_data.py unavailable"}
 
 try:
     from ptkt import ProfessionalTechnicalAnalyzer
@@ -1432,6 +1434,61 @@ def get_sub_sector(symbol):
     for sub, symbols in SUB_SECTOR_MAPPING.items():
         if symbol in symbols: return sub
     return get_sector(symbol)
+
+
+def _macro_auto_refresh_loop():
+    """Refresh shared macro and every active industry pack from live stock metadata."""
+    initial_delay = max(30, int(os.environ.get("MACRO_AUTO_REFRESH_INITIAL_DELAY", "90")))
+    refresh_interval = max(3600, int(os.environ.get("MACRO_AUTO_REFRESH_SECONDS", "21600")))
+    time.sleep(initial_delay)
+    while True:
+        try:
+            industry_labels = set()
+            projection = {
+                "symbol": 1, "sector": 1, "industry": 1, "industry_name": 1,
+                "industryName": 1, "icb_name": 1, "icbName": 1,
+                "sector_name": 1, "sectorName": 1,
+            }
+            for stock_doc in collection.find({}, projection):
+                symbol = str(stock_doc.get("symbol", "")).upper().strip()
+                if not symbol:
+                    continue
+                meta = VN100_METADATA.get(symbol, {})
+                sector = stock_doc.get("sector") or get_sector(symbol)
+                industry = (
+                    meta.get("industry") or meta.get("industry_name") or meta.get("industryName")
+                    or meta.get("icb_name") or meta.get("icbName") or meta.get("sector_name")
+                    or meta.get("sectorName") or stock_doc.get("industry")
+                    or stock_doc.get("industry_name") or stock_doc.get("industryName")
+                    or stock_doc.get("icb_name") or stock_doc.get("icbName")
+                    or stock_doc.get("sector_name") or stock_doc.get("sectorName")
+                    or SECTOR_NAMES.get(sector, sector)
+                )
+                industry_labels.add((str(industry), str(sector)))
+
+            result = refresh_macro_contexts(
+                sorted(industry_labels),
+                cache_store=macro_context_col,
+                force_refresh=True,
+            )
+            logger.info(
+                "[MACRO AUTO] Hoàn tất cập nhật | nhóm ngành=%s | dữ kiện vĩ mô=%s",
+                len(result.get("industries", {})), result.get("global_facts", 0)
+            )
+        except Exception as macro_refresh_error:
+            logger.warning(
+                "[MACRO AUTO] Lỗi cập nhật nền: %s",
+                type(macro_refresh_error).__name__
+            )
+        time.sleep(refresh_interval)
+
+
+# Tự cập nhật dữ liệu nguồn theo chu kỳ; không chờ người dùng bấm phân tích từng mã.
+threading.Thread(
+    target=_macro_auto_refresh_loop,
+    name="macro-auto-refresh",
+    daemon=True
+).start()
 
 # FIX BUG #5: normalize_stock_data không ghi DB, trả update_fields cho caller
 def normalize_stock_data(symbol, data):
