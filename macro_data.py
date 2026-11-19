@@ -722,8 +722,16 @@ def _industry_context_indicators(industry, sector):
         if normalized and normalized not in labels:
             labels.append(normalized)
     label = " ".join(labels)
+    # Every industry receives a small common economic baseline. This allows
+    # newly added/unseen classifications to retain useful context without
+    # pretending that a national aggregate is a direct sector observation.
+    baseline = [
+        ("INDUSTRY_VALUE_ADDED_GROWTH", "NV.IND.TOTL.KD.ZG", "Industry value added growth (annual %)"),
+        ("SERVICES_VALUE_ADDED_GROWTH", "NV.SRV.TETC.KD.ZG", "Services value added growth (annual %)"),
+        ("GROSS_CAPITAL_FORMATION", "NE.GDI.FTOT.ZS", "Gross capital formation (% of GDP)"),
+    ]
     if not label:
-        return []
+        return baseline
 
     # (matching vocabulary, WDI code, human-readable indicator title)
     # Codes refer to World Bank WDI/Global Financial Development datasets.
@@ -780,8 +788,8 @@ def _industry_context_indicators(industry, sector):
          ("TX.VAL.MMTL.ZS.UN", "Ores and metals exports (% of merchandise exports)"),
          ("NV.IND.TOTL.KD.ZG", "Industry value added growth (annual %)")),
     )
-    selected = []
-    seen = set()
+    selected = list(baseline)
+    seen = {item[1] for item in baseline}
     for aliases, *indicators in groups:
         if any(alias in label for alias in aliases):
             for code, title in indicators:
