@@ -59,6 +59,15 @@ Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/api/signals" -Headers
 
 The EA should print `[PAPER SIGNAL]`, acknowledge the signal, and the dashboard should show it as completed / SIMULATED.
 
+## Run automated API tests
+From the `server` folder after installing requirements:
+
+```powershell
+python -m pytest -q
+```
+
+The tests cover health, API-key protection, signal validation, claim/ack lifecycle, and duplicate scanner-event handling.
+
 ## API endpoints
 - `GET /api/health` — service and SQLite health.
 - `POST /api/signals` — create a signal (API key required).
