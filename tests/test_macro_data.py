@@ -49,6 +49,12 @@ class MacroDataTests(unittest.TestCase):
         self.assertTrue(new_sector)
         self.assertTrue(all("Dịch vụ giáo dục" in q for _, q in new_sector))
 
+    def test_quantitative_evidence_requires_a_value_and_measurement_unit(self):
+        self.assertFalse(macro_data._has_quantitative_evidence("Báo cáo năm 2026"))
+        self.assertFalse(macro_data._has_quantitative_evidence("Công bố ngày 19/11/2026"))
+        self.assertTrue(macro_data._has_quantitative_evidence("Sản lượng tăng 5,2%"))
+        self.assertTrue(macro_data._has_quantitative_evidence("Sản lượng đạt 1,2 triệu tấn"))
+
     def test_reference_period_extraction_distinguishes_period_from_publish_date(self):
         self.assertEqual(macro_data._extract_reference_period("CPI tháng 10 năm 2026"), "10-2026")
         self.assertEqual(macro_data._extract_reference_period("Sản xuất công nghiệp 9 tháng đầu năm 2026"), "9 tháng năm 2026")
