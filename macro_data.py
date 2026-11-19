@@ -393,11 +393,10 @@ def _fetch_nso_publication(item, category, query):
                 freshness = "RECENT_PUBLICATION" if 0 <= age_days <= 90 else "STALE_PUBLICATION"
             except Exception:
                 age_days = None
-        # A reference period is taken from the title first, then only the lead.
-        # Scanning the full article can pick up unrelated periods mentioned later.
+        # Only accept a period explicitly stated in the publication title.
+        # Article bodies often discuss several unrelated years and reporting
+        # windows; selecting the first match can attach the wrong period.
         reference_period = _extract_reference_period(title)
-        if not reference_period:
-            reference_period = _extract_reference_period(body[:500])
         return {
             "category": category,
             "title": title,
