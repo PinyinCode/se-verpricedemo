@@ -1445,11 +1445,15 @@ def _macro_auto_refresh_loop():
         try:
             industry_labels = set()
             projection = {
-                "symbol": 1, "sector": 1, "industry": 1, "industry_name": 1,
-                "industryName": 1, "icb_name": 1, "icbName": 1,
+                "symbol": 1, "sector": 1, "sub_sector": 1, "subSector": 1,
+                "industry": 1, "industry_name": 1, "industryName": 1,
+                "icb_name": 1, "icbName": 1,
                 "sector_name": 1, "sectorName": 1,
             }
-            for stock_doc in collection.find({}, projection):
+            active_docs = list(collection.find({}, projection))
+            # Screener thường có phân loại ngành chi tiết hơn dữ liệu giá realtime.
+            active_docs.extend(list(screener_col.find({}, projection)))
+            for stock_doc in active_docs:
                 symbol = str(stock_doc.get("symbol", "")).upper().strip()
                 if not symbol:
                     continue
@@ -1461,6 +1465,7 @@ def _macro_auto_refresh_loop():
                     or meta.get("sectorName") or stock_doc.get("industry")
                     or stock_doc.get("industry_name") or stock_doc.get("industryName")
                     or stock_doc.get("icb_name") or stock_doc.get("icbName")
+                    or stock_doc.get("sub_sector") or stock_doc.get("subSector")
                     or stock_doc.get("sector_name") or stock_doc.get("sectorName")
                     or SECTOR_NAMES.get(sector, sector)
                 )
@@ -2143,7 +2148,8 @@ def _call_ai_for_symbol(symbol, sm, si, sector):
                 or company_meta.get("sectorName")
                 or si.get("industry") or si.get("industry_name") or si.get("industryName")
                 or si.get("icb_name") or si.get("icbName") or si.get("sector_name")
-                or si.get("sectorName") or sm.get("industry") or sm.get("industry_name")
+                or si.get("sectorName") or si.get("sub_sector") or si.get("subSector")
+                or sm.get("industry") or sm.get("industry_name")
                 or SECTOR_NAMES.get(sector, sector)
             )
             macro_bundle = get_macro_context(
