@@ -38,9 +38,15 @@ class MacroDataTests(unittest.TestCase):
     def test_industry_queries_are_derived_from_industry_label_not_ticker(self):
         steel = macro_data._industry_queries("Thép và vật liệu", "OTHER")
         banks = macro_data._industry_queries("Ngân hàng", "OTHER")
-        self.assertTrue(any("thép" in q.lower() for _, q in steel))
-        self.assertTrue(any("tín dụng" in q.lower() for _, q in banks))
+        self.assertTrue(any('"Thép và vật liệu"' in q for _, q in steel))
+        self.assertTrue(any('"Ngân hàng"' in q for _, q in banks))
+        self.assertTrue(any("sản lượng sản xuất" in q for _, q in steel))
+        self.assertTrue(any("giá nguyên liệu" in q for _, q in banks))
         self.assertNotEqual(steel, banks)
+        # A newly added industry label is handled without adding a sector rule.
+        new_sector = macro_data._industry_queries("Dịch vụ giáo dục", None)
+        self.assertTrue(new_sector)
+        self.assertTrue(all("Dịch vụ giáo dục" in q for _, q in new_sector))
 
     def test_format_macro_context_keeps_period_source_and_freshness(self):
         bundle = {
