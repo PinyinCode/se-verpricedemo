@@ -44,7 +44,12 @@ bool HttpRequest(string method,string path,string body,string &response,int &sta
 {
    char data[], result[];
    string headers = "X-API-Key: " + ApiKey + "\r\nContent-Type: application/json\r\n";
-   if(body != "")\n   {\n      StringToCharArray(body,data,0,WHOLE_ARRAY,CP_UTF8);\n      int n=ArraySize(data);\n      if(n>0 && data[n-1]==0) ArrayResize(data,n-1);\n   }
+   if(body != "")
+   {
+      StringToCharArray(body,data,0,WHOLE_ARRAY,CP_UTF8);
+      int n=ArraySize(data);
+      if(n>0 && data[n-1]==0) ArrayResize(data,n-1);
+   }
    else ArrayResize(data,0);
    string responseHeaders;
    ResetLastError();
@@ -72,7 +77,6 @@ void AckSignal(string id,string result,string message)
 {
    string response; int status;
    string body="{\"signal_id\":\""+id+"\",\"status\":\""+result+"\",\"message\":\""+message+"\"}";
-   HttpRequest("POST","/api/mt5/ack",body,response,status);
    if(!HttpRequest("POST","/api/mt5/ack",body,response,status))
       Print("[SERVER] Ack failed. HTTP=",status," response=",response);
 }
