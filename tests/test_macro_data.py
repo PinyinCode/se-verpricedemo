@@ -79,15 +79,7 @@ class MacroDataTests(unittest.TestCase):
         self.assertEqual(macro_data._nsdp_category(row[0]["text"]), "INTEREST_RATE")
 
     def test_sdmx_parser_extracts_latest_observations_and_series_key(self):
-        xml = b\'''<?xml version="1.0"?>
-        <StructureSpecificData xmlns="urn:test">
-          <DataSet>
-            <Series FREQ="M" REF_AREA="VNM" INDICATOR="CPI">
-              <Obs TIME_PERIOD="2026-09" OBS_VALUE="105.2"/>
-              <Obs TIME_PERIOD="2026-10" OBS_VALUE="105.8"/>
-            </Series>
-          </DataSet>
-        </StructureSpecificData>\'''
+        xml = b'<StructureSpecificData xmlns="urn:test"><DataSet><Series FREQ="M" REF_AREA="VNM" INDICATOR="CPI"><Obs TIME_PERIOD="2026-09" OBS_VALUE="105.2"/><Obs TIME_PERIOD="2026-10" OBS_VALUE="105.8"/></Series></DataSet></StructureSpecificData>'
         facts = macro_data._parse_sdmx_observations(
             xml, "Consumer Price Index", "CPI", "https://example.test/cpi.xml"
         )
