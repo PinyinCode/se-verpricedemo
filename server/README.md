@@ -35,12 +35,15 @@ This is the first deployable foundation for the Python API + MT5 + dashboard arc
 
 Keep the service bound to localhost initially. For remote access, put it behind HTTPS with a reverse proxy and Windows Firewall restrictions; never expose port 8000 directly to the public internet.
 
-## MT5 setup
+## MT5 setup and existing scanner bridge
 1. Compile `mt5/ServerConnector_Demo.mq5` in MetaEditor.
-2. Attach it to one chart in the demo terminal.
-3. Set `ServerBaseURL=http://127.0.0.1:8000` and the same `ApiKey`.
-4. In MT5, add `http://127.0.0.1:8000` under Tools > Options > Expert Advisors > Allow WebRequest for listed URL.
-5. Confirm the dashboard shows the MT5-Connector heartbeat as online.
+2. Run the existing `AI OOP V8.mq5` divergence indicator in the same MT5 terminal. It publishes `DIVSIGNAL_*` terminal Global Variables and `DIVSIGNAL_SYMBOL.txt` in the Common Files folder.
+3. Attach `ServerConnector_Demo.mq5` to one chart in that same terminal. It reads the existing scanner output and forwards each fresh event to Python; a timestamp-based source key prevents duplicate imports after a restart.
+4. Set `ServerBaseURL=http://127.0.0.1:8000` and the same `ApiKey`.
+5. In MT5, add `http://127.0.0.1:8000` under Tools > Options > Expert Advisors > Allow WebRequest for listed URL.
+6. Confirm the dashboard shows the MT5-Connector heartbeat as online and scanner signals appear as paper signals.
+
+For this first integration test, do not attach the old `Trade V9.mq5` EA. The new connector is intentionally signal-only and does not open positions.
 
 ## Create a test signal
 From PowerShell on the VPS:
