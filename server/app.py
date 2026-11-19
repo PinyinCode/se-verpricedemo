@@ -215,6 +215,12 @@ def dashboard_data():
         counts["completed"] = conn.execute(
             "SELECT COUNT(*) FROM signals WHERE status='completed' AND ack_status='SIMULATED'"
         ).fetchone()[0]
+        counts["rejected"] = conn.execute(
+            "SELECT COUNT(*) FROM signals WHERE status='completed' AND ack_status='REJECTED'"
+        ).fetchone()[0]
+        counts["errors"] = conn.execute(
+            "SELECT COUNT(*) FROM signals WHERE status='completed' AND ack_status='ERROR'"
+        ).fetchone()[0]
         events = [dict(r) for r in conn.execute(
             "SELECT event_type,message,created_at FROM events ORDER BY id DESC LIMIT 30").fetchall()]
     return {"mode": "DEMO_ONLY", "signals": signals, "heartbeats": heartbeats,
