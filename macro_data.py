@@ -483,7 +483,7 @@ def _industry_queries(industry, sector):
     """
     labels = []
     for value in (industry, sector):
-        label = re.sub(r"\\s+", " ", str(value or "")).strip()
+        label = re.sub(r"\s+", " ", str(value or "")).strip()
         if label and label.casefold() not in ("unknown", "none", "n/a", "unclassified"):
             if label.casefold() not in {item.casefold() for item in labels}:
                 labels.append(label)
@@ -503,7 +503,7 @@ def _industry_queries(industry, sector):
     deduped = []
     seen = set()
     for query in queries:
-        normalized = re.sub(r"\\s+", " ", query).strip()
+        normalized = re.sub(r"\s+", " ", query).strip()
         if normalized and normalized.casefold() not in seen:
             seen.add(normalized.casefold())
             deduped.append(normalized)
@@ -637,7 +637,7 @@ def refresh_macro_contexts(industry_labels, cache_store=None, force_refresh=True
             sector = item[1] if len(item) > 1 else None
         else:
             industry, sector = item, None
-        normalized = re.sub(r"\\s+", " ", str(industry or sector or "UNCLASSIFIED")).strip().casefold()
+        normalized = re.sub(r"\s+", " ", str(industry or sector or "UNCLASSIFIED")).strip().casefold()
         if not normalized or normalized in seen:
             continue
         seen.add(normalized)
