@@ -172,6 +172,15 @@ class MacroDataTests(unittest.TestCase):
         self.assertIn("NY.GDP.MKTP.KD.ZG", codes)
         self.assertIn("PA.NUS.FCRF", codes)
 
+    def test_industry_context_indicators_are_selected_from_live_labels(self):
+        bank = macro_data._industry_context_indicators("Ngân hàng", None)
+        agriculture = macro_data._industry_context_indicators("Nông nghiệp", None)
+        manufacturing = macro_data._industry_context_indicators("Thép và vật liệu", None)
+        self.assertIn("NV.SRV.TETC.KD.ZG", [item[1] for item in bank])
+        self.assertIn("NV.AGR.TOTL.KD.ZG", [item[1] for item in agriculture])
+        self.assertIn("NV.IND.TOTL.KD.ZG", [item[1] for item in manufacturing])
+        self.assertIn("NV.IND.MANF.KD.ZG", [item[1] for item in manufacturing])
+
     def test_shared_cache_fetches_once_per_key(self):
         key = "TEST_MACRO_CACHE"
         macro_data._CACHE.pop(key, None)
@@ -192,16 +201,33 @@ class MacroDataTests(unittest.TestCase):
             "freshness": "STALE_PUBLICATION", "published_at": "2024-01-01",
             "period_or_date": "2023",
         }]})
-        covered = macro_data._summarize_industry_coverage("Ngân hàng", {"facts": [{
-            "source": "https://example.test/new", "source_name": "Nguồn B",
-            "freshness": "OBSERVATION_PERIOD_VERIFIED",
-            "period_or_date": "2026-10",
+        covered = macro_data._summarize_industry_coverage("Ngân hàng", {"facts": [
+            {
+                "source": "https://example.test/new-a", "source_name": "Nguồn B",
+                "freshness": "OBSERVATION_PERIOD_VERIFIED",
+                "period_or_date": "2026-09", "quantitative_evidence": True,
+            },
+            {
+                "source": "https://example.test/new-b", "source_name": "Nguồn B",
+                "freshness": "OBSERVATION_PERIOD_VERIFIED",
+                "period_or_date": "2026-10", "quantitative_evidence": True,
+            },
+        ]})
+        contextual = macro_data._summarize_industry_coverage("Ngân hàng", {"facts": [{
+            "source": "https://api.worldbank.org/example", "source_name": "World Bank",
+            "freshness": "ANNUAL_SERIES", "period_or_date": "2024",
+            "directness": "CONTEXTUAL", "evidence_scope": "INDUSTRY_CONTEXT",
+            "quantitative_evidence": True,
         }]})
         self.assertEqual(missing["status"], "MISSING")
         self.assertEqual(stale["status"], "STALE")
         self.assertEqual(covered["status"], "COVERED")
         self.assertEqual(covered["source_count"], 1)
-        self.assertEqual(covered["dated_fact_count"], 1)
+        self.assertEqual(covered["direct_fact_count"], 2)
+        self.assertEqual(covered["dated_fact_count"], 2)
+        self.assertEqual(contextual["status"], "MISSING")
+        self.assertEqual(contextual["contextual_fact_count"], 1)
+        self.assertEqual(contextual["direct_fact_count"], 0)
 
     def test_scheduled_refresh_builds_global_and_each_distinct_industry_once(self):
         original_global = macro_data._fetch_global_bundle
