@@ -1,68 +1,140 @@
 # -*- coding: utf-8 -*-
-"""Verified macro/industry context for Vietnamese listed companies.
+"""Dynamic macro and industry data pipeline shared by all covered equities.
 
-Only extracts dated facts from primary/public sources. Missing or stale data is
-reported as missing; this module never manufactures estimates or directional
-signals. Results are cached in-process to avoid repeated external requests.
+The pipeline discovers current NSO publications through its public WordPress
+search API, retrieves annual comparison series from the World Bank API, and
+adds industry-specific publications from the same source catalogue. It never
+stores hard-coded observations or ticker-specific macro values.
+
+Cache is shared through MongoDB when supplied by the caller, with an in-process
+fallback. Source publication dates and reference periods remain separate.
 """
 from __future__ import annotations
 
-import calendar
-from io import BytesIO
 import html
+import json
+import os
 import re
 import threading
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from html.parser import HTMLParser
-from urllib.parse import urljoin
+from urllib.parse import quote, urljoin
 
-import pandas as pd
 import requests
 
 
-NSO_LIST_URL = "https://www.nso.gov.vn/du-lieu-va-so-lieu-thong-ke/"
-WORLD_BANK_MONTHLY_URL = (
-    "https://thedocs.worldbank.org/en/doc/"
-    "74e8be41ceb20fa0da750cda2f6b9e4e-0050012026/related/"
-    "CMO-Historical-Data-Monthly.xlsx"
-)
-CACHE_TTL_SECONDS = 12 * 60 * 60
+NSO_BASE_URL = os.getenv("MACRO_NSO_BASE_URL", "https://www.nso.gov.vn").rstrip("/")
+NSO_SEARCH_URL = f"{NSO_BASE_URL}/wp-json/wp/v2/search"
+WORLD_BANK_API = os.getenv("MACRO_WORLD_BANK_API", "https://api.worldbank.org/v2")
+CACHE_TTL_SECONDS = max(900, int(os.getenv("MACRO_CACHE_TTL_SECONDS", "21600")))
 REQUEST_TIMEOUT = (8, 25)
-_HEADERS = {"User-Agent": "Mozilla/5.0 (compatible; VNFinancialResearch/1.0)"}
+MAX_GENERAL_FACTS = max(5, int(os.getenv("MACRO_MAX_GENERAL_FACTS", "24")))
+MAX_INDUSTRY_FACTS = max(3, int(os.getenv("MACRO_MAX_INDUSTRY_FACTS", "12")))
+_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; VNEquityMacroResearch/2.0)",
+    "Accept": "application/json,text/html,application/xhtml+xml,*/*",
+}
 _CACHE = {}
-_CACHE_LOCK = threading.Lock()
+_CACHE_LOCK = threading.RLock()
+_SESSION = requests.Session()
+_SESSION.headers.update(_HEADERS)
 
 
-class _HTMLText(HTMLParser):
+# These are indicator definitions/search intents, not observations or ticker
+# assignments. Values are always retrieved from the external source at runtime.
+GENERAL_PUBLICATION_QUERIES = (
+    ("GDP", "tổng sản phẩm trong nước GDP tăng trưởng kinh tế"),
+    ("CPI", "chỉ số giá tiêu dùng CPI lạm phát cơ bản"),
+    ("IIP", "chỉ số sản xuất công nghiệp IIP"),
+    ("PPI", "chỉ số giá sản xuất giá nguyên liệu đầu vào"),
+    ("TRADE", "xuất nhập khẩu cán cân thương mại"),
+    ("FDI", "vốn đầu tư trực tiếp nước ngoài FDI"),
+    ("PUBLIC_INVESTMENT", "vốn đầu tư công giải ngân đầu tư phát triển"),
+    ("RETAIL", "tổng mức bán lẻ hàng hóa doanh thu dịch vụ tiêu dùng"),
+    ("LABOUR", "lao động việc làm thu nhập tiền lương"),
+    ("CONSTRUCTION", "hoạt động xây dựng thị trường bất động sản"),
+    ("MONETARY", "tín dụng lãi suất tăng trưởng tín dụng"),
+    ("EXCHANGE_RATE", "tỷ giá đô la Mỹ USD"),
+    ("ENERGY", "sản lượng điện tiêu thụ năng lượng giá xăng dầu"),
+)
+
+# Industry search intents are generic sector vocabularies. Actual company
+# classification is read from its metadata and is not mapped by ticker here.
+INDUSTRY_SEARCH_HINTS = {
+    "bank": ("tín dụng ngân hàng lãi suất tiền gửi nợ xấu", "tăng trưởng tín dụng"),
+    "ngân hàng": ("tín dụng ngân hàng lãi suất tiền gửi nợ xấu", "tăng trưởng tín dụng"),
+    "securities": ("thanh khoản thị trường chứng khoán phát hành trái phiếu", "margin chứng khoán"),
+    "chứng khoán": ("thanh khoản thị trường chứng khoán phát hành trái phiếu", "margin chứng khoán"),
+    "real estate": ("thị trường bất động sản nhà ở pháp lý nguồn cung", "tín dụng bất động sản"),
+    "bất động sản": ("thị trường bất động sản nhà ở pháp lý nguồn cung", "tín dụng bất động sản"),
+    "steel": ("sản lượng thép giá thép quặng sắt than luyện cốc", "nhu cầu thép xây dựng"),
+    "thép": ("sản lượng thép giá thép quặng sắt than luyện cốc", "nhu cầu thép xây dựng"),
+    "materials": ("giá nguyên vật liệu sản xuất công nghiệp", "sản lượng công nghiệp"),
+    "vật liệu": ("giá nguyên vật liệu sản xuất công nghiệp", "sản lượng công nghiệp"),
+    "oil": ("giá dầu thô sản lượng khai thác dầu khí", "lọc hóa dầu khí tự nhiên"),
+    "dầu": ("giá dầu thô sản lượng khai thác dầu khí", "lọc hóa dầu khí tự nhiên"),
+    "gas": ("giá khí tự nhiên LNG năng lượng", "sản lượng điện khí"),
+    "điện": ("sản lượng điện phụ tải giá điện thủy điện nhiệt điện", "giá nhiên liệu phát điện"),
+    "power": ("sản lượng điện phụ tải giá điện thủy điện nhiệt điện", "giá nhiên liệu phát điện"),
+    "retail": ("bán lẻ tiêu dùng sức mua doanh thu bán lẻ", "thị trường hàng tiêu dùng"),
+    "bán lẻ": ("bán lẻ tiêu dùng sức mua doanh thu bán lẻ", "thị trường hàng tiêu dùng"),
+    "food": ("giá lương thực thực phẩm chăn nuôi nguyên liệu thức ăn", "xuất khẩu nông thủy sản"),
+    "thực phẩm": ("giá lương thực thực phẩm chăn nuôi nguyên liệu thức ăn", "xuất khẩu nông thủy sản"),
+    "seafood": ("xuất khẩu thủy sản giá cá tra tôm thị trường nhập khẩu", "sản lượng nuôi trồng thủy sản"),
+    "thủy sản": ("xuất khẩu thủy sản giá cá tra tôm thị trường nhập khẩu", "sản lượng nuôi trồng thủy sản"),
+    "logistics": ("vận tải hàng hóa cước vận tải cảng biển sản lượng hàng hóa", "xuất nhập khẩu"),
+    "vận tải": ("vận tải hàng hóa cước vận tải cảng biển sản lượng hàng hóa", "xuất nhập khẩu"),
+    "aviation": ("vận tải hàng không lượng khách giá nhiên liệu bay", "du lịch quốc tế"),
+    "hàng không": ("vận tải hàng không lượng khách giá nhiên liệu bay", "du lịch quốc tế"),
+    "technology": ("xuất khẩu điện tử bán dẫn công nghệ thông tin", "đầu tư công nghệ"),
+    "công nghệ": ("xuất khẩu điện tử bán dẫn công nghệ thông tin", "đầu tư công nghệ"),
+    "agriculture": ("giá nông sản phân bón cao su đường", "xuất khẩu nông nghiệp"),
+    "nông nghiệp": ("giá nông sản phân bón cao su đường", "xuất khẩu nông nghiệp"),
+    "fertilizer": ("giá phân bón urê ammonia phosphate khí đầu vào", "xuất khẩu phân bón"),
+    "phân bón": ("giá phân bón urê ammonia phosphate khí đầu vào", "xuất khẩu phân bón"),
+    "insurance": ("thị trường bảo hiểm phí bảo hiểm lãi suất trái phiếu", "lợi suất trái phiếu chính phủ"),
+    "bảo hiểm": ("thị trường bảo hiểm phí bảo hiểm lãi suất trái phiếu", "lợi suất trái phiếu chính phủ"),
+}
+
+# World Bank annual series complement, not replace, current official monthly
+# Vietnamese releases. Codes are stable public indicator identifiers.
+WORLD_BANK_INDICATORS = (
+    ("GDP_GROWTH", "NY.GDP.MKTP.KD.ZG", "GDP growth (annual %)"),
+    ("INFLATION", "FP.CPI.TOTL.ZG", "Inflation, consumer prices (annual %)"),
+    ("OFFICIAL_EXCHANGE_RATE", "PA.NUS.FCRF", "Official exchange rate (LCU per US$, period average)"),
+    ("LENDING_RATE", "FR.INR.LEND", "Lending interest rate (%)"),
+    ("FDI_NET_INFLOW", "BX.KLT.DINV.WD.GD.ZS", "Foreign direct investment, net inflows (% of GDP)"),
+    ("MANUFACTURING_VALUE_ADDED", "NV.IND.MANF.ZS", "Manufacturing, value added (% of GDP)"),
+    ("TRADE_OPENNESS", "NE.TRD.GNFS.ZS", "Trade (% of GDP)"),
+    ("GROSS_CAPITAL_FORMATION", "NE.GDI.FTOT.ZS", "Gross capital formation (% of GDP)"),
+)
+
+
+class _ArticleParser(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.parts = []
-        self.links = []
-        self._anchor_href = None
-        self._anchor_text = []
+        self.meta = {}
         self._skip = 0
+        self._capture = False
 
     def handle_starttag(self, tag, attrs):
         attrs = dict(attrs)
         if tag in ("script", "style", "nav", "footer", "header", "svg"):
             self._skip += 1
-        if tag == "a":
-            self._anchor_href = attrs.get("href")
-            self._anchor_text = []
-        if tag in ("p", "br", "li", "tr", "h1", "h2", "h3", "div"):
+        if tag == "meta":
+            key = attrs.get("property") or attrs.get("name") or attrs.get("itemprop")
+            value = attrs.get("content")
+            if key and value:
+                self.meta[key.lower()] = value.strip()
+        if tag in ("p", "h1", "h2", "h3", "li"):
             self.parts.append("\n")
 
     def handle_endtag(self, tag):
         if tag in ("script", "style", "nav", "footer", "header", "svg") and self._skip:
             self._skip -= 1
-        if tag == "a" and self._anchor_href:
-            label = " ".join(" ".join(self._anchor_text).split())
-            if label:
-                self.links.append((self._anchor_href, label))
-            self._anchor_href = None
-            self._anchor_text = []
-        if tag in ("p", "li", "tr", "h1", "h2", "h3", "div"):
+        if tag in ("p", "h1", "h2", "h3", "li"):
             self.parts.append("\n")
 
     def handle_data(self, data):
@@ -71,263 +143,312 @@ class _HTMLText(HTMLParser):
         value = html.unescape(data).strip()
         if value:
             self.parts.append(value + " ")
-            if self._anchor_href is not None:
-                self._anchor_text.append(value)
 
     @property
     def text(self):
         return re.sub(r"\n{3,}", "\n\n", " ".join(self.parts)).strip()
 
 
-def _get(url):
-    response = requests.get(url, headers=_HEADERS, timeout=REQUEST_TIMEOUT)
+def _now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _get(url, params=None):
+    response = _SESSION.get(url, params=params, timeout=REQUEST_TIMEOUT)
     response.raise_for_status()
     return response
 
 
-def _clean_excerpt(value, limit=1500):
-    value = re.sub(r"\s+", " ", value or "").strip()
-    return value[:limit].rstrip()
+def _plain(value):
+    if isinstance(value, dict):
+        value = value.get("rendered", "")
+    return re.sub(r"\s+", " ", html.unescape(str(value or ""))).strip()
 
 
-def _nso_category_links():
-    response = _get(NSO_LIST_URL)
-    parser = _HTMLText()
-    parser.feed(response.text)
-    groups = {
-        "CPI": ("chỉ số giá tiêu dùng",),
-        "IIP": ("chỉ số sản xuất công nghiệp",),
-        "GDP": ("tăng trưởng GDP", "tổng sản phẩm trong nước"),
-        "CONSTRUCTION": ("hoạt động xây dựng", "đầu tư thực hiện từ nguồn ngân sách"),
-    }
-    found = {}
-    for key, terms in groups.items():
-        for href, label in parser.links:
-            low = label.lower()
-            if any(term in low for term in terms):
-                url = urljoin(NSO_LIST_URL, href)
-                if "nso.gov.vn" in url:
-                    found[key] = (url, label)
-                    break
-    return found
-
-
-def _fetch_nso_facts():
-    facts = []
+def _parse_date(value):
+    if not value:
+        return None
+    value = str(value).strip()
     try:
-        links = _nso_category_links()
-    except Exception as exc:
-        return facts, [f"Cục Thống kê: không truy xuất được danh mục dữ liệu ({type(exc).__name__})."]
-
-    for category, (url, title) in links.items():
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).date().isoformat()
+    except Exception:
+        pass
+    for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%d-%m-%Y"):
         try:
-            response = _get(url)
-            parser = _HTMLText()
-            parser.feed(response.text)
-            body = parser.text
-            date_match = re.search(r"(?:Ngày đăng|Kỳ tham chiếu)\s*:\s*([0-9/]+)", body, re.I)
-            date_label = date_match.group(1) if date_match else "không đọc được ngày công bố"
-            title_pos = body.lower().find(title.lower())
-            excerpt = body[title_pos + len(title):] if title_pos >= 0 else body
-            excerpt = _clean_excerpt(excerpt, 1250)
-            if excerpt:
-                facts.append({
-                    "category": category,
-                    "title": title,
-                    "period_or_date": date_label,
-                    "excerpt": excerpt,
-                    "source": url,
-                    "source_name": "Cục Thống kê Việt Nam",
-                })
-        except Exception as exc:
-            facts.append({
-                "category": category,
-                "title": title,
-                "error": f"không tải được ({type(exc).__name__})",
-                "source": url,
-                "source_name": "Cục Thống kê Việt Nam",
-            })
-    return facts, []
-
-
-def _previous_months(count=5):
-    now = datetime.now(timezone.utc)
-    year, month = now.year, now.month
-    result = []
-    for _ in range(count):
-        month -= 1
-        if month == 0:
-            year -= 1
-            month = 12
-        result.append((year, month))
-    return result
-
-
-def _fetch_worldsteel_facts():
-    facts = []
-    for year, month in _previous_months(5):
-        month_name = calendar.month_name[month].lower()
-        url = (
-            f"https://worldsteel.org/media/press-releases/{year}/"
-            f"{month_name}-{year}-crude-steel-production/"
-        )
-        try:
-            response = _get(url)
-            parser = _HTMLText()
-            parser.feed(response.text)
-            body = parser.text
-            china = re.search(
-                r"China produced\s+([\d,.]+)\s*Mt\s+in\s+([A-Za-z]+\s+\d{4}),\s*"
-                r"(up|down)\s+([\d,.]+)%",
-                body, re.I
-            )
-            vietnam = re.search(
-                r"Viet\s*Nam produced\s+([\d,.]+)\s*Mt\s+in\s+([A-Za-z]+\s+\d{4}),\s*"
-                r"(up|down)\s+([\d,.]+)%",
-                body, re.I
-            )
-            if china or vietnam:
-                for country, match in (("Trung Quốc", china), ("Việt Nam", vietnam)):
-                    if match:
-                        direction = "tăng" if match.group(3).lower() == "up" else "giảm"
-                        facts.append({
-                            "category": "STEEL_PRODUCTION",
-                            "title": f"Sản lượng thép thô {country}",
-                            "period_or_date": match.group(2),
-                            "excerpt": f"{country}: {match.group(1)} triệu tấn, {direction} {match.group(4)}% so với cùng kỳ.",
-                            "source": url,
-                            "source_name": "World Steel Association (worldsteel)",
-                        })
-                return facts
-        except requests.HTTPError as exc:
-            if getattr(exc.response, "status_code", None) not in (404, 403):
-                continue
+            return datetime.strptime(value[:10], fmt).date().isoformat()
         except Exception:
             continue
-    return facts
+    return None
 
 
-def _read_world_bank_commodities():
-    """Read monthly commodity series from the World Bank Pink Sheet workbook."""
-    response = _get(WORLD_BANK_MONTHLY_URL)
-    sheets = pd.read_excel(BytesIO(response.content), sheet_name=None, header=None)
-    wanted = {
-        "iron_ore": ("iron ore",),
-        "coal_australia": ("coal, australia", "coal australia"),
-        "steel_rebar": ("steel (rebar)", "steel rebar"),
-    }
-    output = []
-    for sheet_name, frame in sheets.items():
-        if frame is None or frame.empty:
-            continue
-        header_row = None
-        col_map = {}
-        for row_idx in range(min(20, len(frame))):
-            values = [str(v).strip().lower() for v in frame.iloc[row_idx].tolist()]
-            for key, aliases in wanted.items():
-                for col_idx, value in enumerate(values):
-                    if any(alias in value for alias in aliases):
-                        col_map[key] = col_idx
-            if "iron_ore" in col_map or "coal_australia" in col_map or "steel_rebar" in col_map:
-                header_row = row_idx
-                break
-        if header_row is None:
-            continue
+def _article_date(parser, api_item=None):
+    api_item = api_item or {}
+    for key in ("article:published_time", "datepublished", "date", "dc.date", "pubdate"):
+        found = _parse_date(parser.meta.get(key))
+        if found:
+            return found
+    for key in ("date", "modified"):
+        found = _parse_date(api_item.get(key))
+        if found:
+            return found
+    match = re.search(r"(?:ngày đăng|date of issue|published on|ngày phát hành)\s*:?\s*(\d{1,2}[/-]\d{1,2}[/-]\d{4})", parser.text, re.I)
+    return _parse_date(match.group(1)) if match else None
 
-        date_col = 0
-        date_rows = []
-        for row_idx in range(header_row + 1, len(frame)):
-            raw_date = str(frame.iat[row_idx, date_col]).strip()
-            match = re.search(r"(20\d{2})\s*M\s*(0?[1-9]|1[0-2])", raw_date, re.I)
-            if match:
-                date_rows.append((int(match.group(1)), int(match.group(2)), row_idx))
-        if not date_rows:
-            continue
-        date_rows.sort()
-        latest = date_rows[-1]
-        previous = date_rows[-2] if len(date_rows) > 1 else None
-        for key, col_idx in col_map.items():
-            current_value = pd.to_numeric(pd.Series([frame.iat[latest[2], col_idx]]), errors="coerce").iloc[0]
-            previous_value = (
-                pd.to_numeric(pd.Series([frame.iat[previous[2], col_idx]]), errors="coerce").iloc[0]
-                if previous else float("nan")
-            )
-            if pd.isna(current_value):
+
+def _discover_nso_publications(query, per_page=4):
+    """Discover current NSO publications from its public WordPress search API."""
+    try:
+        response = _get(NSO_SEARCH_URL, {
+            "search": query,
+            "per_page": min(10, max(1, int(per_page))),
+            "_locale": "user",
+        })
+        payload = response.json()
+        return payload if isinstance(payload, list) else []
+    except Exception:
+        # Some WordPress installations disable the search endpoint; fail closed.
+        return []
+
+
+def _fetch_nso_publication(item, category, query):
+    url = item.get("url") or item.get("link")
+    if not url or not str(url).startswith(("https://", "http://")):
+        return None
+    try:
+        response = _get(url)
+        parser = _ArticleParser()
+        parser.feed(response.text)
+        body = parser.text
+        if not body:
+            return None
+        title = _plain(item.get("title")) or "Công bố thống kê"
+        published = _article_date(parser, item)
+        # Reference period is not guessed from the publication date. The model
+        # receives the exact article text to identify it, or a clear unknown.
+        excerpt = body[:1800].strip()
+        return {
+            "category": category,
+            "title": title,
+            "query": query,
+            "published_at": published,
+            "period_or_date": "Chưa xác định kỳ tham chiếu từ metadata",
+            "excerpt": excerpt,
+            "source": url,
+            "source_name": "Cục Thống kê Việt Nam",
+            "retrieved_at": _now_iso(),
+            "freshness": "DATE_VERIFIED" if published else "PUBLISH_DATE_UNVERIFIED",
+        }
+    except Exception as exc:
+        return {
+            "category": category,
+            "title": _plain(item.get("title")) or "Công bố thống kê",
+            "query": query,
+            "source": url,
+            "source_name": "Cục Thống kê Việt Nam",
+            "error": f"Không tải được bài nguồn ({type(exc).__name__}).",
+            "retrieved_at": _now_iso(),
+        }
+
+
+def _fetch_nso_search_pack(searches, category_prefix, per_query=3, limit=24):
+    candidates = []
+    seen = set()
+    warnings = []
+    for category, query in searches:
+        items = _discover_nso_publications(query, per_page=per_query)
+        for item in items:
+            url = item.get("url") or item.get("link")
+            if not url or url in seen:
                 continue
-            change = None
-            if previous and pd.notna(previous_value) and float(previous_value) != 0:
-                change = (float(current_value) / float(previous_value) - 1) * 100
-            names = {
-                "iron_ore": "Quặng sắt benchmark",
-                "coal_australia": "Than Australia benchmark (không đồng nhất với giá than luyện cốc HPG mua thực tế)",
-                "steel_rebar": "Thép thanh benchmark",
-            }
-            excerpt = f"{names[key]}: {float(current_value):,.2f} USD/tấn hoặc đơn vị công bố trong Pink Sheet; kỳ {latest[0]}-{latest[1]:02d}."
-            if change is not None:
-                excerpt += f" So với tháng trước: {change:+.2f}%."
-            output.append({
-                "category": "COMMODITY_PRICE",
-                "title": names[key],
-                "period_or_date": f"{latest[0]}-{latest[1]:02d}",
-                "excerpt": excerpt,
-                "source": WORLD_BANK_MONTHLY_URL,
-                "source_name": "World Bank Commodity Markets - Pink Sheet",
-            })
-        if output:
-            return output
-    return output
-
-
-def _fetch_macro_bundle(symbol, sector):
-    facts, warnings = _fetch_nso_facts()
-    if str(symbol).upper() == "HPG" or str(sector).upper() == "NGUYEN_VAT_LIEU_CHU_KY":
-        facts.extend(_fetch_worldsteel_facts())
-        try:
-            facts.extend(_read_world_bank_commodities())
-        except Exception as exc:
-            warnings.append(
-                f"World Bank Pink Sheet: chưa đọc được dữ liệu hàng hóa ({type(exc).__name__}); "
-                "không thay bằng ước tính."
-            )
+            seen.add(url)
+            candidates.append((category_prefix + category, query, item))
+    # Fetch the newest discovery results first; API order is relevance, so sort
+    # by API date when available and otherwise preserve the source ranking.
+    candidates.sort(key=lambda row: str(row[2].get("date") or row[2].get("modified") or ""), reverse=True)
+    facts = []
+    for category, query, item in candidates[:limit]:
+        fact = _fetch_nso_publication(item, category, query)
+        if fact:
+            facts.append(fact)
     if not facts:
-        warnings.append("Không lấy được dữ kiện vĩ mô/ngành đủ điều kiện xác minh trong lần cập nhật này.")
-    return {
-        "symbol": str(symbol).upper(),
-        "fetched_at": datetime.now(timezone.utc).isoformat(),
-        "facts": facts,
-        "warnings": warnings,
-    }
+        warnings.append("NSO: API tìm kiếm không trả về bài thống kê tải được; không thay thế bằng dữ liệu tự tạo.")
+    return facts, warnings
 
 
-def get_macro_context(symbol, sector, force_refresh=False):
-    """Return dated, source-linked facts for AI prompts; cache successful bundles for 12h."""
-    key = (str(symbol).upper(), str(sector).upper())
+def _fetch_world_bank_facts():
+    facts = []
+    warnings = []
+    for category, indicator, label in WORLD_BANK_INDICATORS:
+        url = f"{WORLD_BANK_API}/country/VNM/indicator/{indicator}"
+        try:
+            response = _get(url, {"format": "json", "per_page": 8})
+            payload = response.json()
+            rows = payload[1] if isinstance(payload, list) and len(payload) > 1 and isinstance(payload[1], list) else []
+            row = next((item for item in rows if item.get("value") is not None), None)
+            if not row:
+                warnings.append(f"World Bank: chưa có quan sát khả dụng cho {label}.")
+                continue
+            value = row.get("value")
+            unit = row.get("unit") or ""
+            facts.append({
+                "category": category,
+                "title": label,
+                "period_or_date": str(row.get("date") or "Không rõ"),
+                "published_at": None,
+                "value": value,
+                "unit": unit,
+                "excerpt": f"{label}: {value} {unit} (quan sát năm {row.get('date')}); chuỗi dữ liệu World Bank, tần suất năm.",
+                "source": f"{url}?format=json",
+                "source_name": "World Bank Open Data API",
+                "retrieved_at": _now_iso(),
+                "freshness": "ANNUAL_SERIES",
+            })
+        except Exception as exc:
+            warnings.append(f"World Bank {indicator}: truy xuất thất bại ({type(exc).__name__}).")
+    return facts, warnings
+
+
+def _industry_queries(industry, sector):
+    raw = " ".join(str(x or "") for x in (industry, sector)).strip()
+    normalized = raw.casefold()
+    queries = []
+    for key, hints in INDUSTRY_SEARCH_HINTS.items():
+        if key in normalized:
+            queries.extend(hints)
+    # Always include the company's actual classification label when available.
+    industry_label = str(industry or "").strip()
+    if industry_label and industry_label.casefold() not in ("unknown", "none", "n/a"):
+        queries.insert(0, f"{industry_label} Việt Nam sản lượng doanh thu xuất nhập khẩu")
+    # Sector fallback is used only if company metadata has no classification.
+    elif sector:
+        queries.insert(0, f"{sector} Việt Nam dữ liệu ngành")
+    deduped = []
+    seen = set()
+    for query in queries:
+        q = re.sub(r"\s+", " ", query).strip()
+        if q and q.casefold() not in seen:
+            seen.add(q.casefold())
+            deduped.append(q)
+    return [("INDUSTRY", query) for query in deduped[:4]]
+
+
+def _fetch_industry_pack(industry, sector):
+    searches = _industry_queries(industry, sector)
+    if not searches:
+        return [], ["Không có phân loại ngành doanh nghiệp; chỉ áp dụng dữ liệu vĩ mô chung."]
+    facts, warnings = _fetch_nso_search_pack(
+        searches, category_prefix="", per_query=3, limit=MAX_INDUSTRY_FACTS
+    )
+    # Keep the raw industry classification on every fact for auditability.
+    for fact in facts:
+        fact["industry_classification"] = industry or sector
+    return facts, warnings
+
+
+def _get_cached_bundle(cache_key, fetcher, force_refresh=False, cache_store=None):
     now = time.time()
     with _CACHE_LOCK:
-        cached = _CACHE.get(key)
+        cached = _CACHE.get(cache_key)
         if cached and not force_refresh and now - cached[0] < CACHE_TTL_SECONDS:
             return cached[1]
 
-    bundle = _fetch_macro_bundle(symbol, sector)
+    if cache_store is not None and not force_refresh:
+        try:
+            stored = cache_store.find_one({"_id": cache_key})
+            if stored and isinstance(stored.get("payload"), dict):
+                fetched_at = stored.get("fetched_epoch", 0)
+                if fetched_at and now - float(fetched_at) < CACHE_TTL_SECONDS:
+                    payload = stored["payload"]
+                    with _CACHE_LOCK:
+                        _CACHE[cache_key] = (now, payload)
+                    return payload
+        except Exception:
+            pass
+
+    payload = fetcher()
+    payload["cache_key"] = cache_key
+    payload["fetched_at"] = _now_iso()
     with _CACHE_LOCK:
-        _CACHE[key] = (now, bundle)
-    return bundle
+        _CACHE[cache_key] = (now, payload)
+    if cache_store is not None:
+        try:
+            cache_store.update_one(
+                {"_id": cache_key},
+                {"$set": {"payload": payload, "fetched_epoch": now, "updated_at": payload["fetched_at"]}},
+                upsert=True,
+            )
+        except Exception:
+            pass
+    return payload
+
+
+def _fetch_global_bundle():
+    nso_facts, nso_warnings = _fetch_nso_search_pack(
+        GENERAL_PUBLICATION_QUERIES, category_prefix="", per_query=3,
+        limit=MAX_GENERAL_FACTS
+    )
+    wb_facts, wb_warnings = _fetch_world_bank_facts()
+    return {
+        "scope": "GLOBAL_VIETNAM_MACRO",
+        "facts": nso_facts + wb_facts,
+        "warnings": nso_warnings + wb_warnings,
+    }
+
+
+def get_macro_context(symbol, sector, industry=None, metadata=None,
+                      force_refresh=False, cache_store=None):
+    """Return shared macro facts plus a dynamically discovered industry pack.
+
+    The ticker is retained for traceability only; cache keys are global/industry,
+    so all 100 symbols reuse the same source pulls rather than scraping 100 times.
+    """
+    metadata = metadata or {}
+    industry = industry or metadata.get("industry") or metadata.get("industry_name") or metadata.get("icb_name")
+    global_pack = _get_cached_bundle(
+        "GLOBAL_VIETNAM_MACRO", _fetch_global_bundle,
+        force_refresh=force_refresh, cache_store=cache_store
+    )
+    industry_key = re.sub(r"\s+", " ", str(industry or sector or "UNCLASSIFIED")).strip().casefold()
+    industry_key = "INDUSTRY:" + industry_key[:160]
+    industry_pack = _get_cached_bundle(
+        industry_key, lambda: _fetch_industry_pack(industry, sector),
+        force_refresh=force_refresh, cache_store=cache_store
+    )
+    facts = list(global_pack.get("facts") or []) + list(industry_pack.get("facts") or [])
+    warnings = list(global_pack.get("warnings") or []) + list(industry_pack.get("warnings") or [])
+    return {
+        "symbol": str(symbol or "").upper(),
+        "industry": industry or sector or "Chưa phân loại",
+        "fetched_at": _now_iso(),
+        "facts": facts,
+        "warnings": warnings,
+        "coverage": {
+            "global_fact_count": len(global_pack.get("facts") or []),
+            "industry_fact_count": len(industry_pack.get("facts") or []),
+            "global_cache_key": "GLOBAL_VIETNAM_MACRO",
+            "industry_cache_key": industry_key,
+        },
+    }
 
 
 def format_macro_context(bundle):
-    """Format source facts for the model without converting them into conclusions."""
+    """Format source facts for the AI with dates, reference periods and provenance."""
     if not isinstance(bundle, dict):
         return "Không có dữ liệu vĩ mô/ngành được truy xuất."
     lines = [
-        f"Thời điểm truy xuất: {bundle.get('fetched_at', 'không rõ')}.",
-        "DỮ KIỆN VĨ MÔ/NGÀNH CÓ NGUỒN (chỉ được diễn giải đúng kỳ và đơn vị):",
+        f"Thời điểm tổng hợp: {bundle.get('fetched_at', 'không rõ')}.",
+        f"Phân loại ngành đầu vào: {bundle.get('industry', 'Chưa phân loại')}.",
+        f"Độ phủ: {json.dumps(bundle.get('coverage', {}), ensure_ascii=False)}.",
+        "DỮ KIỆN VĨ MÔ/NGÀNH TỪ NGUỒN BÊN NGOÀI:",
     ]
     facts = bundle.get("facts") or []
     for fact in facts:
         if fact.get("excerpt"):
             lines.append(
                 f"- [{fact.get('category')}] {fact.get('title')} | "
-                f"Kỳ/ngày: {fact.get('period_or_date', 'không rõ')} | "
+                f"Kỳ tham chiếu: {fact.get('period_or_date', 'chưa xác định')} | "
+                f"Ngày công bố: {fact.get('published_at') or 'chưa xác minh'} | "
+                f"Trạng thái ngày: {fact.get('freshness', 'UNKNOWN')} | "
                 f"{fact['excerpt']} | Nguồn: {fact.get('source_name')} | URL: {fact.get('source')}"
             )
         elif fact.get("error"):
