@@ -446,6 +446,46 @@ def get_macro_context(symbol, sector, industry=None, metadata=None,
     }
 
 
+def refresh_macro_contexts(industry_labels, cache_store=None, force_refresh=True):
+    """Scheduled refresh for the shared macro pack and every active industry.
+
+    industry_labels accepts (industry_label, sector_fallback) pairs and is
+    normally built from the live stocks collection, not a ticker allow-list.
+    """
+    global_pack = _get_cached_bundle(
+        "GLOBAL_VIETNAM_MACRO", _fetch_global_bundle,
+        force_refresh=force_refresh, cache_store=cache_store
+    )
+    refreshed = {
+        "global_facts": len(global_pack.get("facts") or []),
+        "industries": {},
+    }
+    seen = set()
+    for item in industry_labels or []:
+        if isinstance(item, (tuple, list)):
+            industry = item[0] if item else None
+            sector = item[1] if len(item) > 1 else None
+        else:
+            industry, sector = item, None
+        normalized = re.sub(r"\\s+", " ", str(industry or sector or "UNCLASSIFIED")).strip().casefold()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        cache_key = "INDUSTRY:" + normalized[:160]
+        pack = _get_cached_bundle(
+            cache_key,
+            lambda industry=industry, sector=sector: {
+                "facts": _fetch_industry_pack(industry, sector)[0],
+                "warnings": _fetch_industry_pack(industry, sector)[1],
+            },
+            force_refresh=force_refresh,
+            cache_store=cache_store,
+        )
+        refreshed["industries"][normalized] = len(pack.get("facts") or [])
+    refreshed["refreshed_at"] = _now_iso()
+    return refreshed
+
+
 def format_macro_context(bundle):
     """Format source facts for the AI with dates, reference periods and provenance."""
     if not isinstance(bundle, dict):
