@@ -37,6 +37,7 @@ _HEADERS = {
 }
 _CACHE = {}
 _CACHE_LOCK = threading.RLock()
+_KEY_LOCKS = {}
 _SESSION = requests.Session()
 _SESSION.headers.update(_HEADERS)
 
@@ -223,20 +224,28 @@ def _fetch_nso_publication(item, category, query):
             return None
         title = _plain(item.get("title")) or "Công bố thống kê"
         published = _article_date(parser, item)
-        # Reference period is not guessed from the publication date. The model
-        # receives the exact article text to identify it, or a clear unknown.
+        # Publication date is not confused with the statistical reference period.
         excerpt = body[:1800].strip()
+        age_days = None
+        freshness = "PUBLISH_DATE_UNVERIFIED"
+        if published:
+            try:
+                age_days = (datetime.now(timezone.utc).date() - datetime.fromisoformat(published).date()).days
+                freshness = "RECENT_PUBLICATION" if age_days <= 90 else "STALE_PUBLICATION"
+            except Exception:
+                age_days = None
         return {
             "category": category,
             "title": title,
             "query": query,
             "published_at": published,
+            "publication_age_days": age_days,
             "period_or_date": "Chưa xác định kỳ tham chiếu từ metadata",
             "excerpt": excerpt,
             "source": url,
             "source_name": "Cục Thống kê Việt Nam",
             "retrieved_at": _now_iso(),
-            "freshness": "DATE_VERIFIED" if published else "PUBLISH_DATE_UNVERIFIED",
+            "freshness": freshness,
         }
     except Exception as exc:
         return {
@@ -346,40 +355,46 @@ def _fetch_industry_pack(industry, sector):
 
 
 def _get_cached_bundle(cache_key, fetcher, force_refresh=False, cache_store=None):
-    now = time.time()
+    # Per-key lock prevents 100 parallel symbol analyses from stampeding the
+    # same public API while preserving concurrency between distinct industries.
     with _CACHE_LOCK:
-        cached = _CACHE.get(cache_key)
-        if cached and not force_refresh and now - cached[0] < CACHE_TTL_SECONDS:
-            return cached[1]
+        key_lock = _KEY_LOCKS.setdefault(cache_key, threading.Lock())
 
-    if cache_store is not None and not force_refresh:
-        try:
-            stored = cache_store.find_one({"_id": cache_key})
-            if stored and isinstance(stored.get("payload"), dict):
-                fetched_at = stored.get("fetched_epoch", 0)
-                if fetched_at and now - float(fetched_at) < CACHE_TTL_SECONDS:
-                    payload = stored["payload"]
-                    with _CACHE_LOCK:
-                        _CACHE[cache_key] = (now, payload)
-                    return payload
-        except Exception:
-            pass
+    with key_lock:
+        now = time.time()
+        with _CACHE_LOCK:
+            cached = _CACHE.get(cache_key)
+            if cached and not force_refresh and now - cached[0] < CACHE_TTL_SECONDS:
+                return cached[1]
 
-    payload = fetcher()
-    payload["cache_key"] = cache_key
-    payload["fetched_at"] = _now_iso()
-    with _CACHE_LOCK:
-        _CACHE[cache_key] = (now, payload)
-    if cache_store is not None:
-        try:
-            cache_store.update_one(
-                {"_id": cache_key},
-                {"$set": {"payload": payload, "fetched_epoch": now, "updated_at": payload["fetched_at"]}},
-                upsert=True,
-            )
-        except Exception:
-            pass
-    return payload
+        if cache_store is not None and not force_refresh:
+            try:
+                stored = cache_store.find_one({"_id": cache_key})
+                if stored and isinstance(stored.get("payload"), dict):
+                    fetched_at = stored.get("fetched_epoch", 0)
+                    if fetched_at and now - float(fetched_at) < CACHE_TTL_SECONDS:
+                        payload = stored["payload"]
+                        with _CACHE_LOCK:
+                            _CACHE[cache_key] = (now, payload)
+                        return payload
+            except Exception:
+                pass
+
+        payload = fetcher()
+        payload["cache_key"] = cache_key
+        payload["fetched_at"] = _now_iso()
+        with _CACHE_LOCK:
+            _CACHE[cache_key] = (now, payload)
+        if cache_store is not None:
+            try:
+                cache_store.update_one(
+                    {"_id": cache_key},
+                    {"$set": {"payload": payload, "fetched_epoch": now, "updated_at": payload["fetched_at"]}},
+                    upsert=True,
+                )
+            except Exception:
+                pass
+        return payload
 
 
 def _fetch_global_bundle():
