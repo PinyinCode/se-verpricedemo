@@ -85,11 +85,11 @@ INDUSTRY_SEARCH_LABELS = {
 }
 
 INDUSTRY_QUERY_DIMENSIONS = (
-    # Keep each search term compact: WordPress search commonly combines
-    # terms with AND, so long phrases suppress otherwise relevant publications.
-    ("INDUSTRY_OUTPUT", "sản lượng"),
-    ("INDUSTRY_PRICING", "giá"),
-    ("INDUSTRY_DEMAND", "doanh thu"),
+    # Keep each dimension to at most two words. The sector label + Việt Nam
+    # + dimension stays compact enough for WordPress's AND-based search.
+    ("INDUSTRY_OUTPUT", "sản lượng sản xuất"),
+    ("INDUSTRY_PRICING", "giá nguyên liệu"),
+    ("INDUSTRY_DEMAND", "doanh thu tiêu thụ"),
     ("INDUSTRY_TRADE", "xuất khẩu"),
     ("INDUSTRY_CAPEX", "đầu tư"),
     ("INDUSTRY_INVENTORY", "tồn kho"),
