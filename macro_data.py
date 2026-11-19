@@ -472,12 +472,12 @@ def refresh_macro_contexts(industry_labels, cache_store=None, force_refresh=True
             continue
         seen.add(normalized)
         cache_key = "INDUSTRY:" + normalized[:160]
+        def fetch_industry(industry=industry, sector=sector):
+            facts, warnings = _fetch_industry_pack(industry, sector)
+            return {"facts": facts, "warnings": warnings}
+
         pack = _get_cached_bundle(
-            cache_key,
-            lambda industry=industry, sector=sector: {
-                "facts": _fetch_industry_pack(industry, sector)[0],
-                "warnings": _fetch_industry_pack(industry, sector)[1],
-            },
+            cache_key, fetch_industry,
             force_refresh=force_refresh,
             cache_store=cache_store,
         )
