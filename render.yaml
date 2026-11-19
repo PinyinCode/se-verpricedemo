@@ -17,6 +17,12 @@ services:
         value: "45"
       - key: MAX_SYMBOLS_PER_REQUEST
         value: "20"
+      - key: MACRO_CACHE_TTL_SECONDS
+        value: "21600"
+      - key: MACRO_AUTO_REFRESH_SECONDS
+        value: "21600"
+      - key: MACRO_AUTO_REFRESH_INITIAL_DELAY
+        value: "90"
       # Cho phép mọi origin gọi API (vì HTML có thể serve từ bất kỳ đâu)
       - key: ALLOWED_ORIGINS
         value: "*"
