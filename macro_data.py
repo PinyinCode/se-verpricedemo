@@ -8,6 +8,7 @@ signals. Results are cached in-process to avoid repeated external requests.
 from __future__ import annotations
 
 import calendar
+from io import BytesIO
 import html
 import re
 import threading
@@ -209,7 +210,7 @@ def _fetch_worldsteel_facts():
 def _read_world_bank_commodities():
     """Read monthly commodity series from the World Bank Pink Sheet workbook."""
     response = _get(WORLD_BANK_MONTHLY_URL)
-    sheets = pd.read_excel(response.content, sheet_name=None, header=None)
+    sheets = pd.read_excel(BytesIO(response.content), sheet_name=None, header=None)
     wanted = {
         "iron_ore": ("iron ore",),
         "coal_australia": ("coal, australia", "coal australia"),
