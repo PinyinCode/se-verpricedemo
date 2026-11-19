@@ -318,6 +318,24 @@ def _discover_nso_publications(query, per_page=4, diagnostics=None):
     return []
 
 
+def _industry_query_matches_article(query, title, body):
+    """Require the searched industry label in the title/lead, not just a query hit."""
+    query_text = str(query or "").strip()
+    for _, dimension in INDUSTRY_QUERY_DIMENSIONS:
+        suffix = " " + dimension
+        if query_text.casefold().endswith(suffix.casefold()):
+            query_text = query_text[:-len(suffix)].strip()
+            break
+    label = _normalize_industry_text(query_text)
+    tokens = [token for token in label.split() if token not in {"va", "cua", "nganh"}]
+    if not tokens:
+        return False
+    evidence = _normalize_industry_text(str(title or "") + " " + str(body or "")[:900])
+    # Require every meaningful label token. This rejects unrelated articles
+    # returned by broad WordPress search while allowing word-order variation.
+    return all(token in evidence.split() for token in tokens)
+
+
 def _fetch_nso_publication(item, category, query):
     url = item.get("url") or item.get("link")
     if not url or not str(url).startswith(("https://", "http://")):
@@ -331,31 +349,45 @@ def _fetch_nso_publication(item, category, query):
             return None
         title = _plain(item.get("title")) or "Công bố thống kê"
         published = _article_date(parser, item)
-        # Publication date is not confused with the statistical reference period.
+        # Industry search endpoints can return loosely related articles. Do not
+        # promote them to direct sector evidence unless the sector label itself
+        # is present in the article title/lead and measurable evidence exists.
+        is_industry_query = str(category).startswith("INDUSTRY_")
         excerpt = body[:1800].strip()
+        sector_match = _industry_query_matches_article(query, title, body) if is_industry_query else False
+        quantitative = _has_quantitative_evidence(body)
+        if is_industry_query and not (sector_match and quantitative):
+            return None
+
         age_days = None
         freshness = "PUBLISH_DATE_UNVERIFIED"
         if published:
             try:
                 age_days = (datetime.now(timezone.utc).date() - datetime.fromisoformat(published).date()).days
-                freshness = "RECENT_PUBLICATION" if age_days <= 90 else "STALE_PUBLICATION"
+                freshness = "RECENT_PUBLICATION" if 0 <= age_days <= 90 else "STALE_PUBLICATION"
             except Exception:
                 age_days = None
+        # A reference period is taken from the title first, then only the lead.
+        # Scanning the full article can pick up unrelated periods mentioned later.
+        reference_period = _extract_reference_period(title)
+        if not reference_period:
+            reference_period = _extract_reference_period(body[:500])
         return {
             "category": category,
             "title": title,
             "query": query,
             "published_at": published,
             "publication_age_days": age_days,
-            "period_or_date": _extract_reference_period(title + " " + body) or "Chưa xác định kỳ tham chiếu từ metadata",
+            "period_or_date": reference_period or "Chưa xác định kỳ tham chiếu từ metadata",
             "excerpt": excerpt,
             "source": url,
             "source_name": "Cục Thống kê Việt Nam",
             "retrieved_at": _now_iso(),
             "freshness": freshness,
-            "evidence_scope": "INDUSTRY_DIRECT_CANDIDATE" if str(category).startswith("INDUSTRY_") else "NATIONAL_MACRO",
-            "directness": "DIRECT_CANDIDATE" if str(category).startswith("INDUSTRY_") else "NATIONAL_CONTEXT",
-            "quantitative_evidence": _has_quantitative_evidence(body),
+            "evidence_scope": "INDUSTRY_DIRECT_CANDIDATE" if is_industry_query else "NATIONAL_MACRO",
+            "directness": "DIRECT_CANDIDATE" if is_industry_query else "NATIONAL_CONTEXT",
+            "industry_relevance_verified": sector_match if is_industry_query else None,
+            "quantitative_evidence": quantitative,
         }
     except Exception as exc:
         return {
