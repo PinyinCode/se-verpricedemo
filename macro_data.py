@@ -701,6 +701,8 @@ def _industry_queries(industry, sector):
 def _normalize_industry_text(value):
     value = unicodedata.normalize("NFKD", str(value or "").casefold())
     value = "".join(ch for ch in value if not unicodedata.combining(ch))
+    # Vietnamese "đ" does not decompose under NFKD; normalize it explicitly.
+    value = value.replace("đ", "d")
     return re.sub(r"[^a-z0-9]+", " ", value).strip()
 
 
