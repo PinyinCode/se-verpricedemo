@@ -69,33 +69,33 @@ GENERAL_PUBLICATION_QUERIES = (
 # Translate internal classification keys into Vietnamese discovery vocabulary.
 # These are industry taxonomy labels, never ticker-specific assignments.
 INDUSTRY_SEARCH_LABELS = {
-    "AGRI": "nông nghiệp lâm nghiệp thủy sản",
-    "AVIATION": "hàng không vận tải hàng không",
-    "BAT_DONG_SAN": "bất động sản nhà ở khu công nghiệp",
-    "CHUNG_KHOAN": "thị trường chứng khoán công ty chứng khoán môi giới",
-    "CONG_NGHE_BAN_LE": "bán lẻ công nghệ thương mại điện tử",
-    "CONSTRUCTION": "xây dựng xây lắp vật liệu xây dựng",
-    "DIEN_NUOC_HA_TANG": "điện nước hạ tầng tiện ích năng lượng",
-    "INSURANCE": "bảo hiểm phí bảo hiểm bồi thường",
-    "MARITIME": "hàng hải cảng biển vận tải biển logistics",
-    "NGAN_HANG": "ngân hàng tín dụng huy động lãi suất",
-    "NGUYEN_VAT_LIEU_CHU_KY": "nguyên vật liệu thép hóa chất cao su",
-    "PETROLEUM": "dầu khí khai thác lọc hóa dầu xăng dầu",
-    "SAN_XUAT_TIEU_DUNG_PHONG_THU": "sản xuất hàng tiêu dùng thực phẩm đồ uống",
+    "AGRI": "nông nghiệp",
+    "AVIATION": "hàng không",
+    "BAT_DONG_SAN": "bất động sản",
+    "CHUNG_KHOAN": "chứng khoán",
+    "CONG_NGHE_BAN_LE": "bán lẻ",
+    "CONSTRUCTION": "xây dựng",
+    "DIEN_NUOC_HA_TANG": "điện nước",
+    "INSURANCE": "bảo hiểm",
+    "MARITIME": "hàng hải",
+    "NGAN_HANG": "ngân hàng",
+    "NGUYEN_VAT_LIEU_CHU_KY": "nguyên vật liệu",
+    "PETROLEUM": "dầu khí",
+    "SAN_XUAT_TIEU_DUNG_PHONG_THU": "thực phẩm",
 }
 
-
 INDUSTRY_QUERY_DIMENSIONS = (
-    ("INDUSTRY_OUTPUT", "sản lượng sản xuất công suất hoạt động"),
-    ("INDUSTRY_PRICING", "giá bán giá nguyên liệu chi phí đầu vào biên lợi nhuận"),
-    ("INDUSTRY_DEMAND", "doanh thu tiêu thụ nhu cầu thị trường đơn hàng"),
-    ("INDUSTRY_TRADE", "xuất khẩu nhập khẩu thị trường quốc tế"),
-    ("INDUSTRY_CAPEX", "đầu tư mở rộng công suất dự án"),
-    ("INDUSTRY_INVENTORY", "tồn kho hàng tồn kho nguyên vật liệu"),
-    ("INDUSTRY_POLICY", "quy định chính sách pháp lý thuế"),
-    ("INDUSTRY_LABOUR", "lao động tiền lương nhân công"),
+    # Keep each search term compact: WordPress search commonly combines
+    # terms with AND, so long phrases suppress otherwise relevant publications.
+    ("INDUSTRY_OUTPUT", "sản lượng"),
+    ("INDUSTRY_PRICING", "giá"),
+    ("INDUSTRY_DEMAND", "doanh thu"),
+    ("INDUSTRY_TRADE", "xuất khẩu"),
+    ("INDUSTRY_CAPEX", "đầu tư"),
+    ("INDUSTRY_INVENTORY", "tồn kho"),
+    ("INDUSTRY_POLICY", "chính sách"),
+    ("INDUSTRY_LABOUR", "lao động"),
 )
-
 
 # World Bank annual series complement, not replace, current official monthly
 # Vietnamese releases. Codes are stable public indicator identifiers.
