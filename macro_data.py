@@ -318,6 +318,30 @@ def _discover_nso_publications(query, per_page=4, diagnostics=None):
     return []
 
 
+def _macro_category_matches_article(category, title, body):
+    """Prevent broad search hits from being stored under an unrelated macro metric."""
+    rules = {
+        "GDP": ("gdp", "tổng sản phẩm trong nước", "tăng trưởng kinh tế"),
+        "CPI": ("cpi", "chỉ số giá tiêu dùng", "lạm phát"),
+        "IIP": ("iip", "chỉ số sản xuất công nghiệp", "sản xuất công nghiệp"),
+        "PPI": ("ppi", "giá sản xuất", "giá nguyên liệu đầu vào"),
+        "TRADE": ("xuất nhập khẩu", "xuất khẩu", "nhập khẩu", "cán cân thương mại"),
+        "FDI": ("fdi", "đầu tư trực tiếp nước ngoài", "vốn đầu tư nước ngoài"),
+        "PUBLIC_INVESTMENT": ("đầu tư công", "giải ngân vốn đầu tư công"),
+        "RETAIL": ("bán lẻ", "doanh thu dịch vụ tiêu dùng", "tổng mức bán lẻ"),
+        "LABOUR": ("lao động", "việc làm", "tiền lương", "thu nhập người lao động"),
+        "CONSTRUCTION": ("xây dựng", "bất động sản", "nhà ở"),
+        "MONETARY": ("tín dụng", "lãi suất", "tiền tệ", "cung tiền"),
+        "EXCHANGE_RATE": ("tỷ giá", "ngoại tệ", "usd/vnd", "đồng việt nam với đô la mỹ"),
+        "ENERGY": ("điện", "năng lượng", "xăng dầu", "sản lượng điện"),
+    }
+    accepted = rules.get(str(category or "").upper())
+    if not accepted:
+        return True
+    text = _normalize_industry_text(str(title or "") + " " + str(body or "")[:1200])
+    return any(_normalize_industry_text(term) in text for term in accepted)
+
+
 def _industry_query_matches_article(query, title, body):
     """Require the searched industry label in the title/lead, not just a query hit."""
     query_text = str(query or "").strip()
@@ -357,6 +381,8 @@ def _fetch_nso_publication(item, category, query):
         sector_match = _industry_query_matches_article(query, title, body) if is_industry_query else False
         quantitative = _has_quantitative_evidence(body)
         if is_industry_query and not (sector_match and quantitative):
+            return None
+        if not is_industry_query and not _macro_category_matches_article(category, title, body):
             return None
 
         age_days = None
