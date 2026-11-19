@@ -302,11 +302,15 @@ class MacroDataTests(unittest.TestCase):
                 actual = {item[1] for item in macro_data._industry_context_indicators(label, None)}
                 self.assertTrue(expected.issubset(actual))
 
-    def test_unknown_industry_does_not_receive_guessed_sector_indicators(self):
-        self.assertEqual(
-            macro_data._industry_context_indicators("Ngành mới chưa phân loại", None),
-            []
-        )
+    def test_unknown_industry_receives_only_common_context_not_guessed_sector_data(self):
+        actual = {item[1] for item in macro_data._industry_context_indicators(
+            "Ngành mới chưa phân loại", None
+        )}
+        self.assertEqual(actual, {
+            "NV.IND.TOTL.KD.ZG",
+            "NV.SRV.TETC.KD.ZG",
+            "NE.GDI.FTOT.ZS",
+        })
 
     def test_shared_cache_fetches_once_per_key(self):
         key = "TEST_MACRO_CACHE"
