@@ -285,6 +285,18 @@ class MacroDataTests(unittest.TestCase):
         self.assertIn("NV.IND.TOTL.KD.ZG", [item[1] for item in manufacturing])
         self.assertIn("NV.IND.MANF.KD.ZG", [item[1] for item in manufacturing])
 
+    def test_vietnamese_d_character_is_normalized_for_sector_matching(self):
+        self.assertEqual(macro_data._normalize_industry_text("Bất động sản"), "bat dong san")
+        self.assertEqual(macro_data._normalize_industry_text("Điện nước"), "dien nuoc")
+        self.assertIn(
+            "NV.IND.CON.ZS",
+            [item[1] for item in macro_data._industry_context_indicators("Bất động sản", None)]
+        )
+        self.assertIn(
+            "EG.ELC.ACCS.ZS",
+            [item[1] for item in macro_data._industry_context_indicators("Điện nước", None)]
+        )
+
     def test_sector_context_catalog_covers_multiple_live_industry_labels(self):
         cases = {
             "Hàng không": {"IS.AIR.PSGR"},
