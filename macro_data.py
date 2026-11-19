@@ -223,6 +223,7 @@ def _extract_reference_period(text):
     value = re.sub(r"\s+", " ", str(text or "")).strip()
     patterns = (
         (r"(\d{1,2})\s*tháng\s*(?:đầu\s*)?(?:năm\s*)?(\d{4})", lambda m: f"{m.group(1)} tháng năm {m.group(2)}"),
+        (r"tháng\s*(\d{1,2})\s*năm\s*(\d{4})", lambda m: f"{m.group(1)}-{m.group(2)}"),
         (r"quý\s*([1-4ivx]+)\s*(?:năm|/)\s*(\d{4})", lambda m: f"Q{m.group(1).upper()}-{m.group(2)}"),
         (r"tháng\s*(\d{1,2})\s*[/\-]\s*(\d{4})", lambda m: f"{m.group(1)}-{m.group(2)}"),
         (r"năm\s*(\d{4})", lambda m: m.group(1)),
