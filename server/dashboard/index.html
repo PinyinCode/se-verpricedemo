@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="vi"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Forex AI Server</title>
+<style>
+:root{color-scheme:dark;--bg:#0b1220;--panel:#121d30;--line:#26354c;--muted:#94a3b8;--text:#e5edf7;--green:#34d399;--red:#fb7185}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,Segoe UI,sans-serif}
+main{max-width:1200px;margin:auto;padding:24px}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+h1{font-size:22px;margin:0}.muted{color:var(--muted)}.pill{border:1px solid #166534;color:var(--green);padding:4px 10px;border-radius:20px;font-size:12px}
+.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:20px 0}
+.card,section{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;min-width:0}
+.metric{font-size:25px;font-weight:700;margin-top:4px}.layout{display:grid;grid-template-columns:2fr 1fr;gap:14px}
+h2{font-size:15px;margin:0 0 12px}table{width:100%;border-collapse:collapse;white-space:nowrap}th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);font-size:12px}th{color:var(--muted);font-weight:600}
+.wrap{overflow:auto}.status{font-weight:700}.BUY{color:var(--green)}.SELL{color:var(--red)}.empty{padding:24px;text-align:center;color:var(--muted)}
+.item{padding:10px 0;border-bottom:1px solid var(--line);font-size:12px}.item:last-child{border:0}
+@media(max-width:800px){.grid{grid-template-columns:repeat(2,1fr)}.layout{grid-template-columns:1fr}main{padding:14px}}
+</style></head><body><main>
+<div class="top"><div><h1>Forex AI Server</h1><div class="muted">Giám sát hệ thống phân tích và MT5 bridge</div></div><span class="pill">DEMO / PAPER ONLY</span></div>
+<div class="grid">
+<div class="card"><div class="muted">Tín hiệu chờ</div><div class="metric" id="pending">0</div></div>
+<div class="card"><div class="muted">Đã mô phỏng</div><div class="metric" id="done">0</div></div>
+<div class="card"><div class="muted">Đã hết hạn</div><div class="metric" id="expired">0</div></div>
+<div class="card"><div class="muted">MT5 Connector</div><div class="metric" id="mt5">—</div></div>
+</div>
+<div class="layout"><section><h2>Tín hiệu gần đây</h2><div class="wrap"><table><thead><tr><th>Thời gian</th><th>Mã</th><th>TF</th><th>Hướng</th><th>Entry</th><th>SL</th><th>Score</th><th>Trạng thái</th></tr></thead><tbody id="signals"><tr><td colspan="8" class="empty">Đang tải...</td></tr></tbody></table></div></section>
+<section><h2>Trạng thái dịch vụ</h2><div id="services" class="muted">Chưa có heartbeat</div><h2 style="margin-top:18px">Sự kiện</h2><div id="events"></div></section></div>
+<div class="muted" style="margin-top:16px">Tự cập nhật mỗi 3 giây · <span id="updated">—</span></div>
+</main><script>
+const $=id=>document.getElementById(id);
+function fmt(v){return v==null?'—':Number(v).toLocaleString('en-US',{maximumFractionDigits:5})}
+function esc(s){return String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}
+async function refresh(){try{const r=await fetch('/api/dashboard',{cache:'no-store'});if(!r.ok)throw Error('HTTP '+r.status);const d=await r.json();const c=d.counts||{};
+$('pending').textContent=c.pending||0;$('done').textContent=c.completed||0;$('expired').textContent=c.expired||0;
+const mt=(d.heartbeats||[]).find(x=>x.component.toLowerCase().includes('mt5'));
+$('mt5').textContent=mt?mt.status.toUpperCase():'WAITING';
+$('signals').innerHTML=d.signals.length?d.signals.map(s=>'<tr><td>'+esc(new Date(s.created_at).toLocaleString())+'</td><td>'+esc(s.symbol)+'</td><td>'+esc(s.timeframe)+'</td><td class="'+esc(s.direction)+'">'+esc(s.direction)+'</td><td>'+fmt(s.entry)+'</td><td>'+fmt(s.sl)+'</td><td>'+fmt(s.score)+'</td><td>'+esc(s.ack_status||s.status)+'</td></tr>').join(''):'<tr><td colspan="8" class="empty">Chưa có tín hiệu</td></tr>';
+$('services').innerHTML=d.heartbeats.length?d.heartbeats.map(h=>'<div class="item"><b>'+esc(h.component)+'</b> · '+esc(h.status)+'<div class="muted">'+esc(h.details)+'<br>'+esc(new Date(h.updated_at).toLocaleString())+'</div></div>').join(''):'Chưa có heartbeat từ MT5';
+$('events').innerHTML=d.events.map(e=>'<div class="item">'+esc(e.message)+'<div class="muted">'+esc(new Date(e.created_at).toLocaleTimeString())+'</div></div>').join('')||'Chưa có sự kiện';
+$('updated').textContent='Cập nhật '+new Date().toLocaleTimeString();
+}catch(e){$('updated').textContent='Lỗi API: '+e.message}}
+refresh();setInterval(refresh,3000);
+</script></body></html>
