@@ -1444,6 +1444,7 @@ def _macro_auto_refresh_loop():
     while True:
         try:
             industry_labels = set()
+            unclassified_symbols = set()
             projection = {
                 "symbol": 1, "sector": 1, "sub_sector": 1, "subSector": 1,
                 "industry": 1, "industry_name": 1, "industryName": 1,
@@ -1458,27 +1459,42 @@ def _macro_auto_refresh_loop():
                 if not symbol:
                     continue
                 meta = VN100_METADATA.get(symbol, {})
-                sector = stock_doc.get("sector") or get_sector(symbol)
+                # Macro classification must come from issuer/source metadata.
+                # Do not silently substitute ticker-based valuation sector mappings.
+                sector = (
+                    stock_doc.get("sector_name") or stock_doc.get("sectorName")
+                    or meta.get("sector_name") or meta.get("sectorName")
+                    or stock_doc.get("sector") or meta.get("sector")
+                )
                 industry = (
                     meta.get("industry") or meta.get("industry_name") or meta.get("industryName")
-                    or meta.get("icb_name") or meta.get("icbName") or meta.get("sector_name")
-                    or meta.get("sectorName") or stock_doc.get("industry")
-                    or stock_doc.get("industry_name") or stock_doc.get("industryName")
-                    or stock_doc.get("icb_name") or stock_doc.get("icbName")
-                    or stock_doc.get("sub_sector") or stock_doc.get("subSector")
-                    or stock_doc.get("sector_name") or stock_doc.get("sectorName")
-                    or sector
+                    or meta.get("icb_name") or meta.get("icbName")
+                    or stock_doc.get("industry") or stock_doc.get("industry_name")
+                    or stock_doc.get("industryName") or stock_doc.get("icb_name")
+                    or stock_doc.get("icbName") or stock_doc.get("sub_sector")
+                    or stock_doc.get("subSector") or sector
                 )
-                industry_labels.add((str(industry), str(sector)))
+                if industry or sector:
+                    industry_labels.add((str(industry or sector), str(sector or "")))
+                else:
+                    unclassified_symbols.add(symbol)
 
             result = refresh_macro_contexts(
                 sorted(industry_labels),
                 cache_store=macro_context_col,
                 force_refresh=True,
             )
+            coverage = result.get("coverage", {})
             logger.info(
-                "[MACRO AUTO] Hoàn tất cập nhật | nhóm ngành=%s | dữ kiện vĩ mô=%s",
-                len(result.get("industries", {})), result.get("global_facts", 0)
+                "[MACRO AUTO] Hoàn tất | nhóm=%s | có dữ liệu=%s | một phần=%s | thiếu=%s | cũ=%s | "
+                "dữ kiện vĩ mô=%s | mã chưa phân loại=%s",
+                len(result.get("industries", {})),
+                coverage.get("covered_industries", 0),
+                coverage.get("partial_industries", 0),
+                coverage.get("missing_industries", 0),
+                coverage.get("stale_industries", 0),
+                result.get("global_facts", 0),
+                len(unclassified_symbols),
             )
         except Exception as macro_refresh_error:
             logger.warning(
@@ -2150,10 +2166,16 @@ def _call_ai_for_symbol(symbol, sm, si, sector):
                 or si.get("icb_name") or si.get("icbName") or si.get("sector_name")
                 or si.get("sectorName") or si.get("sub_sector") or si.get("subSector")
                 or sm.get("industry") or sm.get("industry_name")
-                or sector
+                or sm.get("sector_name") or sm.get("sectorName")
+            )
+            macro_sector_label = (
+                company_meta.get("sector_name") or company_meta.get("sectorName")
+                or company_meta.get("sector") or si.get("sector_name")
+                or si.get("sectorName") or si.get("sector")
+                or sm.get("sector_name") or sm.get("sectorName") or sm.get("sector")
             )
             macro_bundle = get_macro_context(
-                symbol, sector, industry=industry_label, metadata=company_meta,
+                symbol, macro_sector_label, industry=industry_label, metadata=company_meta,
                 cache_store=macro_context_col
             )
             macro_facts = format_macro_context(macro_bundle)
