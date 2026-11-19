@@ -728,9 +728,9 @@ def _industry_context_indicators(industry, sector):
     # newly added/unseen classifications to retain useful context without
     # pretending that a national aggregate is a direct sector observation.
     baseline = [
-        ("INDUSTRY_VALUE_ADDED_GROWTH", "NV.IND.TOTL.KD.ZG", "Industry value added growth (annual %)"),
-        ("SERVICES_VALUE_ADDED_GROWTH", "NV.SRV.TETC.KD.ZG", "Services value added growth (annual %)"),
-        ("GROSS_CAPITAL_FORMATION", "NE.GDI.FTOT.ZS", "Gross capital formation (% of GDP)"),
+        ("NV.IND.TOTL.KD.ZG", "Industry value added growth (annual %)"),
+        ("NV.SRV.TETC.KD.ZG", "Services value added growth (annual %)"),
+        ("NE.GDI.FTOT.ZS", "Gross capital formation (% of GDP)"),
     ]
     if not label:
         return baseline
