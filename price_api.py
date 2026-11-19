@@ -1511,6 +1511,127 @@ threading.Thread(
     daemon=True
 ).start()
 
+# Báo cáo độ phủ nguồn macro có API quản trị riêng; không công khai dữ liệu nội bộ.
+_macro_manual_refresh_lock = threading.RLock()
+_macro_manual_refresh_state = {
+    "status": "idle",
+    "started_at": None,
+    "finished_at": None,
+    "message": "Chưa chạy cập nhật macro thủ công",
+    "result": None,
+    "error": None,
+}
+
+
+@app.get("/api/admin/macro-coverage")
+def admin_macro_coverage():
+    if not _admin_key_valid():
+        return jsonify({"status": "error", "message": "Sai mật khẩu Admin!"}), 403
+    try:
+        stored = macro_context_col.find_one(
+            {"_id": "MACRO_COVERAGE_REPORT"}, {"_id": 0}
+        ) or {}
+        with _macro_manual_refresh_lock:
+            job = dict(_macro_manual_refresh_state)
+        return jsonify({
+            "status": "success",
+            "report": stored.get("payload"),
+            "report_updated_at": stored.get("updated_at"),
+            "refresh_job": job,
+        })
+    except Exception as exc:
+        log_exception("[MACRO COVERAGE API]", exc)
+        return jsonify({"status": "error", "message": "Không đọc được báo cáo độ phủ macro."}), 500
+
+
+@app.post("/api/admin/macro-refresh")
+def admin_macro_refresh():
+    if not _admin_key_valid():
+        return jsonify({"status": "error", "message": "Sai mật khẩu Admin!"}), 403
+    with _macro_manual_refresh_lock:
+        if _macro_manual_refresh_state.get("status") == "running":
+            return jsonify({"status": "busy", "message": "Tác vụ cập nhật macro đang chạy."}), 409
+        _macro_manual_refresh_state.update({
+            "status": "running",
+            "started_at": _now_str(),
+            "finished_at": None,
+            "message": "Đang thu thập dữ liệu macro và độ phủ từng ngành",
+            "result": None,
+            "error": None,
+        })
+
+    def _run_macro_refresh():
+        try:
+            labels = set()
+            projection = {
+                "symbol": 1, "sector": 1, "sub_sector": 1, "subSector": 1,
+                "industry": 1, "industry_name": 1, "industryName": 1,
+                "icb_name": 1, "icbName": 1,
+                "sector_name": 1, "sectorName": 1,
+            }
+            docs = list(collection.find({}, projection))
+            docs.extend(list(screener_col.find({}, projection)))
+            unclassified = set()
+            for doc in docs:
+                symbol = str(doc.get("symbol", "")).upper().strip()
+                if not symbol:
+                    continue
+                meta = VN100_METADATA.get(symbol, {})
+                sector = (
+                    doc.get("sector_name") or doc.get("sectorName")
+                    or meta.get("sector_name") or meta.get("sectorName")
+                    or doc.get("sector") or meta.get("sector")
+                )
+                industry = (
+                    meta.get("industry") or meta.get("industry_name") or meta.get("industryName")
+                    or meta.get("icb_name") or meta.get("icbName")
+                    or doc.get("industry") or doc.get("industry_name")
+                    or doc.get("industryName") or doc.get("icb_name")
+                    or doc.get("icbName") or doc.get("sub_sector")
+                    or doc.get("subSector") or sector
+                )
+                if industry or sector:
+                    labels.add((str(industry or sector), str(sector or "")))
+                else:
+                    unclassified.add(symbol)
+
+            result = refresh_macro_contexts(
+                sorted(labels), cache_store=macro_context_col, force_refresh=True
+            )
+            result["unclassified_symbol_count"] = len(unclassified)
+            with _macro_manual_refresh_lock:
+                _macro_manual_refresh_state.update({
+                    "status": "success",
+                    "finished_at": _now_str(),
+                    "message": "Đã cập nhật xong dữ liệu macro và báo cáo độ phủ",
+                    "result": result,
+                    "error": None,
+                })
+            logger.info(
+                "[MACRO MANUAL] Hoàn tất | nhóm=%s | facts=%s | mã chưa phân loại=%s",
+                len(result.get("industries", {})),
+                result.get("global_facts", 0),
+                len(unclassified),
+            )
+        except Exception as exc:
+            log_exception("[MACRO MANUAL REFRESH]", exc)
+            with _macro_manual_refresh_lock:
+                _macro_manual_refresh_state.update({
+                    "status": "error",
+                    "finished_at": _now_str(),
+                    "message": "Cập nhật macro thất bại",
+                    "error": type(exc).__name__,
+                })
+
+    threading.Thread(
+        target=_run_macro_refresh, name="macro-manual-refresh", daemon=True
+    ).start()
+    return jsonify({
+        "status": "accepted",
+        "message": "Đã đưa tác vụ cập nhật macro vào nền. Theo dõi tại /api/admin/macro-coverage.",
+    }), 202
+
+
 # FIX BUG #5: normalize_stock_data không ghi DB, trả update_fields cho caller
 def normalize_stock_data(symbol, data):
     """
