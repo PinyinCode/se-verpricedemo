@@ -440,20 +440,27 @@ def _fetch_nso_search_pack(searches, category_prefix, per_query=3, limit=24):
             if not isinstance(item, dict):
                 continue
             url = item.get("url") or item.get("link")
-            if not url or not str(url).startswith(("https://", "http://")) or url in seen:
+            category_key = category_prefix + category
+            candidate_key = (url, category_key)
+            if not url or not str(url).startswith(("https://", "http://")) or candidate_key in seen:
                 continue
-            seen.add(url)
-            candidates.append((category_prefix + category, query, item))
-    # Fetch the newest discovery results first; API order is relevance, so sort
-    # by API date when available and otherwise preserve the source ranking.
+            seen.add(candidate_key)
+            candidates.append((category_key, query, item))
+    # Keep one URL under multiple candidate categories until content validation
+    # decides which category is actually supported by the article.
     candidates.sort(key=lambda row: str(row[2].get("date") or row[2].get("modified") or ""), reverse=True)
     facts = []
+    accepted_urls = set()
     article_errors = 0
-    for category, query, item in candidates[:limit]:
+    for category, query, item in candidates:
+        url = item.get("url") or item.get("link")
+        if url in accepted_urls or len(facts) >= limit:
+            continue
         fact = _fetch_nso_publication(item, category, query)
         if fact and fact.get("excerpt") and not fact.get("error"):
             facts.append(fact)
-        elif fact:
+            accepted_urls.add(url)
+        elif fact and fact.get("error"):
             article_errors += 1
 
     if diagnostics:
