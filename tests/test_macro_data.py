@@ -279,7 +279,7 @@ class MacroDataTests(unittest.TestCase):
         bank = macro_data._industry_context_indicators("Ngân hàng", None)
         agriculture = macro_data._industry_context_indicators("Nông nghiệp", None)
         manufacturing = macro_data._industry_context_indicators("Thép và vật liệu", None)
-        self.assertIn("FS.AST.PRVT.GD.ZS", [item[1] for item in bank])
+        self.assertIn("FD.AST.PRVT.GD.ZS", [item[1] for item in bank])
         self.assertIn("NV.AGR.TOTL.KD.ZG", [item[1] for item in agriculture])
         self.assertIn("AG.YLD.CREL.KG", [item[1] for item in agriculture])
         self.assertIn("NV.IND.TOTL.KD.ZG", [item[1] for item in manufacturing])
