@@ -68,6 +68,24 @@ class MacroDataTests(unittest.TestCase):
             [item[1] for item in macro_data._industry_context_indicators("NGAN_HANG", None)],
         )
 
+    def test_macro_category_gate_rejects_unrelated_publications(self):
+        self.assertTrue(macro_data._macro_category_matches_article(
+            "IIP", "Chỉ số sản xuất công nghiệp tháng 10 năm 2026",
+            "Sản xuất công nghiệp tăng 8,2%."
+        ))
+        self.assertFalse(macro_data._macro_category_matches_article(
+            "IIP", "Nhập khẩu tăng cao hơn xuất khẩu",
+            "Kim ngạch nhập khẩu tăng 12%."
+        ))
+        self.assertFalse(macro_data._macro_category_matches_article(
+            "CONSTRUCTION", "Chiến lược phát triển thống kê",
+            "Ứng dụng dữ liệu lớn trong thống kê."
+        ))
+        self.assertTrue(macro_data._macro_category_matches_article(
+            "EXCHANGE_RATE", "Tỷ giá của đồng Việt Nam với đô la Mỹ",
+            "Tỷ giá bình quân liên ngân hàng."
+        ))
+
     def test_industry_article_requires_sector_match_and_quantitative_evidence(self):
         self.assertTrue(macro_data._industry_query_matches_article(
             "ngân hàng giá nguyên liệu",
