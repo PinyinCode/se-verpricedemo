@@ -66,10 +66,14 @@ GENERAL_PUBLICATION_QUERIES = (
 # Generic dimensions applied to every industry label discovered from live company
 # metadata. No ticker allow-list or sector-to-query mapping is maintained.
 INDUSTRY_QUERY_DIMENSIONS = (
-    "sản lượng sản xuất công suất hoạt động",
-    "giá bán giá nguyên liệu chi phí đầu vào",
-    "doanh thu tiêu thụ nhu cầu thị trường",
-    "xuất khẩu nhập khẩu chính sách đầu tư",
+    ("INDUSTRY_OUTPUT", "sản lượng sản xuất công suất hoạt động"),
+    ("INDUSTRY_PRICING", "giá bán giá nguyên liệu chi phí đầu vào biên lợi nhuận"),
+    ("INDUSTRY_DEMAND", "doanh thu tiêu thụ nhu cầu thị trường đơn hàng"),
+    ("INDUSTRY_TRADE", "xuất khẩu nhập khẩu thị trường quốc tế"),
+    ("INDUSTRY_CAPEX", "đầu tư mở rộng công suất dự án"),
+    ("INDUSTRY_INVENTORY", "tồn kho hàng tồn kho nguyên vật liệu"),
+    ("INDUSTRY_POLICY", "quy định chính sách pháp lý thuế"),
+    ("INDUSTRY_LABOUR", "lao động tiền lương nhân công"),
 )
 
 
@@ -214,6 +218,22 @@ def _article_date(parser, api_item=None):
     return _parse_date(match.group(1)) if match else None
 
 
+def _extract_reference_period(text):
+    """Extract an explicitly stated statistical reference period, not publication date."""
+    value = re.sub(r"\\s+", " ", str(text or "")).strip()
+    patterns = (
+        (r"(\\d{1,2})\\s*tháng\\s*(?:đầu\\s*)?(?:năm\\s*)?(\\d{4})", lambda m: f"{m.group(1)} tháng năm {m.group(2)}"),
+        (r"quý\\s*([1-4ivx]+)\\s*(?:năm|/)\\s*(\\d{4})", lambda m: f"Q{m.group(1).upper()}-{m.group(2)}"),
+        (r"tháng\\s*(\\d{1,2})\\s*[/\\-]\\s*(\\d{4})", lambda m: f"{m.group(1)}-{m.group(2)}"),
+        (r"năm\\s*(\\d{4})", lambda m: m.group(1)),
+    )
+    for pattern, formatter in patterns:
+        match = re.search(pattern, value, re.I)
+        if match:
+            return formatter(match)
+    return None
+
+
 def _discover_nso_publications(query, per_page=4):
     """Discover current NSO publications from its public WordPress search API."""
     try:
@@ -258,7 +278,7 @@ def _fetch_nso_publication(item, category, query):
             "query": query,
             "published_at": published,
             "publication_age_days": age_days,
-            "period_or_date": "Chưa xác định kỳ tham chiếu từ metadata",
+            "period_or_date": _extract_reference_period(title + " " + body) or "Chưa xác định kỳ tham chiếu từ metadata",
             "excerpt": excerpt,
             "source": url,
             "source_name": "Cục Thống kê Việt Nam",
@@ -476,14 +496,14 @@ def _fetch_world_bank_facts():
 
 
 def _industry_queries(industry, sector):
-    """Build discovery searches from live industry labels, not a static sector map.
+    """Build categorized discovery searches from live issuer/industry metadata.
 
-    Generic dimensions are applied uniformly to every label. The industry name
-    itself comes from issuer metadata in MongoDB/source profiles.
+    The same metric dimensions are applied to every discovered industry label;
+    no ticker-to-sector rules or fabricated sector observations are used.
     """
     labels = []
     for value in (industry, sector):
-        label = re.sub(r"\s+", " ", str(value or "")).strip()
+        label = re.sub(r"\\s+", " ", str(value or "")).strip()
         if label and label.casefold() not in ("unknown", "none", "n/a", "unclassified"):
             if label.casefold() not in {item.casefold() for item in labels}:
                 labels.append(label)
@@ -492,22 +512,22 @@ def _industry_queries(industry, sector):
         return []
 
     primary = labels[0]
-    queries = [f'"{primary}" Việt Nam dữ liệu ngành']
+    queries = [("INDUSTRY_OVERVIEW", f'"{primary}" Việt Nam dữ liệu ngành')]
     queries.extend(
-        f'"{primary}" Việt Nam {dimension}'
-        for dimension in INDUSTRY_QUERY_DIMENSIONS
+        (category, f'"{primary}" Việt Nam {dimension}')
+        for category, dimension in INDUSTRY_QUERY_DIMENSIONS
     )
     if len(labels) > 1:
-        queries.append(f'"{labels[1]}" Việt Nam {primary} ngành')
+        queries.append(("INDUSTRY_CLASSIFICATION", f'"{labels[1]}" Việt Nam "{primary}" ngành'))
 
     deduped = []
     seen = set()
-    for query in queries:
-        normalized = re.sub(r"\s+", " ", query).strip()
+    for category, query in queries:
+        normalized = re.sub(r"\\s+", " ", query).strip()
         if normalized and normalized.casefold() not in seen:
             seen.add(normalized.casefold())
-            deduped.append(normalized)
-    return [("INDUSTRY_DISCOVERY", query) for query in deduped[:5]]
+            deduped.append((category, normalized))
+    return deduped[:9]
 
 
 def _fetch_industry_pack(industry, sector):
@@ -734,6 +754,7 @@ def refresh_macro_contexts(industry_labels, cache_store=None, force_refresh=True
     refreshed["refreshed_at"] = _now_iso()
 
     # Persist one compact audit document alongside per-industry source caches.
+    refreshed["coverage_report_persisted"] = False
     if cache_store is not None:
         try:
             report = {
@@ -751,8 +772,9 @@ def refresh_macro_contexts(industry_labels, cache_store=None, force_refresh=True
                 }},
                 upsert=True,
             )
-        except Exception:
-            pass
+            refreshed["coverage_report_persisted"] = True
+        except Exception as exc:
+            refreshed["coverage_report_error"] = type(exc).__name__
     return refreshed
 
 
