@@ -523,6 +523,71 @@ def _fetch_industry_pack(industry, sector):
     return facts, warnings
 
 
+def _summarize_industry_coverage(industry, pack):
+    """Create an auditable coverage summary without treating missing dates as fresh."""
+    facts = [fact for fact in (pack or {}).get("facts", []) if isinstance(fact, dict)]
+    warnings = list((pack or {}).get("warnings") or [])
+    sources = sorted({
+        str(fact.get("source_name") or fact.get("source") or "").strip()
+        for fact in facts
+        if fact.get("source_name") or fact.get("source")
+    })
+    freshness_counts = {}
+    for fact in facts:
+        label = str(fact.get("freshness") or "UNKNOWN").upper()
+        freshness_counts[label] = freshness_counts.get(label, 0) + 1
+
+    dated_facts = sum(
+        1 for fact in facts
+        if fact.get("published_at") or (
+            fact.get("period_or_date")
+            and str(fact.get("period_or_date")).casefold() not in (
+                "chưa xác định kỳ tham chiếu từ metadata", "không rõ", "unknown"
+            )
+        )
+    )
+    stale_facts = freshness_counts.get("STALE_PUBLICATION", 0)
+    verified_facts = sum(
+        freshness_counts.get(key, 0)
+        for key in ("RECENT_PUBLICATION", "OBSERVATION_PERIOD_VERIFIED", "ANNUAL_SERIES")
+    )
+    if not facts:
+        status = "MISSING"
+    elif stale_facts == len(facts):
+        status = "STALE"
+    elif verified_facts:
+        status = "COVERED"
+    else:
+        status = "PARTIAL"
+
+    periods = sorted({
+        str(fact.get("period_or_date")).strip()
+        for fact in facts
+        if fact.get("period_or_date")
+        and str(fact.get("period_or_date")).casefold() not in (
+            "chưa xác định kỳ tham chiếu từ metadata", "không rõ", "unknown"
+        )
+    })
+    published_dates = sorted({
+        str(fact.get("published_at")).strip()
+        for fact in facts if fact.get("published_at")
+    })
+    return {
+        "industry": str(industry or "Chưa phân loại"),
+        "status": status,
+        "fact_count": len(facts),
+        "source_count": len(sources),
+        "sources": sources,
+        "dated_fact_count": dated_facts,
+        "stale_fact_count": stale_facts,
+        "verified_fact_count": verified_facts,
+        "freshness_counts": freshness_counts,
+        "reference_periods": periods[-8:],
+        "latest_publication_date": published_dates[-1] if published_dates else None,
+        "warnings": warnings[:12],
+    }
+
+
 def _get_cached_bundle(cache_key, fetcher, force_refresh=False, cache_store=None):
     # Per-key lock prevents 100 parallel symbol analyses from stampeding the
     # same public API while preserving concurrency between distinct industries.
@@ -629,6 +694,7 @@ def refresh_macro_contexts(industry_labels, cache_store=None, force_refresh=True
     refreshed = {
         "global_facts": len(global_pack.get("facts") or []),
         "industries": {},
+        "industry_coverage": [],
     }
     seen = set()
     for item in industry_labels or []:
@@ -637,7 +703,8 @@ def refresh_macro_contexts(industry_labels, cache_store=None, force_refresh=True
             sector = item[1] if len(item) > 1 else None
         else:
             industry, sector = item, None
-        normalized = re.sub(r"\s+", " ", str(industry or sector or "UNCLASSIFIED")).strip().casefold()
+        label = industry or sector
+        normalized = re.sub(r"\s+", " ", str(label or "UNCLASSIFIED")).strip().casefold()
         if not normalized or normalized in seen:
             continue
         seen.add(normalized)
@@ -652,7 +719,40 @@ def refresh_macro_contexts(industry_labels, cache_store=None, force_refresh=True
             cache_store=cache_store,
         )
         refreshed["industries"][normalized] = len(pack.get("facts") or [])
+        refreshed["industry_coverage"].append(
+            _summarize_industry_coverage(label, pack)
+        )
+
+    statuses = [item["status"] for item in refreshed["industry_coverage"]]
+    refreshed["coverage"] = {
+        "industry_count": len(statuses),
+        "covered_industries": statuses.count("COVERED"),
+        "partial_industries": statuses.count("PARTIAL"),
+        "missing_industries": statuses.count("MISSING"),
+        "stale_industries": statuses.count("STALE"),
+    }
     refreshed["refreshed_at"] = _now_iso()
+
+    # Persist one compact audit document alongside per-industry source caches.
+    if cache_store is not None:
+        try:
+            report = {
+                "generated_at": refreshed["refreshed_at"],
+                "global_fact_count": refreshed["global_facts"],
+                "coverage": refreshed["coverage"],
+                "industries": refreshed["industry_coverage"],
+            }
+            cache_store.update_one(
+                {"_id": "MACRO_COVERAGE_REPORT"},
+                {"$set": {
+                    "payload": report,
+                    "fetched_epoch": time.time(),
+                    "updated_at": refreshed["refreshed_at"],
+                }},
+                upsert=True,
+            )
+        except Exception:
+            pass
     return refreshed
 
 
