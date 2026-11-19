@@ -16,7 +16,6 @@ input int MaxLegacySignalAgeSeconds = 300;
 
 datetime g_lastHeartbeat = 0;
 datetime g_lastPoll = 0;
-string g_lastSignalId = "";
 string g_lastLegacySignature = "";
 
 string JsonValue(string json, string key)
@@ -74,12 +73,13 @@ void SendHeartbeat()
    g_lastHeartbeat=TimeCurrent();
 }
 
-void AckSignal(string id,string result,string message)
+bool AckSignal(string id,string result,string message)
 {
    string response; int status;
    string body="{\"signal_id\":\""+id+"\",\"status\":\""+result+"\",\"message\":\""+message+"\"}";
-   if(!HttpRequest("POST","/api/mt5/ack",body,response,status))
-      Print("[SERVER] Ack failed. HTTP=",status," response=",response);
+   bool ok=HttpRequest("POST","/api/mt5/ack",body,response,status);
+   if(!ok) Print("[SERVER] Ack failed. HTTP=",status," response=",response);
+   return ok;
 }
 
 void ImportLegacyDivergenceSignal()
@@ -148,7 +148,6 @@ void PollSignal()
       Print("[SERVER] Invalid signal payload: ",response);
       return;
    }
-   if(id==g_lastSignalId) return;
    double entryPrice=StringToDouble(entry), slPrice=StringToDouble(sl);
    bool valid=(entryPrice>0 && slPrice>0 &&
       ((direction=="BUY" && slPrice<entryPrice) || (direction=="SELL" && slPrice>entryPrice)));
