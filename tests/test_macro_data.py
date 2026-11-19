@@ -1,7 +1,22 @@
 import unittest
-from datetime import datetime, timezone
 
 import macro_data
+
+
+class _FakeCache:
+    def __init__(self):
+        self.docs = {}
+
+    def find_one(self, query):
+        return self.docs.get(query.get("_id"))
+
+    def update_one(self, query, update, upsert=False):
+        key = query["_id"]
+        self.docs[key] = {
+            "_id": key,
+            "payload": update["$set"]["payload"],
+            "fetched_epoch": update["$set"]["fetched_epoch"],
+        }
 
 
 class MacroDataTests(unittest.TestCase):
@@ -70,6 +85,35 @@ class MacroDataTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(first, second)
         macro_data._CACHE.pop(key, None)
+
+    def test_scheduled_refresh_builds_global_and_each_distinct_industry_once(self):
+        original_global = macro_data._fetch_global_bundle
+        original_industry = macro_data._fetch_industry_pack
+        cache = _FakeCache()
+        calls = []
+        try:
+            macro_data._fetch_global_bundle = lambda: {
+                "facts": [{"title": "macro"}], "warnings": []
+            }
+            def fake_industry(industry, sector):
+                calls.append(industry)
+                return ([{"title": industry}], [])
+            macro_data._fetch_industry_pack = fake_industry
+            result = macro_data.refresh_macro_contexts(
+                [("Thép", "MATERIALS"), ("Thép", "MATERIALS"), ("Ngân hàng", "BANK")],
+                cache_store=cache,
+                force_refresh=True,
+            )
+            self.assertEqual(result["global_facts"], 1)
+            self.assertEqual(len(result["industries"]), 2)
+            self.assertEqual(len(calls), 2)
+            self.assertIn("GLOBAL_VIETNAM_MACRO", cache.docs)
+        finally:
+            macro_data._fetch_global_bundle = original_global
+            macro_data._fetch_industry_pack = original_industry
+            for key in list(macro_data._CACHE):
+                if key == "GLOBAL_VIETNAM_MACRO" or key.startswith("INDUSTRY:"):
+                    macro_data._CACHE.pop(key, None)
 
 
 if __name__ == "__main__":
