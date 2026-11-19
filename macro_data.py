@@ -801,23 +801,20 @@ def _industry_context_indicators(industry, sector):
     return [(title.upper().replace(" ", "_"), code, title) for code, title in selected]
 
 def _fetch_industry_pack(industry, sector):
-    searches = _industry_queries(industry, sector)
-    if not searches:
-        return [], ["Không có phân loại ngành doanh nghiệp; chỉ áp dụng dữ liệu vĩ mô chung."]
-    facts, warnings = _fetch_nso_search_pack(
-        searches, category_prefix="", per_query=2, limit=MAX_INDUSTRY_FACTS
-    )
-    context_indicators = _industry_context_indicators(industry, sector)
-    context_facts, context_warnings = _fetch_world_bank_facts(context_indicators) if context_indicators else ([], [])
+    """Fetch only available World Bank indicators as broad sector context.
+
+    NSO industry search results are not consistently sector-specific or
+    period-verifiable. World Bank observations remain CONTEXTUAL, never direct.
+    """
+    indicators = _industry_context_indicators(industry, sector)
+    facts, warnings = _fetch_world_bank_facts(indicators) if indicators else ([], [])
     for fact in facts:
-        fact["industry_classification"] = industry or sector
-        fact.setdefault("evidence_scope", "INDUSTRY_DIRECT_CANDIDATE")
-        fact.setdefault("directness", "DIRECT_CANDIDATE")
-    for fact in context_facts:
         fact["industry_classification"] = industry or sector
         fact["evidence_scope"] = "INDUSTRY_CONTEXT"
         fact["directness"] = "CONTEXTUAL"
-    return facts + context_facts, warnings + context_warnings
+    if not facts:
+        warnings.insert(0, "Chưa lấy được dữ liệu ngành khả dụng từ World Bank; không có dữ liệu trực tiếp thay thế.")
+    return facts, warnings
 
 
 def _summarize_industry_coverage(industry, pack):
@@ -943,16 +940,16 @@ def _get_cached_bundle(cache_key, fetcher, force_refresh=False, cache_store=None
 
 
 def _fetch_global_bundle():
+    """Use readable NSO publications and World Bank observations; skip unstable NSDP crawling."""
     nso_facts, nso_warnings = _fetch_nso_search_pack(
-        GENERAL_PUBLICATION_QUERIES, category_prefix="", per_query=3,
+        GENERAL_PUBLICATION_QUERIES, category_prefix="", per_query=2,
         limit=MAX_GENERAL_FACTS
     )
-    nsdp_facts, nsdp_warnings = _fetch_nsdp_sdmx_facts()
     wb_facts, wb_warnings = _fetch_world_bank_facts()
     return {
         "scope": "GLOBAL_VIETNAM_MACRO",
-        "facts": nso_facts + nsdp_facts + wb_facts,
-        "warnings": nso_warnings + nsdp_warnings + wb_warnings,
+        "facts": nso_facts + wb_facts,
+        "warnings": nso_warnings + wb_warnings,
     }
 
 
