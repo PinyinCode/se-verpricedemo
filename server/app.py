@@ -128,9 +128,17 @@ def create_signal(payload: SignalIn):
         payload.direction == "SELL" and payload.sl <= payload.entry
     ):
         raise HTTPException(status_code=422, detail="SL phải nằm đúng phía so với entry")
-    signal_id = secrets.token_hex(12)
     created = utc_now()
     with db() as conn:
+        if payload.source.startswith("div-"):
+            existing = conn.execute(
+                "SELECT id,status,created_at FROM signals WHERE source=?",
+                (payload.source,),
+            ).fetchone()
+            if existing:
+                return {"ok": True, "duplicate": True, "signal_id": existing["id"],
+                        "status": existing["status"], "created_at": existing["created_at"]}
+        signal_id = secrets.token_hex(12)
         conn.execute(
             "INSERT INTO signals(id,symbol,timeframe,direction,entry,sl,score,source,status,created_at) "
             "VALUES(?,?,?,?,?,?,?,?,?,?)",
