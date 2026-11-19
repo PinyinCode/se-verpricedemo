@@ -369,3 +369,5 @@ class MacroDataTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+# CI verification branch: exercises the macro quality-gate regression suite.
