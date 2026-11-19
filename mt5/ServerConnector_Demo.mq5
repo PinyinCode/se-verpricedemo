@@ -6,7 +6,7 @@
 #property strict
 #property version "1.00"
 
-input string ServerBaseURL = "http://127.0.0.1:8000";
+input string ServerBaseURL = "https://forex-ai-server-demo.onrender.com";
 input string ApiKey = "SET_A_LONG_RANDOM_API_KEY";
 input string ConsumerId = "mt5-demo-vps";
 input int PollSeconds = 3;
@@ -69,8 +69,10 @@ void SendHeartbeat()
 {
    string response; int status;
    string body="{\"component\":\"MT5-Connector\",\"status\":\"online\",\"details\":\"Demo connector active; no live trading\"}";
-   HttpRequest("POST","/api/heartbeat",body,response,status);
-   g_lastHeartbeat=TimeCurrent();
+   if(HttpRequest("POST","/api/heartbeat",body,response,status))
+      g_lastHeartbeat=TimeCurrent();
+   else
+      Print("[SERVER] Heartbeat failed. HTTP=",status," response=",response);
 }
 
 bool AckSignal(string id,string result,string message)
@@ -156,7 +158,6 @@ void PollSignal()
       AckSignal(id,"REJECTED","Invalid entry/SL geometry");
       return;
    }
-   g_lastSignalId=id;
    Print("[PAPER SIGNAL] ",symbol," ",tf," ",direction,
          " entry=",DoubleToString(entryPrice,8)," SL=",DoubleToString(slPrice,8),
          " id=",id," created=",created);
