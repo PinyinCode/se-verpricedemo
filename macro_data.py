@@ -614,14 +614,15 @@ def _industry_queries(industry, sector):
     # Database classifications may be compact enum keys (e.g. AGRI). Search
     # with Vietnamese sector vocabulary instead of sending the enum to NSO.
     search_label = INDUSTRY_SEARCH_LABELS.get(primary.strip().upper(), primary)
-    queries = [("INDUSTRY_OVERVIEW", f'{search_label} Việt Nam')]
+    queries = [("INDUSTRY_OVERVIEW", search_label)]
+    dimension_limit = 7 if len(labels) > 1 else len(INDUSTRY_QUERY_DIMENSIONS)
     queries.extend(
-        (category, f'{search_label} Việt Nam {dimension}')
-        for category, dimension in INDUSTRY_QUERY_DIMENSIONS
+        (category, f'{search_label} {dimension}')
+        for category, dimension in INDUSTRY_QUERY_DIMENSIONS[:dimension_limit]
     )
     if len(labels) > 1:
         secondary = INDUSTRY_SEARCH_LABELS.get(labels[1].strip().upper(), labels[1])
-        queries.append(("INDUSTRY_CLASSIFICATION", f'{secondary} Việt Nam {search_label} ngành'))
+        queries.append(("INDUSTRY_CLASSIFICATION", f'{secondary} {search_label}'))
 
     deduped = []
     seen = set()
