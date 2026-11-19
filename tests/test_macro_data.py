@@ -337,6 +337,24 @@ class MacroDataTests(unittest.TestCase):
         self.assertEqual(first, second)
         macro_data._CACHE.pop(key, None)
 
+    def test_industry_pack_uses_only_available_world_bank_context(self):
+        def fake_world_bank(indicators):
+            return ([{
+                "category": "GDP_GROWTH", "title": "GDP growth",
+                "period_or_date": "2024", "excerpt": "GDP growth: 5.2 (2024)",
+                "source": "https://api.worldbank.org/example",
+                "source_name": "World Bank", "freshness": "ANNUAL_SERIES",
+                "quantitative_evidence": True,
+            }], [])
+        with patch.object(macro_data, "_fetch_nso_search_pack",
+                          side_effect=AssertionError("industry NSO scraping must not run")), \
+             patch.object(macro_data, "_fetch_world_bank_facts", side_effect=fake_world_bank):
+            facts, warnings = macro_data._fetch_industry_pack("Ngân hàng", "Tài chính")
+        self.assertEqual(len(facts), 1)
+        self.assertEqual(facts[0]["directness"], "CONTEXTUAL")
+        self.assertEqual(facts[0]["evidence_scope"], "INDUSTRY_CONTEXT")
+        self.assertEqual(warnings, [])
+
     def test_industry_coverage_report_distinguishes_missing_stale_and_verified(self):
         missing = macro_data._summarize_industry_coverage("Giáo dục", {"facts": [], "warnings": ["Không có nguồn"]})
         stale = macro_data._summarize_industry_coverage("Dệt may", {"facts": [{
