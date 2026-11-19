@@ -49,6 +49,23 @@ class MacroDataTests(unittest.TestCase):
         self.assertTrue(new_sector)
         self.assertTrue(all("Dịch vụ giáo dục" in q for _, q in new_sector))
 
+    def test_internal_industry_codes_expand_to_vietnamese_search_terms(self):
+        agriculture = macro_data._industry_queries("AGRI", None)
+        banks = macro_data._industry_queries("NGAN_HANG", None)
+        property = macro_data._industry_queries("BAT_DONG_SAN", None)
+        self.assertTrue(all("AGRI" not in query for _, query in agriculture))
+        self.assertTrue(any("nông nghiệp" in query for _, query in agriculture))
+        self.assertTrue(any("ngân hàng" in query for _, query in banks))
+        self.assertTrue(any("bất động sản" in query for _, query in property))
+        self.assertIn(
+            "NV.AGR.TOTL.KD.ZG",
+            [item[1] for item in macro_data._industry_context_indicators("AGRI", None)],
+        )
+        self.assertIn(
+            "NV.SRV.TETC.KD.ZG",
+            [item[1] for item in macro_data._industry_context_indicators("NGAN_HANG", None)],
+        )
+
     def test_quantitative_evidence_requires_a_value_and_measurement_unit(self):
         self.assertFalse(macro_data._has_quantitative_evidence("Báo cáo năm 2026"))
         self.assertFalse(macro_data._has_quantitative_evidence("Công bố ngày 19/11/2026"))
