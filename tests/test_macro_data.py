@@ -114,6 +114,24 @@ class MacroDataTests(unittest.TestCase):
         self.assertEqual(first, second)
         macro_data._CACHE.pop(key, None)
 
+    def test_industry_coverage_report_distinguishes_missing_stale_and_verified(self):
+        missing = macro_data._summarize_industry_coverage("Giáo dục", {"facts": [], "warnings": ["Không có nguồn"]})
+        stale = macro_data._summarize_industry_coverage("Dệt may", {"facts": [{
+            "source": "https://example.test/old", "source_name": "Nguồn A",
+            "freshness": "STALE_PUBLICATION", "published_at": "2024-01-01",
+            "period_or_date": "2023",
+        }]})
+        covered = macro_data._summarize_industry_coverage("Ngân hàng", {"facts": [{
+            "source": "https://example.test/new", "source_name": "Nguồn B",
+            "freshness": "OBSERVATION_PERIOD_VERIFIED",
+            "period_or_date": "2026-10",
+        }]})
+        self.assertEqual(missing["status"], "MISSING")
+        self.assertEqual(stale["status"], "STALE")
+        self.assertEqual(covered["status"], "COVERED")
+        self.assertEqual(covered["source_count"], 1)
+        self.assertEqual(covered["dated_fact_count"], 1)
+
     def test_scheduled_refresh_builds_global_and_each_distinct_industry_once(self):
         original_global = macro_data._fetch_global_bundle
         original_industry = macro_data._fetch_industry_pack
