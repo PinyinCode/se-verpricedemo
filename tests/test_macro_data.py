@@ -67,6 +67,36 @@ class MacroDataTests(unittest.TestCase):
         self.assertIn("https://www.nso.gov.vn/example", result)
         self.assertIn("Thiếu dữ liệu lãi suất", result)
 
+    def test_nsdp_parser_discovers_sdmx_download_links(self):
+        parser = macro_data._NSDPTableParser()
+        parser.feed(
+            '<table><tr><td>Interest Rates</td>'
+            '<td><a href="/rates.xml">Download in SDMX</a></td></tr></table>'
+        )
+        row = parser.rows[0]
+        self.assertEqual(row[0]["text"], "Interest Rates")
+        self.assertEqual(row[1]["links"][0]["href"], "/rates.xml")
+        self.assertEqual(macro_data._nsdp_category(row[0]["text"]), "INTEREST_RATE")
+
+    def test_sdmx_parser_extracts_latest_observations_and_series_key(self):
+        xml = b\'''<?xml version="1.0"?>
+        <StructureSpecificData xmlns="urn:test">
+          <DataSet>
+            <Series FREQ="M" REF_AREA="VNM" INDICATOR="CPI">
+              <Obs TIME_PERIOD="2026-09" OBS_VALUE="105.2"/>
+              <Obs TIME_PERIOD="2026-10" OBS_VALUE="105.8"/>
+            </Series>
+          </DataSet>
+        </StructureSpecificData>\'''
+        facts = macro_data._parse_sdmx_observations(
+            xml, "Consumer Price Index", "CPI", "https://example.test/cpi.xml"
+        )
+        self.assertEqual(len(facts), 1)
+        self.assertEqual(facts[0]["period_or_date"], "2026-10")
+        self.assertIn("FREQ=M", facts[0]["series_key"])
+        self.assertIn("2026-10: 105.8", facts[0]["excerpt"])
+        self.assertEqual(facts[0]["freshness"], "OBSERVATION_PERIOD_VERIFIED")
+
     def test_world_bank_indicator_catalog_has_unique_codes(self):
         codes = [item[1] for item in macro_data.WORLD_BANK_INDICATORS]
         self.assertEqual(len(codes), len(set(codes)))
