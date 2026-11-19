@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 import macro_data
 
@@ -89,6 +90,59 @@ class MacroDataTests(unittest.TestCase):
         self.assertIn("RECENT_PUBLICATION", result)
         self.assertIn("https://www.nso.gov.vn/example", result)
         self.assertIn("Thiếu dữ liệu lãi suất", result)
+
+    def test_nso_discovery_falls_back_to_wordpress_posts_endpoint(self):
+        class FakeResponse:
+            def __init__(self, payload):
+                self.payload = payload
+            def json(self):
+                return self.payload
+
+        calls = []
+        def fake_get(url, params=None):
+            calls.append(url)
+            if url == macro_data.NSO_SEARCH_URL:
+                return FakeResponse([])
+            return FakeResponse([{
+                "id": 7,
+                "date": "2026-11-18T08:00:00",
+                "link": "https://www.nso.gov.vn/example/",
+                "title": {"rendered": "Sản xuất công nghiệp tháng 10 năm 2026"},
+            }])
+
+        with patch.object(macro_data, "_get", side_effect=fake_get):
+            items = macro_data._discover_nso_publications("sản xuất công nghiệp")
+        self.assertEqual(len(items), 1)
+        self.assertIn("/wp-json/wp/v2/posts", calls[-1])
+
+    def test_nso_discovery_reports_endpoint_failures(self):
+        diagnostics = []
+        with patch.object(
+            macro_data, "_get",
+            side_effect=macro_data.requests.Timeout("timed out")
+        ):
+            items = macro_data._discover_nso_publications(
+                "ngành hàng không", diagnostics=diagnostics
+            )
+        self.assertEqual(items, [])
+        self.assertEqual(len(diagnostics), 1)
+        self.assertIn("timeout", diagnostics[0]["errors"][0])
+        self.assertIn("timeout", diagnostics[0]["errors"][1])
+
+    def test_nso_search_pack_does_not_count_unreadable_articles_as_facts(self):
+        with patch.object(
+            macro_data, "_discover_nso_publications",
+            return_value=[{"link": "https://www.nso.gov.vn/broken", "title": "Bài lỗi"}]
+        ), patch.object(
+            macro_data, "_fetch_nso_publication",
+            return_value={"error": "Không tải được bài nguồn (Timeout)."}
+        ):
+            facts, warnings = macro_data._fetch_nso_search_pack(
+                [("INDUSTRY_OUTPUT", "sản lượng")], "", per_query=1, limit=1
+            )
+        self.assertEqual(facts, [])
+        self.assertTrue(any("không tải/đọc được nội dung" in item for item in warnings))
+        self.assertTrue(any("không có bài thống kê đủ nội dung" in item for item in warnings))
 
     def test_nsdp_parser_discovers_sdmx_download_links(self):
         parser = macro_data._NSDPTableParser()
