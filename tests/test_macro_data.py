@@ -98,7 +98,7 @@ class MacroDataTests(unittest.TestCase):
         with patch.object(macro_data, "_get", return_value=FakeResponse()):
             fact = macro_data._fetch_nso_publication(
                 {"link": "https://www.nso.gov.vn/agri", "title": "Ngành nông nghiệp Việt Nam qua các thời kỳ"},
-                "INDUSTRY_OVERVIEW", "nông nghiệp"
+                "GDP", "nông nghiệp"
             )
         self.assertEqual(
             fact["period_or_date"],
