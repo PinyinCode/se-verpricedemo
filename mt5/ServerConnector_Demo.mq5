@@ -43,7 +43,7 @@ bool HttpRequest(string method,string path,string body,string &response,int &sta
 {
    char data[], result[];
    string headers = "X-API-Key: " + ApiKey + "\r\nContent-Type: application/json\r\n";
-   if(body != "") StringToCharArray(body,data,0,WHOLE_ARRAY,CP_UTF8);
+   if(body != "")\n   {\n      StringToCharArray(body,data,0,WHOLE_ARRAY,CP_UTF8);\n      int n=ArraySize(data);\n      if(n>0 && data[n-1]==0) ArrayResize(data,n-1);\n   }
    else ArrayResize(data,0);
    string responseHeaders;
    ResetLastError();
