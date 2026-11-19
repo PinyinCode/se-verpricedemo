@@ -279,10 +279,50 @@ class MacroDataTests(unittest.TestCase):
         bank = macro_data._industry_context_indicators("Ngân hàng", None)
         agriculture = macro_data._industry_context_indicators("Nông nghiệp", None)
         manufacturing = macro_data._industry_context_indicators("Thép và vật liệu", None)
-        self.assertIn("NV.SRV.TETC.KD.ZG", [item[1] for item in bank])
+        self.assertIn("FD.AST.PRVT.GD.ZS", [item[1] for item in bank])
         self.assertIn("NV.AGR.TOTL.KD.ZG", [item[1] for item in agriculture])
+        self.assertIn("AG.YLD.CREL.KG", [item[1] for item in agriculture])
         self.assertIn("NV.IND.TOTL.KD.ZG", [item[1] for item in manufacturing])
         self.assertIn("NV.IND.MANF.KD.ZG", [item[1] for item in manufacturing])
+
+    def test_vietnamese_d_character_is_normalized_for_sector_matching(self):
+        self.assertEqual(macro_data._normalize_industry_text("Bất động sản"), "bat dong san")
+        self.assertEqual(macro_data._normalize_industry_text("Điện nước"), "dien nuoc")
+        self.assertIn(
+            "NV.IND.CON.ZS",
+            [item[1] for item in macro_data._industry_context_indicators("Bất động sản", None)]
+        )
+        self.assertIn(
+            "EG.ELC.ACCS.ZS",
+            [item[1] for item in macro_data._industry_context_indicators("Điện nước", None)]
+        )
+
+    def test_sector_context_catalog_covers_multiple_live_industry_labels(self):
+        cases = {
+            "Hàng không": {"IS.AIR.PSGR"},
+            "Hàng hải": {"IS.SHP.GOOD.TU"},
+            "Dầu khí": {"TX.VAL.FUEL.ZS.UN"},
+            "Điện nước": {"EG.ELC.ACCS.ZS"},
+            "Bán lẻ": {"NE.CON.PRVT.KD.ZG"},
+            "Chứng khoán": {"CM.MKT.LCAP.GD.ZS"},
+            "Du lịch": {"ST.INT.ARVL"},
+            "Công nghệ": {"IT.NET.USER.ZS"},
+            "Bất động sản": {"NV.IND.CON.ZS"},
+        }
+        for label, expected in cases.items():
+            with self.subTest(industry=label):
+                actual = {item[1] for item in macro_data._industry_context_indicators(label, None)}
+                self.assertTrue(expected.issubset(actual))
+
+    def test_unknown_industry_receives_only_common_context_not_guessed_sector_data(self):
+        actual = {item[1] for item in macro_data._industry_context_indicators(
+            "Ngành mới chưa phân loại", None
+        )}
+        self.assertEqual(actual, {
+            "NV.IND.TOTL.KD.ZG",
+            "NV.SRV.TETC.KD.ZG",
+            "NE.GDI.FTOT.ZS",
+        })
 
     def test_shared_cache_fetches_once_per_key(self):
         key = "TEST_MACRO_CACHE"

@@ -701,32 +701,104 @@ def _industry_queries(industry, sector):
 def _normalize_industry_text(value):
     value = unicodedata.normalize("NFKD", str(value or "").casefold())
     value = "".join(ch for ch in value if not unicodedata.combining(ch))
+    # Vietnamese "đ" does not decompose under NFKD; normalize it explicitly.
+    value = value.replace("đ", "d")
     return re.sub(r"[^a-z0-9]+", " ", value).strip()
 
 
 def _industry_context_indicators(industry, sector):
-    """Select broad WDI context by live labels; never represent it as direct sector evidence."""
-    industry_label = str(industry or "").strip()
-    sector_label = str(sector or "").strip()
-    industry_label = INDUSTRY_SEARCH_LABELS.get(industry_label.upper(), industry_label)
-    sector_label = INDUSTRY_SEARCH_LABELS.get(sector_label.upper(), sector_label)
-    label = _normalize_industry_text(f"{industry_label} {sector_label}")
-    selected = []
-    groups = (
-        (("agri", "nong nghiep", "lam nghiep", "thuy san", "chan nuoi", "cay trong"),
-         ("AGRICULTURE_VALUE_ADDED_GROWTH", "NV.AGR.TOTL.KD.ZG", "Agriculture, forestry and fishing value added growth (annual %)")),
-        (("manufactur", "san xuat", "che bien", "thep", "vat lieu", "cong nghiep", "xay dung", "xay lap", "dau khi", "dien", "nuoc", "ha tang", "khai khoang"),
-         ("INDUSTRY_VALUE_ADDED_GROWTH", "NV.IND.TOTL.KD.ZG", "Industry value added growth (annual %)")),
-        (("thep", "det may", "san xuat", "che bien", "cong nghiep"),
-         ("MANUFACTURING_VALUE_ADDED_GROWTH", "NV.IND.MANF.KD.ZG", "Manufacturing value added growth (annual %)")),
-        (("ngan hang", "bao hiem", "chung khoan", "bat dong san", "ban le", "cong nghe", "vien thong", "hang khong", "van tai", "hang hai", "logistics", "dich vu", "du lich", "giao duc", "y te", "tai chinh"),
-         ("SERVICES_VALUE_ADDED_GROWTH", "NV.SRV.TETC.KD.ZG", "Services value added growth (annual %)")),
-    )
-    for aliases, indicator in groups:
-        if any(alias in label for alias in aliases) and indicator[1] not in {item[1] for item in selected}:
-            selected.append(indicator)
-    return selected
+    """Select World Bank sector context from live labels.
 
+    These are macro/sector proxies only: they are always tagged CONTEXTUAL and
+    must never be counted as issuer-level or direct industry observations.
+    The catalogue is indicator metadata, not stored observations. Unknown
+    labels receive no guessed sector mapping.
+    """
+    labels = []
+    for value in (industry, sector):
+        raw = str(value or "").strip()
+        if not raw:
+            continue
+        expanded = INDUSTRY_SEARCH_LABELS.get(raw.upper(), raw)
+        normalized = _normalize_industry_text(expanded)
+        if normalized and normalized not in labels:
+            labels.append(normalized)
+    label = " ".join(labels)
+    # Every industry receives a small common economic baseline. This allows
+    # newly added/unseen classifications to retain useful context without
+    # pretending that a national aggregate is a direct sector observation.
+    baseline = [
+        ("NV.IND.TOTL.KD.ZG", "Industry value added growth (annual %)"),
+        ("NV.SRV.TETC.KD.ZG", "Services value added growth (annual %)"),
+        ("NE.GDI.FTOT.ZS", "Gross capital formation (% of GDP)"),
+    ]
+    if not label:
+        return baseline
+
+    # (matching vocabulary, WDI code, human-readable indicator title)
+    # Codes refer to World Bank WDI/Global Financial Development datasets.
+    groups = (
+        (("nong nghiep", "agri", "lam nghiep", "thuy san", "chan nuoi", "cay trong"),
+         ("NV.AGR.TOTL.KD.ZG", "Agriculture, forestry and fishing value added growth (annual %)"),
+         ("NV.AGR.TOTL.ZS", "Agriculture, forestry and fishing value added (% of GDP)"),
+         ("AG.LND.AGRI.ZS", "Agricultural land (% of land area)"),
+         ("AG.YLD.CREL.KG", "Cereal yield (kg per hectare)")),
+        (("san xuat", "che bien", "manufactur", "thep", "vat lieu", "cong nghiep", "khai khoang"),
+         ("NV.IND.TOTL.KD.ZG", "Industry value added growth (annual %)"),
+         ("NV.IND.MANF.KD.ZG", "Manufacturing value added growth (annual %)"),
+         ("NV.IND.MANF.ZS", "Manufacturing, value added (% of GDP)")),
+        (("xay dung", "xay lap", "bat dong san", "nha o", "ha tang", "construction", "property"),
+         ("NV.IND.CON.ZS", "Construction, value added (% of GDP)"),
+         ("FD.AST.PRVT.GD.ZS", "Domestic credit to private sector by banks (% of GDP)")),
+        (("ngan hang", "tai chinh", "tin dung", "bank", "finance"),
+         ("NV.SRV.TETC.KD.ZG", "Services value added growth (annual %)"),
+         ("FD.AST.PRVT.GD.ZS", "Domestic credit to private sector by banks (% of GDP)"),
+         ("FB.BNK.CAPA.ZS", "Bank capital to assets ratio (%)"),
+         ("FR.INR.LEND", "Lending interest rate (%)")),
+        (("chung khoan", "thi truong von", "co phieu", "securities", "capital market"),
+         ("CM.MKT.LCAP.GD.ZS", "Market capitalization of listed domestic companies (% of GDP)"),
+         ("CM.MKT.TRAD.GD.ZS", "Stocks traded, total value (% of GDP)")),
+        (("bao hiem", "insurance"),
+         ("FD.AST.PRVT.GD.ZS", "Domestic credit to private sector by banks (% of GDP)")),
+        (("dien", "nuoc", "nang luong", "ha tang", "electric", "power", "utility"),
+         ("EG.ELC.ACCS.ZS", "Access to electricity (% of population)"),
+         ("EG.USE.ELEC.KH.PC", "Electric power consumption (kWh per capita)"),
+         ("EG.ELC.RNEW.ZS", "Renewable electricity output (% of total electricity output)")),
+        (("dau khi", "petroleum", "xang dau", "gas", "oil", "nhien lieu"),
+         ("TX.VAL.FUEL.ZS.UN", "Fuel exports (% of merchandise exports)"),
+         ("EG.USE.PCAP.KG.OE", "Energy use (kg of oil equivalent per capita)")),
+        (("hang khong", "aviation", "air transport", "san bay"),
+         ("IS.AIR.PSGR", "Air transport, passengers carried"),
+         ("IS.AIR.GOOD.MT.K1", "Air transport, freight (million ton-km)")),
+        (("hang hai", "maritime", "cang bien", "logistics", "van tai"),
+         ("IS.SHP.GOOD.TU", "Container port traffic (TEU: 20 foot equivalent units)"),
+         ("LP.LPI.OVRL.XQ", "Logistics performance index: Overall (1=low to 5=high)")),
+        (("ban le", "tieu dung", "retail", "thuong mai", "consumer"),
+         ("NE.CON.PRVT.KD.ZG", "Households and NPISHs final consumption expenditure growth (annual %)"),
+         ("NE.CON.PRVT.ZS", "Households and NPISHs final consumption expenditure (% of GDP)")),
+        (("cong nghe", "vien thong", "technology", "telecom", "phan mem", "internet"),
+         ("IT.NET.USER.ZS", "Individuals using the Internet (% of population)"),
+         ("IT.CEL.SETS.P2", "Mobile cellular subscriptions (per 100 people)"),
+         ("GB.XPD.RSDV.GD.ZS", "Research and development expenditure (% of GDP)")),
+        (("du lich", "tourism", "lu hanh", "khach san"),
+         ("ST.INT.ARVL", "International tourism, number of arrivals"),
+         ("ST.INT.RCPT.CD", "International tourism, receipts (current US$)")),
+        (("dich vu", "giao duc", "y te", "services", "education", "health"),
+         ("NV.SRV.TETC.KD.ZG", "Services value added growth (annual %)"),
+         ("NV.SRV.TETC.ZS", "Services value added (% of GDP)")),
+        (("nguyen vat lieu", "vat lieu", "kim loai", "khoang san", "mining", "materials"),
+         ("TX.VAL.MMTL.ZS.UN", "Ores and metals exports (% of merchandise exports)"),
+         ("NV.IND.TOTL.KD.ZG", "Industry value added growth (annual %)")),
+    )
+    selected = list(baseline)
+    seen = {item[1] for item in baseline}
+    for aliases, *indicators in groups:
+        if any(alias in label for alias in aliases):
+            for code, title in indicators:
+                if code not in seen:
+                    seen.add(code)
+                    selected.append((code, title))
+    return [(title.upper().replace(" ", "_"), code, title) for code, title in selected]
 
 def _fetch_industry_pack(industry, sector):
     searches = _industry_queries(industry, sector)
