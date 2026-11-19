@@ -68,6 +68,43 @@ class MacroDataTests(unittest.TestCase):
             [item[1] for item in macro_data._industry_context_indicators("NGAN_HANG", None)],
         )
 
+    def test_industry_article_requires_sector_match_and_quantitative_evidence(self):
+        self.assertTrue(macro_data._industry_query_matches_article(
+            "ngân hàng giá nguyên liệu",
+            "Ngành ngân hàng Việt Nam tăng trưởng tín dụng",
+            "Tín dụng tăng 8,5% trong kỳ báo cáo."
+        ))
+        self.assertFalse(macro_data._industry_query_matches_article(
+            "ngân hàng giá nguyên liệu",
+            "Chiến lược phát triển thống kê quốc gia",
+            "Sản lượng công nghiệp tăng 5%."
+        ))
+        self.assertFalse(macro_data._industry_query_matches_article(
+            "hàng không sản lượng sản xuất",
+            "Tổng quan thị trường vận tải",
+            "Doanh thu tăng 12 tỷ đồng."
+        ))
+
+    def test_publication_period_does_not_scan_entire_article(self):
+        class FakeResponse:
+            text = (
+                "<html><head><meta property='article:published_time' "
+                "content='2023-10-05T00:00:00Z'></head><main>"
+                "<h1>Ngành nông nghiệp Việt Nam qua các thời kỳ</h1>"
+                "<p>Bài viết tổng quan về lịch sử phát triển.</p>"
+                + ("Thông tin tham khảo 9 tháng năm 2026. " * 40)
+                + "</main></html>"
+            )
+        with patch.object(macro_data, "_get", return_value=FakeResponse()):
+            fact = macro_data._fetch_nso_publication(
+                {"link": "https://www.nso.gov.vn/agri", "title": "Ngành nông nghiệp Việt Nam qua các thời kỳ"},
+                "INDUSTRY_OVERVIEW", "nông nghiệp"
+            )
+        self.assertEqual(
+            fact["period_or_date"],
+            "Chưa xác định kỳ tham chiếu từ metadata"
+        )
+
     def test_quantitative_evidence_requires_a_value_and_measurement_unit(self):
         self.assertFalse(macro_data._has_quantitative_evidence("Báo cáo năm 2026"))
         self.assertFalse(macro_data._has_quantitative_evidence("Công bố ngày 19/11/2026"))
