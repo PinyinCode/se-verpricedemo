@@ -12,6 +12,7 @@ input string ConsumerId = "mt5-demo-vps";
 input int PollSeconds = 3;
 input int HeartbeatSeconds = 15;
 input bool EnableLegacyDivergenceImport = true;
+input int MaxLegacySignalAgeSeconds = 300;
 
 datetime g_lastHeartbeat = 0;
 datetime g_lastPoll = 0;
@@ -109,9 +110,11 @@ void ImportLegacyDivergenceSignal()
    string signature=IntegerToString((int)signalTime)+"|"+symbol+"|"+timeframe+"|"+IntegerToString(type);
    if(signature==g_lastLegacySignature) return;
    if(symbol=="" || entry<=0 || sl<=0 || signalTime<=0) return;
+   if(TimeCurrent()-signalTime>MaxLegacySignalAgeSeconds) return;
 
    string direction=(type>0)?"BUY":"SELL";
-   string body=StringFormat("{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\",\"entry\":%.8f,\"sl\":%.8f,\"score\":%.2f,\"source\":\"legacy-rsi-divergence\"}",symbol,timeframe,direction,entry,sl,score);
+   string source="div-"+symbol+"-"+timeframe+"-"+IntegerToString((int)signalTime);
+   string body=StringFormat("{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\",\"entry\":%.8f,\"sl\":%.8f,\"score\":%.2f,\"source\":\"%s\"}",symbol,timeframe,direction,entry,sl,score,source);
    string response; int status;
    if(HttpRequest("POST","/api/signals",body,response,status))
    {
