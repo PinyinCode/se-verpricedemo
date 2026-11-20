@@ -452,6 +452,11 @@ body.trade-fullscreen .chart-workspace .statusline{flex:0 0 auto}
  body.trade-fullscreen .chart-stage #rsiChart{height:132px!important;min-height:125px!important;flex-basis:132px!important}
  body.trade-fullscreen .chart-overlay-bottom .trade-fields{grid-template-columns:repeat(2,minmax(0,1fr))!important}
 }
+/* RSI height uses all available chart-stage space; no fixed min/max. */
+body.trade-fullscreen .chart-workspace .chart-stage{min-height:0!important}
+body.trade-fullscreen .chart-stage #priceChart{min-height:0!important}
+body.trade-fullscreen .chart-stage #rsiChart{min-height:0!important;max-height:none!important}
+
 
 </style>
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.2/dist/lightweight-charts.standalone.production.js"></script>
@@ -536,7 +541,7 @@ const rsiSeries=rsiChart.addLineSeries({color:'#a78bfa',lineWidth:2,priceLineVis
 let divergenceSeries=[];
 function clearDivergenceLines(){divergenceSeries.forEach(series=>{try{rsiChart.removeSeries(series)}catch(_){}});divergenceSeries=[]}
 function nearestPivotIndex(price,bars,start,end){let best=-1,bestDiff=Infinity;for(let i=Math.max(0,start);i<=Math.min(bars.length-1,end);i++){const d=Math.min(Math.abs(bars[i].high-price),Math.abs(bars[i].low-price));if(d<bestDiff){bestDiff=d;best=i}}return bestDiff<=Math.max(Math.abs(price)*0.0008,mt5TickSize*8)?best:-1}
-function renderRsiDivergences(signals,bars){clearDivergenceLines();if(!bars.length)return;(signals||[]).slice(0,60).forEach(s=>{const p1=Number(s.price1),p2=Number(s.price2),v1=Number(s.rsi1),v2=Number(s.rsi2);if(!(p1>0&&p2>0&&v1>=0&&v1<=100&&v2>=0&&v2<=100))return;const secondTime=nearestTime(Number(s.signal_time),bars);let secondIndex=bars.findIndex(b=>b.time===secondTime);if(secondIndex<1)return;const i2=nearestPivotIndex(p2,bars,Math.max(0,secondIndex-12),Math.min(bars.length-1,secondIndex+2));const i1=nearestPivotIndex(p1,bars,0,Math.max(0,(i2>=0?i2:secondIndex)-1));if(i1<0||i2<0||i1>=i2)return;const series=rsiChart.addLineSeries({color:s.direction==='BUY'?'#22c58b':'#f06478',lineWidth:2,lineStyle:0,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false,pointMarkersVisible:true});series.setData([{time:bars[i1].time,value:v1},{time:bars[i2].time,value:v2}]);divergenceSeries.push(series)})}
+function renderRsiDivergences(signals,bars){clearDivergenceLines();if(!bars.length)return;(signals||[]).slice(0,60).forEach(s=>{const t1=Number(s.time1),t2=Number(s.time2),v1=Number(s.rsi1),v2=Number(s.rsi2);if(!(t1>0&&t2>t1&&v1>=0&&v1<=100&&v2>=0&&v2<=100))return;const isBull=s.direction==='BUY',isRegular=['REG','REGULAR'].includes(String(s.divergence).toUpperCase()),isRealtime=s.signal_type==='RT';const series=rsiChart.addLineSeries({color:isBull?'#22c58b':'#ec4899',lineWidth:isRealtime?3:2,lineStyle:isRegular?0:2,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false,pointMarkersVisible:true});series.setData([{time:t1,value:v1},{time:t2,value:v2}]);divergenceSeries.push(series)})}
 rsiSeries.createPriceLine({price:70,color:'#f06478',lineWidth:1,lineStyle:2,axisLabelVisible:false,title:''});
 rsiSeries.createPriceLine({price:50,color:'#64748b',lineWidth:1,lineStyle:2,axisLabelVisible:false,title:''});
 rsiSeries.createPriceLine({price:30,color:'#22c58b',lineWidth:1,lineStyle:2,axisLabelVisible:false,title:''});
@@ -723,9 +728,9 @@ chartResizeObserver.observe($('rsiChart'));
 document.querySelectorAll('[data-tf]').forEach(x=>x.classList.toggle('selected',x.dataset.tf===$('tf').value));
 const rsiResizeHandle=$('rsiResizeHandle');
 let rsiDragStartY=0,rsiDragStartHeight=170;
-try{const saved=Number(localStorage.getItem('chartRsiHeight'));if(saved>=100&&saved<=420){$('rsiChart').style.height=saved+'px';$('rsiChart').style.flexBasis=saved+'px'}}catch(_){}
+try{const saved=Number(localStorage.getItem('chartRsiHeight'));if(Number.isFinite(saved)&&saved>=0){const stage=$('.chart-stage');const max=Math.max(0,stage.clientHeight-rsiResizeHandle.offsetHeight);const height=Math.min(saved,max);$('rsiChart').style.setProperty('height',height+'px','important');$('rsiChart').style.setProperty('flex-basis',height+'px','important')}}catch(_){}
 rsiResizeHandle.addEventListener('pointerdown',e=>{e.preventDefault();rsiDragStartY=e.clientY;rsiDragStartHeight=$('rsiChart').getBoundingClientRect().height;rsiResizeHandle.setPointerCapture(e.pointerId);rsiResizeHandle.dataset.dragging='1'});
-rsiResizeHandle.addEventListener('pointermove',e=>{if(rsiResizeHandle.dataset.dragging!=='1')return;const next=Math.max(100,Math.min(420,rsiDragStartHeight+rsiDragStartY-e.clientY));$('rsiChart').style.setProperty('height',next+'px','important');$('rsiChart').style.setProperty('flex-basis',next+'px','important');rsiChart.applyOptions({width:$('rsiChart').clientWidth,height:next});try{localStorage.setItem('chartRsiHeight',String(Math.round(next)))}catch(_){}});
+rsiResizeHandle.addEventListener('pointermove',e=>{if(rsiResizeHandle.dataset.dragging!=='1')return;const stage=$('.chart-stage');const max=Math.max(0,stage.clientHeight-rsiResizeHandle.offsetHeight);const next=Math.max(0,Math.min(max,rsiDragStartHeight+rsiDragStartY-e.clientY));$('rsiChart').style.setProperty('height',next+'px','important');$('rsiChart').style.setProperty('flex-basis',next+'px','important');rsiChart.applyOptions({width:$('rsiChart').clientWidth,height:next});try{localStorage.setItem('chartRsiHeight',String(Math.round(next)))}catch(_){}});
 const stopRsiResize=()=>{rsiResizeHandle.dataset.dragging='0';requestAnimationFrame(()=>{rsiChart.applyOptions({width:$('rsiChart').clientWidth,height:$('rsiChart').clientHeight});priceChart.applyOptions({width:$('priceChart').clientWidth,height:$('priceChart').clientHeight})})};
 rsiResizeHandle.addEventListener('pointerup',stopRsiResize);rsiResizeHandle.addEventListener('pointercancel',stopRsiResize);
 load();setInterval(load,5000);refreshChartPositions();setInterval(refreshChartPositions,3000);
