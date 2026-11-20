@@ -91,6 +91,14 @@ select{background:#17263c;color:var(--text);border:1px solid #354963;border-radi
  .today-panel th,.today-panel td{padding:5px 6px;font-size:10px}
 }
 
+
+/* Full-screen chart-first dashboard shell */
+html,body{width:100%;height:100%;min-height:100%;overflow:hidden}
+body{margin:0}
+body>main{position:fixed;inset:0;width:100%;height:100dvh;max-width:none!important;margin:0!important;padding:0!important;overflow:hidden}
+body>main>.top,body>main>section:not(#tradeWorkspace),body>main>.overview,body>main>.layout,body>main>.muted{display:none!important}
+#tradeWorkspace{position:absolute;inset:0;margin:0!important;padding:0!important;border:0!important;border-radius:0!important;box-shadow:none!important;overflow:hidden!important;background:#080f1b}
+#tradeWorkspace iframe{display:block;width:100%;height:100dvh!important;min-height:100dvh;border:0}
 </style></head><body><main>
 <div class="top"><div><h1>Forex AI Server</h1><div class="muted">Giám sát hệ thống phân tích và MT5 bridge</div></div><div style="display:flex;align-items:center;gap:10px"><span class="pill">DEMO / PAPER ONLY</span></div></div>
 <section id="tradeWorkspace" style="margin:16px 0;padding:0;overflow:hidden"><iframe src="/chart?embedded=1" title="Forex AI Trading Chart" allow="fullscreen" style="display:block;width:100%;height:980px;border:0;background:#0b1220"></iframe></section>
