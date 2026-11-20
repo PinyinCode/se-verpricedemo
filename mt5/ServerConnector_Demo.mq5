@@ -12,6 +12,7 @@ input string ConsumerId = "mt5-demo-vps";
 input int PollSeconds = 3;
 input int HeartbeatSeconds = 15;
 input bool EnableLegacyDivergenceImport = false;
+input bool EnableSignalPolling = false; // TRADE_V9_PAPER owns the server consumer by default
 input int MaxLegacySignalAgeSeconds = 300;
 
 datetime g_lastHeartbeat = 0;
@@ -306,6 +307,6 @@ void OnTimer()
       PublishScanStatus();
       ImportDivergenceQueue();
       ImportLegacyDivergenceSignal();
-      PollSignal();
+      if(EnableSignalPolling) PollSignal();
    }
 }
