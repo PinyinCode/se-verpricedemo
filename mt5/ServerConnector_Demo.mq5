@@ -4,7 +4,7 @@
 //| No OrderSend / CTrade calls are present in this EA.               |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.00"
+#property version "1.01"
 
 input string ServerBaseURL = "https://investforex.onrender.com";
 input string ApiKey = "SET_A_LONG_RANDOM_API_KEY";
@@ -15,10 +15,9 @@ input bool EnableLegacyDivergenceImport = false;
 input bool EnableSignalPolling = false; // TRADE_V9_PAPER owns the server consumer by default
 input int MaxLegacySignalAgeSeconds = 300;
 
-datetime g_lastHeartbeat = 0;
-datetime g_lastPoll = 0;
+ulong g_lastHeartbeatMs = 0;
+ulong g_lastPollMs = 0;
 string g_lastLegacySignature = "";
-datetime g_lastScanPost = 0;
 string g_queueCursorName = "DIVSERVER_QUEUE_CURSOR";
 
 string JsonValue(string json, string key)
@@ -70,10 +69,11 @@ bool HttpRequest(string method,string path,string body,string &response,int &sta
 
 void SendHeartbeat()
 {
+   g_lastHeartbeatMs=GetTickCount();
    string response; int status;
    string body="{\"component\":\"MT5-Connector\",\"status\":\"online\",\"details\":\"Demo connector active; no live trading\"}";
    if(HttpRequest("POST","/api/heartbeat",body,response,status))
-      g_lastHeartbeat=TimeCurrent();
+      Print("[SERVER] Heartbeat OK. HTTP=",status," response=",response);
    else
       Print("[SERVER] Heartbeat failed. HTTP=",status," response=",response);
 }
@@ -205,8 +205,6 @@ void ImportDivergenceQueue()
 
 void PublishScanStatus()
 {
-   if(TimeCurrent()-g_lastScanPost<3) return;
-   g_lastScanPost=TimeCurrent();
    string raw="";
    int file=FileOpen("DIVSCAN_SYMBOLS.txt",FILE_READ|FILE_TXT|FILE_COMMON);
    if(file!=INVALID_HANDLE)
@@ -239,6 +237,8 @@ void PublishScanStatus()
    string response; int status;
    if(!HttpRequest("POST","/api/scans",body,response,status))
       Print("[SERVER] Scan status upload failed. HTTP=",status," response=",response);
+   else
+      Print("[SERVER] Scan status OK. HTTP=",status," symbols=",ArraySize(fields)>=2 ? StringLen(fields[1]) : 0," response=",response);
 }
 
 void PollSignal()
@@ -293,6 +293,9 @@ int OnInit()
    EventSetTimer(1);
    Print("ServerConnector DEMO initialized. Add ",ServerBaseURL,
          " to MT5 WebRequest allowlist. No trading functions enabled.");
+   SendHeartbeat();
+   PublishScanStatus();
+   g_lastPollMs=GetTickCount();
    return INIT_SUCCEEDED;
 }
 
@@ -300,10 +303,11 @@ void OnDeinit(const int reason){ EventKillTimer(); }
 
 void OnTimer()
 {
-   if(TimeCurrent()-g_lastHeartbeat>=HeartbeatSeconds) SendHeartbeat();
-   if(TimeCurrent()-g_lastPoll>=PollSeconds)
+   ulong nowMs=GetTickCount();
+   if(g_lastHeartbeatMs==0 || nowMs-g_lastHeartbeatMs>=(ulong)MathMax(1,HeartbeatSeconds)*1000) SendHeartbeat();
+   if(g_lastPollMs==0 || nowMs-g_lastPollMs>=(ulong)MathMax(1,PollSeconds)*1000)
    {
-      g_lastPoll=TimeCurrent();
+      g_lastPollMs=nowMs;
       PublishScanStatus();
       ImportDivergenceQueue();
       ImportLegacyDivergenceSignal();
