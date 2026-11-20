@@ -352,7 +352,11 @@ void PublishChartCandles()
                ",\"volume\":"+IntegerToString((long)rates[i].tick_volume)+"}";
    }
    candles+="]";
-   string body="{\"symbol\":\""+symbol+"\",\"timeframe\":\""+tf+"\",\"candles\":"+candles+"}";
+   int digits=(int)SymbolInfoInteger(symbol,SYMBOL_DIGITS);
+   double tickSize=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_SIZE);
+   double tickValue=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_VALUE);
+   if(tickSize<=0) tickSize=SymbolInfoDouble(symbol,SYMBOL_POINT);
+   string body=StringFormat("{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"digits\":%d,\"tick_size\":%.10f,\"tick_value\":%.10f,\"candles\":%s}",symbol,tf,digits,tickSize,tickValue,candles);
    string response;
    int status;
    if(!HttpRequest("POST","/api/mt5/candles",body,response,status))
