@@ -71,13 +71,13 @@ def init_db() -> None:
           updated_at TEXT NOT NULL
         )""")
         conn.execute("""
-        conn.execute("""
         CREATE TABLE IF NOT EXISTS candles (
           symbol TEXT NOT NULL, timeframe TEXT NOT NULL, candle_time INTEGER NOT NULL,
           open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL, close REAL NOT NULL,
           volume REAL NOT NULL DEFAULT 0,
           PRIMARY KEY(symbol,timeframe,candle_time)
         )""")
+        conn.execute("""
         CREATE TABLE IF NOT EXISTS today_signals (
           signal_key TEXT PRIMARY KEY, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
           direction TEXT NOT NULL, divergence TEXT NOT NULL, signal_type TEXT NOT NULL,
