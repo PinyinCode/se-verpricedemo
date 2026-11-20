@@ -1,10 +1,12 @@
 //+------------------------------------------------------------------+
 //| ServerConnector_Demo.mq5                                         |
-//| Polls Python server and records PAPER signals only.              |
-//| No OrderSend / CTrade calls are present in this EA.               |
+//| Polls Python server, syncs candles/signals/history, and handles  |
+//| optional close requests without opening new live trades.         |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.00"
+#property version "1.10"
+
+#include <Trade\Trade.mqh>
 
 input string ServerBaseURL = "https://investforex.onrender.com";
 input string ApiKey = "SET_A_LONG_RANDOM_API_KEY";
@@ -17,14 +19,30 @@ input int MaxLegacySignalAgeSeconds = 300;
 input bool EnableChartCandleFeed = true; // Uploads OHLC only; never places trades
 input int ChartFeedSeconds = 5; // One symbol/timeframe per interval
 input int ChartBarsToSend = 500;
+input bool EnableRealHistorySync = true; // Syncs closed MT5 deals to /api/mt5/history
+input int HistorySyncSeconds = 15;
+input int HistoryLookbackDays = 7;
+input bool EnableCloseRequests = false; // Keep false for read-only/paper-only connector
 
 datetime g_lastHeartbeat = 0;
 datetime g_lastPoll = 0;
 string g_lastLegacySignature = "";
 datetime g_lastScanPost = 0;
 datetime g_lastCandlePost = 0;
+datetime g_lastHistoryPost = 0;
 int g_chartCursor = 0;
 string g_queueCursorName = "DIVSERVER_QUEUE_CURSOR";
+string g_lastHistoryDigest = "";
+CTrade g_closeTrade;
+
+string JsonEscape(string s)
+{
+   StringReplace(s, "\\", "\\\\");
+   StringReplace(s, "\"", "\\\"");
+   StringReplace(s, "\r", " ");
+   StringReplace(s, "\n", " ");
+   return s;
+}
 
 string JsonValue(string json, string key)
 {
@@ -76,7 +94,7 @@ bool HttpRequest(string method,string path,string body,string &response,int &sta
 void SendHeartbeat()
 {
    string response; int status;
-   string body="{\"component\":\"MT5-Connector\",\"status\":\"online\",\"details\":\"Demo connector active; no live trading\"}";
+   string body="{\"component\":\"MT5-Connector\",\"status\":\"online\",\"details\":\"Connector active; synced with bridge API\"}";
    if(HttpRequest("POST","/api/heartbeat",body,response,status))
       g_lastHeartbeat=TimeCurrent();
    else
@@ -86,12 +104,11 @@ void SendHeartbeat()
 bool AckSignal(string id,string result,string message)
 {
    string response; int status;
-   string body="{\"signal_id\":\""+id+"\",\"status\":\""+result+"\",\"message\":\""+message+"\"}";
+   string body="{\"signal_id\":\""+JsonEscape(id)+"\",\"status\":\""+JsonEscape(result)+"\",\"message\":\""+JsonEscape(message)+"\"}";
    bool ok=HttpRequest("POST","/api/mt5/ack",body,response,status);
    if(!ok) Print("[SERVER] Ack failed. HTTP=",status," response=",response);
    return ok;
 }
-
 
 string JsonObjectValue(string json, string key)
 {
@@ -162,7 +179,8 @@ void ImportLegacyDivergenceSignal()
 
    string direction=(type>0)?"BUY":"SELL";
    string source="div-"+symbol+"-"+timeframe+"-"+IntegerToString((int)signalTime);
-   string body=StringFormat("{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\",\"entry\":%.8f,\"sl\":%.8f,\"score\":%.2f,\"source\":\"%s\"}",symbol,timeframe,direction,entry,sl,score,source);
+   string body=StringFormat("{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\",\"entry\":%.8f,\"sl\":%.8f,\"score\":%.2f,\"source\":\"%s\"}",
+      JsonEscape(symbol),JsonEscape(timeframe),direction,entry,sl,score,JsonEscape(source));
    string response; int status;
    if(HttpRequest("POST","/api/signals",body,response,status))
    {
@@ -191,13 +209,10 @@ void ImportDivergenceQueue()
       string symbol=p[0], tf=p[1], direction=p[2], divType=p[3];
       datetime signalTime=(datetime)StringToInteger(p[4]);
       double entry=StringToDouble(p[5]), sl=StringToDouble(p[6]), score=StringToDouble(p[7]);
-      // New queue rows include detection time; legacy rows fall back to pivot time.
       datetime detectedAt=(ArraySize(p)>=9)?(datetime)StringToInteger(p[8]):signalTime;
       if(symbol=="" || (direction!="BUY" && direction!="SELL") || signalTime<=0 || entry<=0 || sl<=0)
       { GlobalVariableSet(g_queueCursorName,(double)lineNo); continue; }
 
-      // Check when the strong signal was detected, not the older chart pivot timestamp.
-      // Legacy queue rows without detection time retain the previous age check.
       if(detectedAt<=0 || TimeCurrent()-detectedAt>MaxLegacySignalAgeSeconds)
       {
          GlobalVariableSet(g_queueCursorName,(double)lineNo);
@@ -205,14 +220,12 @@ void ImportDivergenceQueue()
          continue;
       }
 
-      // The API source field is limited to 40 characters; keep the ID compact and unique per queue row.
       string source=StringFormat("div-%d-%d",(int)signalTime,(int)lineNo);
-      string body=StringFormat("{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\",\"entry\":%.8f,\"sl\":%.8f,\"score\":%.2f,\"source\":\"%s\"}",symbol,tf,direction,entry,sl,score,source);
+      string body=StringFormat("{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\",\"entry\":%.8f,\"sl\":%.8f,\"score\":%.2f,\"source\":\"%s\"}",
+         JsonEscape(symbol),JsonEscape(tf),direction,entry,sl,score,JsonEscape(source));
       string response; int status;
       if(!HttpRequest("POST","/api/signals",body,response,status))
       {
-         // Skip malformed client payloads so one bad row cannot block later valid signals.
-         // Authentication, network and server errors remain retryable.
          if(status==400 || status==422)
          {
             GlobalVariableSet(g_queueCursorName,(double)lineNo);
@@ -257,7 +270,7 @@ void PublishScanStatus()
          string item=pair[0]+" "+pair[1];
          if(item==" ") continue;
          if(jsonItems!="") jsonItems+=",";
-         jsonItems+="\""+item+"\"";
+         jsonItems+="\""+JsonEscape(item)+"\"";
       }
       symbolsJson="["+jsonItems+"]";
    }
@@ -292,7 +305,7 @@ void PublishTodaySignals()
          if(sigType!="RT" && sigType!="HIST") sigType="RT";
          if(items!="") items+=",";
          items+=StringFormat("{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\",\"divergence\":\"%s\",\"signal_type\":\"%s\",\"signal_time\":%d,\"price1\":%.8f,\"price2\":%.8f,\"rsi1\":%.2f,\"rsi2\":%.2f,\"time1\":%d,\"time2\":%d}",
-            symbol,tf,direction,divType,sigType,(int)signalTime,
+            JsonEscape(symbol),JsonEscape(tf),direction,JsonEscape(divType),sigType,(int)signalTime,
             StringToDouble(p[6]),StringToDouble(p[7]),StringToDouble(p[8]),StringToDouble(p[9]),
             (int)pivotTime1,(int)pivotTime2);
       }
@@ -303,7 +316,6 @@ void PublishTodaySignals()
    if(!HttpRequest("POST","/api/today-signals",body,response,status))
       Print("[SERVER] Today signals upload failed. HTTP=",status," response=",response);
 }
-
 
 ENUM_TIMEFRAMES ChartTimeframeFromText(string tf)
 {
@@ -317,7 +329,6 @@ ENUM_TIMEFRAMES ChartTimeframeFromText(string tf)
    return PERIOD_CURRENT;
 }
 
-// Sends OHLC history only. It does not create or execute trading signals.
 void PublishChartCandles()
 {
    string raw="";
@@ -351,17 +362,24 @@ void PublishChartCandles()
    if(copied<2) return;
 
    string candles="[";
+   int validCount=0;
    for(int i=0;i<copied;i++)
    {
-      if(i>0) candles+=",";
+      double o=rates[i].open, h=rates[i].high, l=rates[i].low, c=rates[i].close;
+      if(rates[i].time<=0 || o<=0 || h<=0 || l<=0 || c<=0) continue;
+      if(h<MathMax(o,MathMax(c,l)) || l>MathMin(o,MathMin(c,h))) continue;
+      if(validCount>0) candles+=",";
       candles+="{\"time\":"+IntegerToString((int)rates[i].time)+
-               ",\"open\":"+DoubleToString(rates[i].open,10)+
-               ",\"high\":"+DoubleToString(rates[i].high,10)+
-               ",\"low\":"+DoubleToString(rates[i].low,10)+
-               ",\"close\":"+DoubleToString(rates[i].close,10)+
-               ",\"volume\":"+IntegerToString((long)rates[i].tick_volume)+"}";
+               ",\"open\":"+DoubleToString(o,10)+
+               ",\"high\":"+DoubleToString(h,10)+
+               ",\"low\":"+DoubleToString(l,10)+
+               ",\"close\":"+DoubleToString(c,10)+
+               ",\"volume\":"+IntegerToString((long)MathMax((long)0,rates[i].tick_volume))+"}";
+      validCount++;
    }
    candles+="]";
+   if(validCount<2) return;
+
    int digits=(int)SymbolInfoInteger(symbol,SYMBOL_DIGITS);
    double tickSize=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_SIZE);
    double tickValue=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_VALUE_LOSS);
@@ -370,11 +388,118 @@ void PublishChartCandles()
    double volumeMin=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MIN);
    double volumeMax=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MAX);
    double volumeStep=SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP);
-   string body=StringFormat("{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"digits\":%d,\"tick_size\":%.10f,\"tick_value\":%.10f,\"volume_min\":%.8f,\"volume_max\":%.8f,\"volume_step\":%.8f,\"candles\":%s}",symbol,tf,digits,tickSize,tickValue,volumeMin,volumeMax,volumeStep,candles);
+   string body=StringFormat("{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"digits\":%d,\"tick_size\":%.10f,\"tick_value\":%.10f,\"volume_min\":%.8f,\"volume_max\":%.8f,\"volume_step\":%.8f,\"candles\":%s}",
+      JsonEscape(symbol),JsonEscape(tf),digits,tickSize,tickValue,volumeMin,volumeMax,volumeStep,candles);
    string response;
    int status;
    if(!HttpRequest("POST","/api/mt5/candles",body,response,status))
       Print("[CHART FEED] Upload failed for ",symbol," ",tf,". HTTP=",status," response=",response);
+}
+
+void PublishRealHistory()
+{
+   if(!EnableRealHistorySync) return;
+   datetime now=TimeCurrent();
+   datetime fromTime=now-(datetime)(MathMax(1,HistoryLookbackDays)*86400);
+   if(!HistorySelect(fromTime,now)) return;
+
+   int totalDeals=HistoryDealsTotal();
+   if(totalDeals<=0) return;
+
+   string tradesJson="";
+   int count=0;
+   for(int i=totalDeals-1; i>=0 && count<200; i--)
+   {
+      ulong dealTicket=HistoryDealGetTicket(i);
+      if(dealTicket==0) continue;
+      long entryType=HistoryDealGetInteger(dealTicket,DEAL_ENTRY);
+      if(entryType!=DEAL_ENTRY_OUT && entryType!=DEAL_ENTRY_INOUT) continue;
+
+      string sym=HistoryDealGetString(dealTicket,DEAL_SYMBOL);
+      if(sym=="") continue;
+      long dealType=HistoryDealGetInteger(dealTicket,DEAL_TYPE);
+      // For closing a BUY position, closing deal is SELL; for closing SELL, deal is BUY.
+      string dir=(dealType==DEAL_TYPE_BUY)?"SELL":"BUY";
+      double vol=HistoryDealGetDouble(dealTicket,DEAL_VOLUME);
+      double price=HistoryDealGetDouble(dealTicket,DEAL_PRICE);
+      double profit=HistoryDealGetDouble(dealTicket,DEAL_PROFIT)
+                  +HistoryDealGetDouble(dealTicket,DEAL_SWAP)
+                  +HistoryDealGetDouble(dealTicket,DEAL_COMMISSION);
+      long closedAt=HistoryDealGetInteger(dealTicket,DEAL_TIME);
+      if(vol<=0 || closedAt<=0) continue;
+
+      if(tradesJson!="") tradesJson+=",";
+      tradesJson+=StringFormat(
+         "{\"id\":\"mt5-%I64u\",\"ticket\":\"%I64u\",\"symbol\":\"%s\",\"timeframe\":\"MT5\",\"direction\":\"%s\",\"entry\":%.8f,\"sl\":0,\"tp\":0,\"volume\":%.4f,\"profit\":%.2f,\"outcome\":\"CLOSED\",\"opened_at\":0,\"closed_at\":%I64d}",
+         dealTicket,dealTicket,JsonEscape(sym),dir,price,vol,profit,closedAt
+      );
+      count++;
+   }
+
+   if(count<=0 || tradesJson==g_lastHistoryDigest) return;
+   string body="{\"replace\":false,\"trades\":["+tradesJson+"]}";
+   string response; int status;
+   if(HttpRequest("POST","/api/mt5/history",body,response,status))
+      g_lastHistoryDigest=tradesJson;
+   else
+      Print("[HISTORY] Real history sync failed. HTTP=",status," response=",response);
+}
+
+void PollCloseRequests()
+{
+   if(!EnableCloseRequests) return;
+   string response; int status;
+   if(!HttpRequest("GET","/api/paper/close-requests","",response,status)) return;
+   if(StringFind(response,"\"close_requests\":[]")>=0) return;
+
+   // Handle close requests sequentially for each open position matching symbol/ticket.
+   int pos=0;
+   while(true)
+   {
+      int objStart=StringFind(response,"{",pos);
+      if(objStart<0) break;
+      int objEnd=StringFind(response,"}",objStart);
+      if(objEnd<0) break;
+      string item=StringSubstr(response,objStart,objEnd-objStart+1);
+      pos=objEnd+1;
+
+      string reqId=JsonValue(item,"request_id");
+      if(reqId=="") continue;
+      string ticketStr=JsonValue(item,"ticket");
+      string sym=JsonValue(item,"symbol");
+      string dir=JsonValue(item,"direction");
+
+      bool closedAny=false;
+      string msg="No matching open position";
+      for(int i=PositionsTotal()-1; i>=0; i--)
+      {
+         ulong posTicket=PositionGetTicket(i);
+         if(posTicket==0 || !PositionSelectByTicket(posTicket)) continue;
+         string pSym=PositionGetString(POSITION_SYMBOL);
+         ENUM_POSITION_TYPE pType=(ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+         string pDir=(pType==POSITION_TYPE_BUY)?"BUY":"SELL";
+         bool matchTicket=(ticketStr!="" && IntegerToString((long)posTicket)==ticketStr);
+         bool matchSymDir=(sym!="" && pSym==sym && (dir=="" || pDir==dir));
+         if(matchTicket || matchSymDir)
+         {
+            if(g_closeTrade.PositionClose(posTicket))
+            {
+               closedAny=true;
+               msg="Closed position "+IntegerToString((long)posTicket);
+            }
+            else
+            {
+               msg="Close failed: "+IntegerToString(g_closeTrade.ResultRetcode());
+            }
+            break;
+         }
+      }
+
+      string ackBody=StringFormat("{\"request_id\":\"%s\",\"position_id\":\"%s\",\"ok\":%s,\"message\":\"%s\"}",
+         JsonEscape(reqId),JsonEscape(ticketStr),closedAny?"true":"false",JsonEscape(msg));
+      string ackResp; int ackStatus;
+      HttpRequest("POST","/api/paper/close-requests/ack",ackBody,ackResp,ackStatus);
+   }
 }
 
 void PollSignal()
@@ -427,8 +552,8 @@ int OnInit()
       return INIT_PARAMETERS_INCORRECT;
    }
    EventSetTimer(1);
-   Print("ServerConnector DEMO initialized. Add ",ServerBaseURL,
-         " to MT5 WebRequest allowlist. No trading functions enabled.");
+   Print("ServerConnector v1.10 initialized. Add ",ServerBaseURL,
+         " to MT5 WebRequest allowlist.");
    return INIT_SUCCEEDED;
 }
 
@@ -442,6 +567,11 @@ void OnTimer()
       g_lastCandlePost=TimeCurrent();
       PublishChartCandles();
    }
+   if(EnableRealHistorySync && TimeCurrent()-g_lastHistoryPost>=MathMax(5,HistorySyncSeconds))
+   {
+      g_lastHistoryPost=TimeCurrent();
+      PublishRealHistory();
+   }
    if(TimeCurrent()-g_lastPoll>=PollSeconds)
    {
       g_lastPoll=TimeCurrent();
@@ -449,6 +579,7 @@ void OnTimer()
       PublishTodaySignals();
       ImportDivergenceQueue();
       ImportLegacyDivergenceSignal();
+      PollCloseRequests();
       if(EnableSignalPolling) PollSignal();
    }
 }
