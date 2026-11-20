@@ -14,11 +14,16 @@ input int HeartbeatSeconds = 15;
 input bool EnableLegacyDivergenceImport = false;
 input bool EnableSignalPolling = false; // TRADE_V9_PAPER owns the server consumer by default
 input int MaxLegacySignalAgeSeconds = 300;
+input bool EnableChartCandleFeed = true; // Uploads OHLC only; never places trades
+input int ChartFeedSeconds = 5; // One symbol/timeframe per interval
+input int ChartBarsToSend = 500;
 
 datetime g_lastHeartbeat = 0;
 datetime g_lastPoll = 0;
 string g_lastLegacySignature = "";
 datetime g_lastScanPost = 0;
+datetime g_lastCandlePost = 0;
+int g_chartCursor = 0;
 string g_queueCursorName = "DIVSERVER_QUEUE_CURSOR";
 
 string JsonValue(string json, string key)
@@ -289,6 +294,71 @@ void PublishTodaySignals()
       Print("[SERVER] Today signals upload failed. HTTP=",status," response=",response);
 }
 
+
+ENUM_TIMEFRAMES ChartTimeframeFromText(string tf)
+{
+   if(tf=="M1") return PERIOD_M1;
+   if(tf=="M5") return PERIOD_M5;
+   if(tf=="M15") return PERIOD_M15;
+   if(tf=="M30") return PERIOD_M30;
+   if(tf=="H1") return PERIOD_H1;
+   if(tf=="H4") return PERIOD_H4;
+   if(tf=="D1") return PERIOD_D1;
+   return PERIOD_CURRENT;
+}
+
+// Sends OHLC history only. It does not create or execute trading signals.
+void PublishChartCandles()
+{
+   string raw="";
+   int file=FileOpen("DIVSCAN_SYMBOLS.txt",FILE_READ|FILE_TXT|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(file==INVALID_HANDLE) return;
+   raw=FileReadString(file);
+   FileClose(file);
+
+   string fields[];
+   if(StringSplit(raw,'#',fields)<2) return;
+   datetime scanTime=(datetime)StringToInteger(fields[0]);
+   if(scanTime<=0 || TimeCurrent()-scanTime>60) return;
+
+   string entries[];
+   int count=StringSplit(fields[1],';',entries);
+   if(count<=0) return;
+   int index=g_chartCursor%count;
+   g_chartCursor++;
+
+   string pair[];
+   if(StringSplit(entries[index],'|',pair)<2) return;
+   string symbol=pair[0];
+   string tf=pair[1];
+   ENUM_TIMEFRAMES period=ChartTimeframeFromText(tf);
+   if(symbol=="" || period==PERIOD_CURRENT) return;
+   if(!SymbolSelect(symbol,true)) return;
+
+   MqlRates rates[];
+   ArraySetAsSeries(rates,false);
+   int copied=CopyRates(symbol,period,0,MathMax(50,MathMin(1000,ChartBarsToSend)),rates);
+   if(copied<2) return;
+
+   string candles="[";
+   for(int i=0;i<copied;i++)
+   {
+      if(i>0) candles+=",";
+      candles+="{\"time\":"+IntegerToString((int)rates[i].time)+
+               ",\"open\":"+DoubleToString(rates[i].open,10)+
+               ",\"high\":"+DoubleToString(rates[i].high,10)+
+               ",\"low\":"+DoubleToString(rates[i].low,10)+
+               ",\"close\":"+DoubleToString(rates[i].close,10)+
+               ",\"volume\":"+IntegerToString((long)rates[i].tick_volume)+"}";
+   }
+   candles+="]";
+   string body="{\"symbol\":\""+symbol+"\",\"timeframe\":\""+tf+"\",\"candles\":"+candles+"}";
+   string response;
+   int status;
+   if(!HttpRequest("POST","/api/mt5/candles",body,response,status))
+      Print("[CHART FEED] Upload failed for ",symbol," ",tf,". HTTP=",status," response=",response);
+}
+
 void PollSignal()
 {
    string response; int status;
@@ -349,6 +419,11 @@ void OnDeinit(const int reason){ EventKillTimer(); }
 void OnTimer()
 {
    if(TimeCurrent()-g_lastHeartbeat>=HeartbeatSeconds) SendHeartbeat();
+   if(EnableChartCandleFeed && TimeCurrent()-g_lastCandlePost>=MathMax(2,ChartFeedSeconds))
+   {
+      g_lastCandlePost=TimeCurrent();
+      PublishChartCandles();
+   }
    if(TimeCurrent()-g_lastPoll>=PollSeconds)
    {
       g_lastPoll=TimeCurrent();
