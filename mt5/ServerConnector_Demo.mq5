@@ -191,11 +191,14 @@ void ImportDivergenceQueue()
       string symbol=p[0], tf=p[1], direction=p[2], divType=p[3];
       datetime signalTime=(datetime)StringToInteger(p[4]);
       double entry=StringToDouble(p[5]), sl=StringToDouble(p[6]), score=StringToDouble(p[7]);
+      // New queue rows include detection time; legacy rows fall back to pivot time.
+      datetime detectedAt=(ArraySize(p)>=9)?(datetime)StringToInteger(p[8]):signalTime;
       if(symbol=="" || (direction!="BUY" && direction!="SELL") || signalTime<=0 || entry<=0 || sl<=0)
       { GlobalVariableSet(g_queueCursorName,(double)lineNo); continue; }
 
-      // Do not upload old backlog entries from the append-only AI queue.
-      if(TimeCurrent()-signalTime>MaxLegacySignalAgeSeconds)
+      // Check when the strong signal was detected, not the older chart pivot timestamp.
+      // Legacy queue rows without detection time retain the previous age check.
+      if(detectedAt<=0 || TimeCurrent()-detectedAt>MaxLegacySignalAgeSeconds)
       {
          GlobalVariableSet(g_queueCursorName,(double)lineNo);
          Print("[SERVER] Skipped expired queued signal: ",symbol," ",tf," ",direction);
