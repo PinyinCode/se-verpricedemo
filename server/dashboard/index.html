@@ -12,6 +12,7 @@ h1{font-size:22px;margin:0}.muted{color:var(--muted)}.pill{border:1px solid #166
 h2{font-size:15px;margin:0 0 12px}table{width:100%;border-collapse:collapse;white-space:nowrap}th,td{text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);font-size:12px}th{color:var(--muted);font-weight:600}
 .wrap{overflow:auto}.status{font-weight:700}.BUY{color:var(--green)}.SELL{color:var(--red)}.empty{padding:24px;text-align:center;color:var(--muted)}
 .item{padding:10px 0;border-bottom:1px solid var(--line);font-size:12px}.item:last-child{border:0}
+.scan-head{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center}.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.chip{border:1px solid #334155;background:#17243a;border-radius:8px;padding:6px 10px;font-size:12px}.scan-muted{color:var(--muted);font-size:12px}
 @media(max-width:800px){.grid{grid-template-columns:repeat(2,1fr)}.layout{grid-template-columns:1fr}main{padding:14px}}
 </style></head><body><main>
 <div class="top"><div><h1>Forex AI Server</h1><div class="muted">Giám sát hệ thống phân tích và MT5 bridge</div></div><span class="pill">DEMO / PAPER ONLY</span></div>
@@ -21,6 +22,7 @@ h2{font-size:15px;margin:0 0 12px}table{width:100%;border-collapse:collapse;whit
 <div class="card"><div class="muted">Đã hết hạn</div><div class="metric" id="expired">0</div></div>
 <div class="card"><div class="muted">MT5 Connector</div><div class="metric" id="mt5">—</div></div>
 </div>
+<section style="margin-bottom:14px"><div class="scan-head"><h2 style="margin:0">Symbol đang quét</h2><span id="scanUpdated" class="scan-muted">Chưa nhận dữ liệu từ AI OOP V8</span></div><div id="scanSymbols" class="chips"><span class="scan-muted">Đang chờ dữ liệu quét...</span></div></section>
 <div class="layout"><section><h2>Tín hiệu gần đây</h2><div class="wrap"><table><thead><tr><th>Thời gian</th><th>Mã</th><th>TF</th><th>Hướng</th><th>Entry</th><th>SL</th><th>Score</th><th>Trạng thái</th></tr></thead><tbody id="signals"><tr><td colspan="8" class="empty">Đang tải...</td></tr></tbody></table></div></section>
 <section><h2>Trạng thái dịch vụ</h2><div id="services" class="muted">Chưa có heartbeat</div><h2 style="margin-top:18px">Sự kiện</h2><div id="events"></div></section></div>
 <div class="muted" style="margin-top:16px">Tự cập nhật mỗi 3 giây · <span id="updated">—</span></div>
@@ -32,6 +34,9 @@ async function refresh(){try{const r=await fetch('/api/dashboard',{cache:'no-sto
 $('pending').textContent=c.pending||0;$('done').textContent=c.completed||0;$('expired').textContent=c.expired||0;
 const mt=(d.heartbeats||[]).find(x=>x.component.toLowerCase().includes('mt5'));
 $('mt5').textContent=mt?mt.status.toUpperCase():'WAITING';
+const scanner=(d.scan_status||[]).find(x=>x.component==='AI-OOP-V8');
+if(scanner&&scanner.active&&scanner.symbols.length){$('scanSymbols').innerHTML=scanner.symbols.map(x=>'<span class="chip">'+esc(x)+'</span>').join('');$('scanUpdated').textContent='Đang quét · cập nhật '+esc(new Date(scanner.updated_at).toLocaleTimeString())+' · '+scanner.symbols.length+' mã/khung';}
+else{$('scanSymbols').innerHTML='<span class="scan-muted">Chưa nhận được danh sách quét đang hoạt động</span>';$('scanUpdated').textContent=scanner?'Dữ liệu đã cũ hoặc Indicator chưa quét':'Chưa nhận dữ liệu từ AI OOP V8';}
 $('signals').innerHTML=d.signals.length?d.signals.map(s=>'<tr><td>'+esc(new Date(s.created_at).toLocaleString())+'</td><td>'+esc(s.symbol)+'</td><td>'+esc(s.timeframe)+'</td><td class="'+esc(s.direction)+'">'+esc(s.direction)+'</td><td>'+fmt(s.entry)+'</td><td>'+fmt(s.sl)+'</td><td>'+fmt(s.score)+'</td><td>'+esc(s.ack_status||s.status)+'</td></tr>').join(''):'<tr><td colspan="8" class="empty">Chưa có tín hiệu</td></tr>';
 $('services').innerHTML=d.heartbeats.length?d.heartbeats.map(h=>'<div class="item"><b>'+esc(h.component)+'</b> · '+esc(h.status)+'<div class="muted">'+esc(h.details)+'<br>'+esc(new Date(h.updated_at).toLocaleString())+'</div></div>').join(''):'Chưa có heartbeat từ MT5';
 $('events').innerHTML=d.events.map(e=>'<div class="item">'+esc(e.message)+'<div class="muted">'+esc(new Date(e.created_at).toLocaleTimeString())+'</div></div>').join('')||'Chưa có sự kiện';
