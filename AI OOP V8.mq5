@@ -77,7 +77,7 @@ struct SSymbolTFData
 };
 
 struct SRTLine { string text; datetime time; bool isToday; };
-struct STodaySignal { string sym, tfStr, type, divType, signalType; datetime time; double price1, price2, rsi1, rsi2; };
+struct STodaySignal { string sym, tfStr, type, divType, signalType; datetime time, time1, time2; double price1, price2, rsi1, rsi2; };
 
 // GLOBAL VARIABLES
 SSymbolTFData arrSymTF[];
@@ -123,7 +123,7 @@ double CalcVolumeRatio(string sym, ENUM_TIMEFRAMES tf, int shift, int bars, int 
 bool IsReversalCandle(string sym, ENUM_TIMEFRAMES tf, int shift);
 bool ShouldRetrack(double currentPrice, double lastTrackedPrice, string sym, datetime currentBarTime, datetime lastTrackedBarTime);
 
-void AddTodaySignal(string sym, string tfStr, string type, string divType, string signalType, datetime time, double price1, double price2, double rsi1, double rsi2);
+void AddTodaySignal(string sym, string tfStr, string type, string divType, string signalType, datetime time1, datetime time2, double price1, double price2, double rsi1, double rsi2);
 void ClearOldTodaySignals();
 string BuildTodaySignalsDisplay();
 void Draw(string divergenceComment);
@@ -611,10 +611,10 @@ void PrintRTSignalChange(int currentRTCount, string comment)
    }
 }
 
-void AddTodaySignal(string sym, string tfStr, string type, string divType, string signalType, datetime time, double price1, double price2, double rsi1, double rsi2)
+void AddTodaySignal(string sym, string tfStr, string type, string divType, string signalType, datetime time1, datetime time2, double price1, double price2, double rsi1, double rsi2)
 {
    for(int i=0;i<g_todaySignalCount;i++)
-      if(g_todaySignals[i].sym==sym&&g_todaySignals[i].tfStr==tfStr&&g_todaySignals[i].type==type&&g_todaySignals[i].signalType==signalType&&g_todaySignals[i].time==time)
+      if(g_todaySignals[i].sym==sym&&g_todaySignals[i].tfStr==tfStr&&g_todaySignals[i].type==type&&g_todaySignals[i].signalType==signalType&&g_todaySignals[i].time==time2)
          return;
    int idx=g_todaySignalCount;
    ArrayResize(g_todaySignals,idx+1);
@@ -623,7 +623,9 @@ void AddTodaySignal(string sym, string tfStr, string type, string divType, strin
    g_todaySignals[idx].type=type;
    g_todaySignals[idx].divType=divType;
    g_todaySignals[idx].signalType=signalType;
-   g_todaySignals[idx].time=time;
+   g_todaySignals[idx].time=time2;
+   g_todaySignals[idx].time1=time1;
+   g_todaySignals[idx].time2=time2;
    g_todaySignals[idx].price1=price1;
    g_todaySignals[idx].price2=price2;
    g_todaySignals[idx].rsi1=rsi1;
@@ -640,11 +642,12 @@ void PublishTodaySignals()
    for(int i=0;i<g_todaySignalCount;i++)
    {
       string direction=(g_todaySignals[i].type=="BEAR")?"SELL":"BUY";
-      string line=StringFormat("%s|%s|%s|%s|%s|%d|%.8f|%.8f|%.2f|%.2f\r\n",
+      string line=StringFormat("%s|%s|%s|%s|%s|%d|%.8f|%.8f|%.2f|%.2f|%d|%d\r\n",
          g_todaySignals[i].sym,g_todaySignals[i].tfStr,direction,g_todaySignals[i].divType,
          g_todaySignals[i].signalType,(int)(ServerTimeToGMT7(g_todaySignals[i].time)-g_gmt7TargetOffset),
          g_todaySignals[i].price1,g_todaySignals[i].price2,
-         g_todaySignals[i].rsi1,g_todaySignals[i].rsi2);
+         g_todaySignals[i].rsi1,g_todaySignals[i].rsi2,
+         (int)g_todaySignals[i].time1,(int)g_todaySignals[i].time2);
       FileWriteString(h,line);
    }
    FileClose(h);
@@ -1315,7 +1318,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
       histCount++;
       
       if(gmt7Time >= todayStartGMT7)
-         AddTodaySignal(sym, tfStr, "BEAR", divShort, "HIST", bestBearT2, bestBearH1, bestBearH2, bestBearR1, bestBearR2);
+         AddTodaySignal(sym, tfStr, "BEAR", divShort, "HIST", bestBearT1, bestBearT2, bestBearH1, bestBearH2, bestBearR1, bestBearR2);
    }
    
    if(bestBullT2 > 0)
@@ -1337,7 +1340,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
       histCount++;
       
       if(gmt7Time >= todayStartGMT7)
-         AddTodaySignal(sym, tfStr, "BULL", divShort, "HIST", bestBullT2, bestBullP1, bestBullP2, bestBullR1, bestBullR2);
+         AddTodaySignal(sym, tfStr, "BULL", divShort, "HIST", bestBullT1, bestBullT2, bestBullP1, bestBullP2, bestBullR1, bestBullR2);
    }
    
    arrSymTF[idx].lastHighShift = lastHighShift;
@@ -1412,7 +1415,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   WriteRTDivergence(sym, tfStr, true, true, lastHighTime, lastHighRSI, lastHighPrice, timeAtMaxHigh, rsiAtMaxHigh, rtMaxHigh);
                   
                   if(gmt7Time >= todayStartGMT7)
-                     AddTodaySignal(sym, tfStr, "BEAR", "Reg", "RT", timeAtMaxHigh, lastHighPrice, rtMaxHigh, lastHighRSI, rsiAtMaxHigh);
+                     AddTodaySignal(sym, tfStr, "BEAR", "Reg", "RT", lastHighTime, timeAtMaxHigh, lastHighPrice, rtMaxHigh, lastHighRSI, rsiAtMaxHigh);
                   
                   if(isStrong && timeAtMaxHigh >= g_initTime && IsNewsSafe() && shouldTrack)
                   {
@@ -1473,7 +1476,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   WriteRTDivergence(sym, tfStr, true, false, lastHighTime, lastHighRSI, lastHighPrice, timeAtMaxRSI, rtMaxRSI, priceAtMaxRSI);
                   
                   if(gmt7Time >= todayStartGMT7)
-                     AddTodaySignal(sym, tfStr, "BEAR", "Hid", "RT", timeAtMaxRSI, lastHighPrice, priceAtMaxRSI, lastHighRSI, rtMaxRSI);
+                     AddTodaySignal(sym, tfStr, "BEAR", "Hid", "RT", lastHighTime, timeAtMaxRSI, lastHighPrice, priceAtMaxRSI, lastHighRSI, rtMaxRSI);
                   
                   if(isStrong && timeAtMaxRSI >= g_initTime && IsNewsSafe() && shouldTrack)
                   {
@@ -1559,7 +1562,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   WriteRTDivergence(sym, tfStr, false, true, lastLowTime, lastLowRSI, lastLowPrice, timeAtMinLow, rsiAtMinLow, rtMinLow);
                   
                   if(gmt7Time >= todayStartGMT7)
-                     AddTodaySignal(sym, tfStr, "BULL", "Reg", "RT", timeAtMinLow, lastLowPrice, rtMinLow, lastLowRSI, rsiAtMinLow);
+                     AddTodaySignal(sym, tfStr, "BULL", "Reg", "RT", lastLowTime, timeAtMinLow, lastLowPrice, rtMinLow, lastLowRSI, rsiAtMinLow);
                   
                   if(isStrong && timeAtMinLow >= g_initTime && IsNewsSafe() && shouldTrack)
                   {
@@ -1620,7 +1623,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   WriteRTDivergence(sym, tfStr, false, false, lastLowTime, lastLowRSI, lastLowPrice, timeAtMinRSI, rtMinRSI, priceAtMinRSI);
                   
                   if(gmt7Time >= todayStartGMT7)
-                     AddTodaySignal(sym, tfStr, "BULL", "Hid", "RT", timeAtMinRSI, lastLowPrice, priceAtMinRSI, lastLowRSI, rtMinRSI);
+                     AddTodaySignal(sym, tfStr, "BULL", "Hid", "RT", lastLowTime, timeAtMinRSI, lastLowPrice, priceAtMinRSI, lastLowRSI, rtMinRSI);
                   
                   if(isStrong && timeAtMinRSI >= g_initTime && IsNewsSafe() && shouldTrack)
                   {
