@@ -382,6 +382,29 @@ body.trade-fullscreen .signal-panel{display:none!important}
  body.trade-fullscreen .chart-workspace #rsiChart{flex-basis:44px;height:44px}
 }
 
+
+/* Compact settings dialog and single integrated chart/RSI pane */
+.trade-settings-dialog{width:min(420px,calc(100vw - 24px));max-height:80dvh}
+.settings-fields{display:grid;gap:12px}
+.settings-fields label{display:grid;gap:5px;color:#aebdd0;font-size:11px}
+.settings-fields input,.settings-fields select{width:100%;padding:9px 10px;background:#111f33;color:#e8eef7;border:1px solid #354963;border-radius:8px;font:inherit}
+body.trade-fullscreen .chart-stage{position:relative;overflow:hidden}
+body.trade-fullscreen .chart-stage #priceChart{position:absolute!important;left:0;right:0;top:0;bottom:64px;width:100%!important;height:auto!important}
+body.trade-fullscreen .chart-stage #rsiChart{position:absolute!important;left:0;right:0;bottom:0;width:100%!important;height:64px!important;border-top:1px solid #26364c}
+body.trade-fullscreen .chart-workspace #rsiChart{flex:none}
+body.trade-fullscreen .trade-fields{grid-template-columns:repeat(2,minmax(0,1fr))}
+body.trade-fullscreen .trade-fields label{min-width:0}
+body.trade-fullscreen .trade-fields input{width:100%}
+body.trade-fullscreen .chart-overlay-bottom .trade-fields{grid-template-columns:repeat(2,minmax(0,1fr))}
+body.trade-fullscreen .chart-overlay-bottom .trade-fields label{font-size:9px}
+body.trade-fullscreen .chart-overlay-bottom .trade-submit button{min-width:78px}
+@media(max-width:600px){
+ body.trade-fullscreen .chart-stage #priceChart{bottom:52px}
+ body.trade-fullscreen .chart-stage #rsiChart{height:52px!important}
+ body.trade-fullscreen .chart-overlay-bottom .trade-fields{grid-template-columns:repeat(2,minmax(0,1fr))}
+ body.trade-fullscreen .chart-overlay-bottom .trade-submit button{min-width:64px}
+}
+
 </style>
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.2/dist/lightweight-charts.standalone.production.js"></script>
 </head>
@@ -393,29 +416,25 @@ body.trade-fullscreen .signal-panel{display:none!important}
 <section class="panel chart-workspace">
 <div class="chart-stage">
 <div id="priceChart"></div>
+<div id="rsiChart"></div>
 <div class="chart-overlay-top"><div class="panel-head chart-head">
 <div class="chart-pickers"><strong id="chartTitle">EURUSD · M15</strong><select id="symbol"><option>EURUSD</option><option>GBPUSD</option><option>USDJPY</option><option>XAUUSD</option><option>BTCUSD</option><option>USDCAD</option><option>NZDUSD</option><option>USDCHF</option></select><select id="tf"><option>M15</option><option>H1</option><option>H4</option><option>D1</option><option>M5</option><option>M30</option><option>M1</option></select></div>
-<div class="chart-actions"><span class="small" id="feedState">Đang kết nối dữ liệu...</span><button id="positionsButton" type="button" title="Xem các vị thế đang mở">Vị thế <span id="positionCount">0</span></button><button id="statsButton" type="button" title="Thống kê tín hiệu và lịch sử PAPER">Thống kê</button><button id="fitChart" title="Vừa khung biểu đồ">Fit</button><button id="refresh" title="Làm mới dữ liệu">↻</button><button id="fullscreenToggle" type="button">Thoát toàn màn hình</button></div>
+<div class="chart-actions"><span class="small" id="feedState">Đang kết nối dữ liệu...</span><button id="settingsButton" type="button" title="Cài đặt chế độ, Risk và Entry">⚙ Cài đặt</button><button id="positionsButton" type="button" title="Xem các vị thế đang mở">Vị thế <span id="positionCount">0</span></button><button id="statsButton" type="button" title="Thống kê tín hiệu và lịch sử PAPER">Thống kê</button><button id="fitChart" title="Vừa khung biểu đồ">Fit</button><button id="refresh" title="Làm mới dữ liệu">↻</button><button id="fullscreenToggle" type="button">Thoát toàn màn hình</button></div>
 </div>
 <div class="chart-tools"><div class="quick-tf" aria-label="Khung thời gian"><button data-tf="M1">1m</button><button data-tf="M5">5m</button><button data-tf="M15" class="selected">15m</button><button data-tf="M30">30m</button><button data-tf="H1">1H</button><button data-tf="H4">4H</button><button data-tf="D1">1D</button></div><div class="chart-style"><button id="candleMode" class="selected">Nến</button><button id="lineMode">Đường</button></div></div><div class="ohlc-strip" id="ohlcLegend"><b>O —</b><span>H —</span><span>L —</span><span>C —</span><span class="ohlc-change">—</span></div>
 </div>
 <div class="chart-overlay-bottom"><div class="trade-strip">
 <div class="trade-fields">
-<label>Chế độ<select id="orderMode"><option value="MARKET" selected>Market</option><option value="PENDING">Pending</option></select></label>
-<label>Risk ($)<input id="riskMoney" type="number" min="0.01" step="1" value="25"></label>
-<label id="entryWrap">Entry<input id="entryPrice" type="number" step="any"></label>
 <label>SL<input id="slPrice" type="number" step="any"></label>
 <label>TP<input id="tpPrice" type="number" step="any"></label>
 </div>
 <div class="trade-options"><div class="level-toggles"><label><input id="showEntry" type="checkbox"> Entry line</label><label><input id="showSL" type="checkbox" checked> SL line</label><label><input id="showTP" type="checkbox" checked> TP line</label></div><button id="calcLot">Cập nhật</button></div>
 </div>
 <div class="trade-footer"><div class="lot-block"><span class="small">KHỐI LƯỢNG TÍNH TOÁN</span><div id="lotResult" class="small">Đang chờ dữ liệu MT5 để tính lot.</div><div id="contractMeta" class="small">Đang chờ thông số hợp đồng từ MT5...</div></div>
-<div class="trade-submit"><button id="sendBuy" class="active">BUY · PAPER</button><button id="sendSell">SELL · PAPER</button></div>
+<div class="trade-submit"><button id="sendBuy" class="active">BUY</button><button id="sendSell">SELL</button></div>
 <div id="requestState" class="small request-state">Chỉ gửi yêu cầu vào hàng đợi PAPER · không đặt lệnh broker.</div></div>
 </div>
 </div>
-<div id="rsiChart"></div>
-
 <div class="statusline">Nến và tín hiệu lấy từ MT5 / AI OOP V8. RSI 14 chỉ để quan sát, không tạo tín hiệu.</div>
 </section>
 <section class="panel signal-panel" style="margin-top:10px"><div class="panel-head"><strong>Tín hiệu AI OOP V8</strong><span class="small" id="signalCount">0 tín hiệu</span></div><div id="signalTable"><div class="empty">Chưa có tín hiệu cho mã và khung đang chọn</div></div></section>
@@ -428,6 +447,15 @@ body.trade-fullscreen .signal-panel{display:none!important}
 </aside>
 </div>
 </main>
+
+<dialog id="tradeSettingsDialog" class="positions-dialog trade-settings-dialog">
+ <div class="positions-dialog-head"><div><strong>CÀI ĐẶT GIAO DỊCH PAPER</strong><div class="small">Chế độ, Risk và Entry</div></div><button type="button" id="closeTradeSettings" aria-label="Đóng">✕</button></div>
+ <div class="positions-dialog-body"><div class="settings-fields">
+  <label>Chế độ<select id="orderMode"><option value="MARKET" selected>Market</option><option value="PENDING">Pending</option></select></label>
+  <label>Risk ($)<input id="riskMoney" type="number" min="0.01" step="1" value="25"></label>
+  <label id="entryWrap">Entry<input id="entryPrice" type="number" step="any"></label>
+ </div><p class="small">Market tự lấy giá hiện tại. Chọn Pending nếu muốn chỉnh Entry thủ công.</p></div>
+</dialog>
 
 <dialog id="positionsDialog" class="positions-dialog">
  <div class="positions-dialog-head"><div><strong>VỊ THẾ ĐANG MỞ</strong><div class="small">Đồng bộ từ MT5 / Trade V9 · chỉ xem</div></div><button type="button" id="closePositionsDialog" aria-label="Đóng">✕</button></div>
@@ -454,7 +482,7 @@ let mt5Digits=5,mt5TickSize=0.00001,mt5TickValue=0,mt5VolumeMin=0,mt5VolumeMax=0
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const priceChart=LightweightCharts.createChart($('priceChart'),{layout:{background:{color:'#111c2e'},textColor:'#a9b8ca'},grid:{vertLines:{color:'#1c2a3e'},horzLines:{color:'#1c2a3e'}},rightPriceScale:{borderColor:'#34445c'},timeScale:{borderColor:'#34445c',timeVisible:true,secondsVisible:false,rightOffset:10,barSpacing:8,minBarSpacing:2},crosshair:{mode:LightweightCharts.CrosshairMode.Normal},handleScroll:{mouseWheel:true,pressedMouseMove:true,horzTouchDrag:true,vertTouchDrag:true},handleScale:{axisPressedMouseMove:true,mouseWheel:true,pinch:true}});
 const candleSeries=priceChart.addCandlestickSeries({upColor:'#22c58b',downColor:'#f06478',borderUpColor:'#22c58b',borderDownColor:'#f06478',wickUpColor:'#22c58b',wickDownColor:'#f06478',priceFormat:{type:'price',precision:5,minMove:0.00001}});
-const rsiChart=LightweightCharts.createChart($('rsiChart'),{layout:{background:{color:'#111c2e'},textColor:'#a9b8ca'},grid:{vertLines:{color:'#1c2a3e'},horzLines:{color:'#1c2a3e'}},rightPriceScale:{borderColor:'#34445c',scaleMargins:{top:.04,bottom:.04},autoScale:true},timeScale:{visible:false,borderColor:'#34445c',rightOffset:10,barSpacing:8,minBarSpacing:2},crosshair:{mode:LightweightCharts.CrosshairMode.Normal,vertLine:{visible:true,labelVisible:false,color:'#a78bfa',width:1,style:2},horzLine:{visible:true,labelVisible:false,color:'#a78bfa',width:1,style:2}},height:150});
+const rsiChart=LightweightCharts.createChart($('rsiChart'),{layout:{background:{color:'#111c2e'},textColor:'#a9b8ca'},grid:{vertLines:{color:'#1c2a3e'},horzLines:{color:'#1c2a3e'}},rightPriceScale:{borderColor:'#34445c',scaleMargins:{top:.04,bottom:.04},autoScale:true},timeScale:{visible:false,borderVisible:false,ticksVisible:false,borderColor:'transparent',rightOffset:10,barSpacing:8,minBarSpacing:2},crosshair:{mode:LightweightCharts.CrosshairMode.Normal,vertLine:{visible:true,labelVisible:false,color:'#a78bfa',width:1,style:2},horzLine:{visible:true,labelVisible:false,color:'#a78bfa',width:1,style:2}},height:150});
 const rsiSeries=rsiChart.addLineSeries({color:'#a78bfa',lineWidth:2,priceLineVisible:false,lastValueVisible:true,priceFormat:{type:'price',precision:0,minMove:1},autoscaleInfoProvider:()=>({priceRange:{minValue:0,maxValue:100}})});
 rsiSeries.createPriceLine({price:70,color:'#f06478',lineWidth:1,lineStyle:2,axisLabelVisible:false,title:''});
 rsiSeries.createPriceLine({price:50,color:'#64748b',lineWidth:1,lineStyle:2,axisLabelVisible:false,title:''});
@@ -519,6 +547,9 @@ async function refreshChartPositions(){
  try{const r=await fetch('/api/dashboard',{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();renderChartPositions(d.paper_positions||[])}
  catch(e){$('positionsUpdated').textContent='Không thể đồng bộ vị thế: '+e.message}
 }
+$('settingsButton').addEventListener('click',()=>$('tradeSettingsDialog').showModal());
+$('closeTradeSettings').addEventListener('click',()=>$('tradeSettingsDialog').close());
+$('tradeSettingsDialog').addEventListener('click',e=>{if(e.target===$('tradeSettingsDialog'))$('tradeSettingsDialog').close()});
 $('positionsButton').addEventListener('click',()=>{refreshChartPositions();$('positionsDialog').showModal()});
 $('closePositionsDialog').addEventListener('click',()=>$('positionsDialog').close());
 $('positionsDialog').addEventListener('click',e=>{if(e.target===$('positionsDialog'))$('positionsDialog').close()});
@@ -563,8 +594,9 @@ function setLevelLines(){
 function updateDirectionFromSL(){
  const sl=Number($('slPrice').value),reference=$('orderMode').value==='MARKET'?latestMarketPrice:Number($('entryPrice').value);
  if(sl>0&&reference>0&&sl!==reference)autoDirection=sl>reference?'SELL':'BUY';
- $('sendBuy').classList.remove('active');$('sendSell').classList.remove('active');
- $('requestState').textContent='SL đang gợi ý '+autoDirection+'; hướng gửi được quyết định bởi nút BUY hoặc SELL bạn nhấn.';
+ $('sendBuy').classList.toggle('active',autoDirection==='BUY');$('sendSell').classList.toggle('active',autoDirection==='SELL');
+ $('sendBuy').style.display=autoDirection==='BUY'?'':'none';$('sendSell').style.display=autoDirection==='SELL'?'':'none';
+ $('requestState').textContent='SL đang xác định hướng '+autoDirection+' · chỉ gửi PAPER.';
 }
 function volumeDigits(step){
  if(!(step>0))return 2;
