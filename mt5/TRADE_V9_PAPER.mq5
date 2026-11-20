@@ -3,9 +3,10 @@
 //| Forex AI Server consumer.                                        |
 //| UsePaperSimulation=true  -> virtual paper trades (no broker order)|
 //| UsePaperSimulation=false -> REAL broker orders via CTrade        |
+//| Pending orders: LIMIT ONLY (BUY_LIMIT / SELL_LIMIT), no Stop     |
 //+------------------------------------------------------------------+
 #property strict
-#property version "2.11"
+#property version "2.12"
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
@@ -36,6 +37,8 @@ struct PaperTrade
    string   symbol;
    string   timeframe;
    string   direction;
+   string   orderType;   // "MARKET", "BUY_LIMIT", "SELL_LIMIT"
+   bool     isPending;   // true khi đang chờ khớp Limit
    double   entry;
    double   sl;
    double   tp;
@@ -75,6 +78,14 @@ string JsonEscape(string s)
    StringReplace(s, "\"", "\\\"");
    StringReplace(s, "\r", " ");
    StringReplace(s, "\n", " ");
+   return s;
+}
+
+string UpperTrim(string s)
+{
+   StringTrimLeft(s);
+   StringTrimRight(s);
+   StringToUpper(s);
    return s;
 }
 
@@ -355,8 +366,46 @@ void PruneClosedRealPositions()
    }
 }
 
+//--- Chuẩn hóa & kiểm tra loại lệnh (chỉ MARKET, BUY_LIMIT, SELL_LIMIT) ---
+bool ResolveOrderType(string rawOrderType,string direction,string &normOrderType,string &errOut)
+{
+   string ot = UpperTrim(rawOrderType);
+   string dir = UpperTrim(direction);
+
+   if(StringFind(ot, "STOP") >= 0)
+   {
+      errOut = "Stop orders are not supported (LIMIT only: BUY_LIMIT / SELL_LIMIT)";
+      return false;
+   }
+
+   if(ot == "" || ot == "MARKET")
+   {
+      normOrderType = "MARKET";
+      if(dir == "BUY" || dir == "SELL") return true;
+      errOut = "Invalid direction for MARKET";
+      return false;
+   }
+
+   if(ot == "BUY_LIMIT")
+   {
+      normOrderType = "BUY_LIMIT";
+      if(dir != "BUY") { errOut = "BUY_LIMIT requires direction=BUY"; return false; }
+      return true;
+   }
+
+   if(ot == "SELL_LIMIT")
+   {
+      normOrderType = "SELL_LIMIT";
+      if(dir != "SELL") { errOut = "SELL_LIMIT requires direction=SELL"; return false; }
+      return true;
+   }
+
+   errOut = "Unsupported order_type: " + ot;
+   return false;
+}
+
 //--- Mở lệnh (paper hoặc real) ------------------------------------
-bool OpenTrade(string id,string symbol,string tf,string direction,
+bool OpenTrade(string id,string symbol,string tf,string direction,string rawOrderType,
                double entry,double sl,double tpRequested,
                double riskMoney,double requestedLot)
 {
@@ -366,6 +415,20 @@ bool OpenTrade(string id,string symbol,string tf,string direction,
    double bid=SymbolInfoDouble(symbol,SYMBOL_BID);
    double ask=SymbolInfoDouble(symbol,SYMBOL_ASK);
    if(bid<=0 || ask<=0) { Ack(id,"REJECTED","No live quote"); return false; }
+
+   string normOrderType = "";
+   string typeErr = "";
+   if(!ResolveOrderType(rawOrderType, direction, normOrderType, typeErr))
+   { Ack(id,"REJECTED",typeErr); return false; }
+
+   bool isLimit = (normOrderType == "BUY_LIMIT" || normOrderType == "SELL_LIMIT");
+   if(isLimit)
+   {
+      if(normOrderType == "BUY_LIMIT" && entry >= ask)
+      { Ack(id,"REJECTED","BUY_LIMIT requires entry < current Ask"); return false; }
+      if(normOrderType == "SELL_LIMIT" && entry <= bid)
+      { Ack(id,"REJECTED","SELL_LIMIT requires entry > current Bid"); return false; }
+   }
 
    double distance=MathAbs(entry-sl);
    double tickSize=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_SIZE);
@@ -389,6 +452,7 @@ bool OpenTrade(string id,string symbol,string tf,string direction,
    { Ack(id,"REJECTED","Invalid TP geometry"); return false; }
 
    int digits=(int)SymbolInfoInteger(symbol,SYMBOL_DIGITS);
+   entry=NormalizeDouble(entry,digits);
    sl=NormalizeDouble(sl,digits);
    tp=NormalizeDouble(tp,digits);
 
@@ -397,17 +461,22 @@ bool OpenTrade(string id,string symbol,string tf,string direction,
    {
       int n=ArraySize(trades); ArrayResize(trades,n+1);
       trades[n].id=id; trades[n].symbol=symbol; trades[n].timeframe=tf;
-      trades[n].direction=direction; trades[n].entry=entry; trades[n].sl=sl;
+      trades[n].direction=direction; trades[n].orderType=normOrderType;
+      trades[n].isPending=isLimit;
+      trades[n].entry=entry; trades[n].sl=sl;
       trades[n].tp=tp; trades[n].volume=volume;
       trades[n].riskMoney=actualRisk; trades[n].opened=TimeCurrent();
 
-      Print("[PAPER OPEN] ",symbol," ",tf," ",direction,
+      Print(isLimit ? "[PAPER LIMIT QUEUED] " : "[PAPER OPEN] ",
+            symbol," ",tf," ",normOrderType," ",direction,
             " entry=",DoubleToString(entry,digits),
             " SL=",DoubleToString(sl,digits),
             " TP=",DoubleToString(tp,digits),
             " lots=",DoubleToString(volume,4),
             " risk=$",DoubleToString(actualRisk,2));
-      Ack(id,"SIMULATED","Paper position opened; no broker order sent");
+      Ack(id,"SIMULATED",
+          isLimit ? (normOrderType + " paper pending queued; no broker order sent")
+                  : "Paper position opened; no broker order sent");
       return true;
    }
 
@@ -417,9 +486,15 @@ bool OpenTrade(string id,string symbol,string tf,string direction,
    trade.SetTypeFilling(PickFilling(symbol));
    trade.SetAsyncMode(false);
 
-   bool ok = (direction=="BUY")
-             ? trade.Buy (volume,symbol,0.0,sl,tp,OrderComment)
-             : trade.Sell(volume,symbol,0.0,sl,tp,OrderComment);
+   bool ok = false;
+   if(normOrderType == "BUY_LIMIT")
+      ok = trade.BuyLimit(volume,entry,symbol,sl,tp,ORDER_TIME_GTC,0,OrderComment);
+   else if(normOrderType == "SELL_LIMIT")
+      ok = trade.SellLimit(volume,entry,symbol,sl,tp,ORDER_TIME_GTC,0,OrderComment);
+   else
+      ok = (direction=="BUY")
+           ? trade.Buy (volume,symbol,0.0,sl,tp,OrderComment)
+           : trade.Sell(volume,symbol,0.0,sl,tp,OrderComment);
 
    if(!ok || trade.ResultRetcode()!=TRADE_RETCODE_DONE)
    {
@@ -434,8 +509,9 @@ bool OpenTrade(string id,string symbol,string tf,string direction,
    if(PositionSelectByTicket(posTicket))
       posTicket = (ulong)PositionGetInteger(POSITION_TICKET);
 
-   Print("[REAL OPEN] signal=",id," ",symbol," ",tf," ",direction,
+   Print("[REAL OPEN] signal=",id," ",symbol," ",tf," ",normOrderType," ",direction,
          " lots=",DoubleToString(volume,4),
+         " entry=",DoubleToString(entry,digits),
          " SL=",DoubleToString(sl,digits),
          " TP=",DoubleToString(tp,digits),
          " ticket=",posTicket,
@@ -446,8 +522,8 @@ bool OpenTrade(string id,string symbol,string tf,string direction,
       id, symbol, tf, direction, actualRisk);
 
    Ack(id,"SIMULATED",
-       StringFormat("Real broker order placed lot=%.4f ticket=%I64u",
-                    volume,posTicket));
+       StringFormat("Real broker order placed (%s) lot=%.4f ticket=%I64u",
+                    normOrderType,volume,posTicket));
    return true;
 }
 
@@ -473,7 +549,7 @@ bool ClosePaperTradeAtIndex(int idx,string outcome)
    string s=trades[idx].symbol;
    double bid=SymbolInfoDouble(s,SYMBOL_BID), ask=SymbolInfoDouble(s,SYMBOL_ASK);
    double realized=0;
-   if(bid>0 && ask>0)
+   if(!trades[idx].isPending && bid>0 && ask>0)
    {
       ENUM_ORDER_TYPE orderType=(trades[idx].direction=="BUY") ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
       double closePrice=(trades[idx].direction=="BUY") ? bid : ask;
@@ -499,6 +575,25 @@ void ManagePaperTrades()
       string s=trades[i].symbol;
       double bid=SymbolInfoDouble(s,SYMBOL_BID), ask=SymbolInfoDouble(s,SYMBOL_ASK);
       if(bid<=0 || ask<=0) continue;
+
+      if(trades[i].isPending)
+      {
+         bool triggered=false;
+         if(trades[i].orderType=="BUY_LIMIT" && ask<=trades[i].entry)
+            triggered=true;
+         else if(trades[i].orderType=="SELL_LIMIT" && bid>=trades[i].entry)
+            triggered=true;
+
+         if(triggered)
+         {
+            trades[i].isPending=false;
+            trades[i].opened=TimeCurrent();
+            Print("[PAPER LIMIT TRIGGERED] ",trades[i].orderType," ",s," id=",trades[i].id,
+                  " @ ",DoubleToString(trades[i].entry,(int)SymbolInfoInteger(s,SYMBOL_DIGITS)));
+         }
+         continue;
+      }
+
       bool stop=false,target=false;
       if(trades[i].direction=="BUY") { stop=(bid<=trades[i].sl); target=(bid>=trades[i].tp); }
       else                            { stop=(ask>=trades[i].sl); target=(ask<=trades[i].tp); }
@@ -677,6 +772,7 @@ void PollServer()
    string symbol    = JsonValue(obj,"symbol");
    string tf        = JsonValue(obj,"timeframe");
    string direction = JsonValue(obj,"direction");
+   string orderType = JsonValue(obj,"order_type");
    double entry     = StringToDouble(JsonValue(obj,"entry"));
    double sl        = StringToDouble(JsonValue(obj,"sl"));
    double tp        = StringToDouble(JsonValue(obj,"tp"));
@@ -684,7 +780,7 @@ void PollServer()
    double reqLot    = StringToDouble(JsonValue(obj,"requested_lot"));
    datetime sigTime = ParseIsoOrEpochTime(JsonValue(obj,"created_at"));
 
-   Print("[V9 RECEIVE] signal=",id," ",symbol," ",tf," ",direction,
+   Print("[V9 RECEIVE] signal=",id," ",symbol," ",tf," ",(orderType==""?"MARKET":orderType)," ",direction,
          " entry=",DoubleToString(entry,8)," SL=",DoubleToString(sl,8),
          " lot=",DoubleToString(reqLot,4)," risk=$",DoubleToString(riskMoney,2));
 
@@ -720,7 +816,7 @@ void PollServer()
      Ack(id,"REJECTED","Max positions reached"); return; }
 
    MarkProcessedSignal(id);
-   OpenTrade(id,symbol,tf,direction,entry,sl,tp,riskMoney,reqLot);
+   OpenTrade(id,symbol,tf,direction,orderType,entry,sl,tp,riskMoney,reqLot);
 }
 
 //--- Sync positions & real closed history --------------------------
@@ -735,7 +831,7 @@ void SendPaperPositions()
          string symbol=trades[i].symbol;
          double bid=SymbolInfoDouble(symbol,SYMBOL_BID), ask=SymbolInfoDouble(symbol,SYMBOL_ASK);
          double profit=0;
-         if(bid>0 && ask>0)
+         if(!trades[i].isPending && bid>0 && ask>0)
          {
             ENUM_ORDER_TYPE ot=(trades[i].direction=="BUY") ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
             double closePrice=(trades[i].direction=="BUY") ? bid : ask;
