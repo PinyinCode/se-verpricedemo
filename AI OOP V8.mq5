@@ -688,6 +688,7 @@ void ClearOldTodaySignals()
 string BuildTodaySignalsDisplay()
 {
    CleanupInvalidRTTodaySignals();
+   PublishTodaySignals();
    
    string display="\nTODAY SIGNALS (GMT+7) - "+IntegerToString(g_todaySignalCount)+" signals\n";
    display+=" \n";
