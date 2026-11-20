@@ -18,6 +18,9 @@ button{cursor:pointer}button.active{border-color:#36bd91;color:#62dfb3}
 .buy{color:var(--green)}.sell{color:var(--red)}.small{font-size:11px;color:var(--muted)}.empty{padding:24px;text-align:center;color:var(--muted)}
 table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:8px;border-bottom:1px solid var(--line);font-size:11px}th{color:var(--muted);font-weight:600}
 #signalTable{max-height:240px;overflow:auto}.level-toggles{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.level-toggles label{display:inline-flex;gap:5px;align-items:center;color:var(--muted);font-size:12px}.level-toggles input{accent-color:#60a5fa}.lot-value{font-size:22px;font-weight:800;color:#62dfb3;margin:8px 0}.mode-label{display:inline-flex;align-items:center;gap:6px}.statusline{padding:9px 12px;color:var(--muted);font-size:11px;border-top:1px solid var(--line)}
+.btn-close-pos{padding:4px 8px;font-size:11px;border-radius:6px;background:rgba(240,107,126,.14);border:1px solid #9c4254;color:#ff9aaa;white-space:nowrap}
+.btn-close-pos:hover:not(:disabled){background:rgba(240,107,126,.26);border-color:#f06b7e;color:#fff}
+.btn-close-pos:disabled{opacity:.5;cursor:not-allowed}
 @media(max-width:900px){.layout{grid-template-columns:1fr}#priceChart{height:390px}}
 body.trade-fullscreen{overflow:hidden}
 body.trade-fullscreen header{display:none}
@@ -47,6 +50,7 @@ body.trade-fullscreen .drag-line{z-index:8}
 .chart-pickers,.chart-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
 .chart-pickers strong{font-size:14px;margin-right:5px}
 .chart-pickers select,.chart-actions button{padding:6px 9px}
+.chart-pickers select{min-width:80px;flex:0 0 auto}
 .chart-actions{margin-left:auto}
 .chart-actions #feedState{max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.server-state{display:inline-flex;align-items:center;gap:5px;white-space:nowrap}.server-state i{width:7px;height:7px;border-radius:50%;background:#f59e0b;display:inline-block}.server-state.online i{background:#22c58b}.server-state.offline i{background:#f06478}#clockGMT7{font-variant-numeric:tabular-nums;white-space:nowrap}
 .trade-strip{padding:8px 10px 6px;border-bottom:1px solid var(--line);background:#0e1929}
@@ -205,7 +209,7 @@ button.active{background:rgba(39,201,149,.11);border-color:#27c995;color:#70e4bd
 }
 @media (orientation:portrait) and (max-width:520px) {
   .chart-pickers strong{font-size:12px}
-  .chart-pickers select{padding:6px 7px;max-width:92px}
+  .chart-pickers select{padding:6px 7px;min-width:76px;flex:0 0 auto}
   .chart-actions button{padding:6px 8px}
   .quick-tf button{padding:4px 6px;min-width:27px}
   .chart-style button{padding:4px 7px}
@@ -249,14 +253,14 @@ body.trade-fullscreen .chart-workspace{min-height:0}
 }
 
 
-.positions-dialog{width:min(900px,calc(100vw - 24px));max-width:900px;max-height:min(76dvh,680px);padding:0;border:1px solid #354963;border-radius:14px;background:#101b2c;color:#e8eef7;box-shadow:0 24px 80px rgba(0,0,0,.55)}
+.positions-dialog{width:min(960px,calc(100vw - 24px));max-width:960px;max-height:min(78dvh,700px);padding:0;border:1px solid #354963;border-radius:14px;background:#101b2c;color:#e8eef7;box-shadow:0 24px 80px rgba(0,0,0,.55)}
 .positions-dialog::backdrop{background:rgba(3,8,16,.72);backdrop-filter:blur(4px)}
 .positions-dialog-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid #293a52;background:#142239}
 .positions-dialog-head strong{font-size:13px;letter-spacing:.4px}
 .positions-dialog-head button{padding:5px 10px}
 .positions-dialog-body{padding:12px 16px 16px}
 .positions-table-wrap{overflow:auto;max-height:55dvh;margin-top:8px}
-.positions-dialog table{min-width:650px}
+.positions-dialog table{min-width:720px}
 .positions-dialog td,.positions-dialog th{padding:9px 8px;font-size:12px}
 #positionsButton{white-space:nowrap}
 #positionCount{display:inline-grid;place-items:center;min-width:18px;height:18px;margin-left:3px;padding:0 4px;border-radius:10px;background:#263d59;color:#e8eef7;font-size:10px}
@@ -268,7 +272,7 @@ body.trade-fullscreen .chart-workspace{min-height:0}
 .stats-kpi span{display:block;color:#9eafc5;font-size:11px}
 .stats-kpi strong{display:block;margin-top:5px;font-size:20px;font-variant-numeric:tabular-nums}
 .stats-section{margin-top:14px;border:1px solid #293a52;border-radius:10px;overflow:hidden}
-.stats-section-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;background:#142239;border-bottom:1px solid #293a52}
+.stats-section-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;background:#142239;border-bottom:1px solid #293a52;flex-wrap:wrap}
 .stats-section-head strong{font-size:11px;letter-spacing:.35px}
 .stats-section .positions-table-wrap{max-height:260px;margin:0}
 .stats-section table{min-width:720px}
@@ -307,9 +311,9 @@ body.trade-fullscreen .chart-workspace .statusline{display:none}
 @media(max-width:600px){
  body.trade-fullscreen .chart-overlay-top{top:4px;left:4px;right:4px;gap:3px}
  body.trade-fullscreen .chart-overlay-top .chart-head{align-items:center;flex-wrap:nowrap}
- body.trade-fullscreen .chart-overlay-top .chart-pickers{width:auto;flex:1;flex-wrap:nowrap;min-width:0}
+ body.trade-fullscreen .chart-overlay-top .chart-pickers{width:auto;flex:0 1 auto;flex-wrap:nowrap;min-width:0}
  body.trade-fullscreen .chart-overlay-top .chart-pickers strong{display:none}
- body.trade-fullscreen .chart-overlay-top .chart-pickers select{max-width:90px;min-width:0}
+ body.trade-fullscreen .chart-overlay-top .chart-pickers select{min-width:70px;width:auto;flex:0 0 auto}
  body.trade-fullscreen .chart-overlay-top .chart-actions{width:auto;margin-left:auto;flex-wrap:nowrap;gap:3px}
  body.trade-fullscreen .chart-overlay-top .chart-actions #feedState{display:none}
  body.trade-fullscreen .chart-overlay-top .chart-actions button{padding:4px 5px;font-size:10px}
@@ -463,9 +467,9 @@ body.trade-fullscreen .chart-stage #rsiChart{min-height:0!important;max-height:n
 /* Final compact controls + independently resizable RSI and lot panel */
 body.trade-fullscreen .chart-overlay-top{gap:3px}
 body.trade-fullscreen .chart-overlay-top .chart-head{display:flex!important;flex-wrap:nowrap!important;align-items:center!important;justify-content:space-between!important;gap:5px!important}
-body.trade-fullscreen .chart-overlay-top .chart-pickers{display:flex!important;flex:0 1 auto!important;flex-wrap:nowrap!important;min-width:0!important;width:auto!important;gap:4px!important}
+body.trade-fullscreen .chart-overlay-top .chart-pickers{display:flex!important;flex:0 0 auto!important;flex-wrap:nowrap!important;min-width:0!important;width:auto!important;gap:4px!important}
 body.trade-fullscreen .chart-overlay-top .chart-pickers strong{white-space:nowrap!important;font-size:11px!important;margin-right:2px!important}
-body.trade-fullscreen .chart-overlay-top .chart-pickers select{min-width:0!important;max-width:88px!important;padding:4px 5px!important}
+body.trade-fullscreen .chart-overlay-top .chart-pickers select{min-width:74px!important;width:auto!important;max-width:none!important;flex:0 0 auto!important;padding:4px 5px!important}
 body.trade-fullscreen .chart-overlay-top .chart-actions{display:flex!important;flex:0 0 auto!important;flex-wrap:nowrap!important;width:auto!important;margin:0 0 0 auto!important;justify-content:flex-end!important;gap:3px!important}
 body.trade-fullscreen .chart-overlay-top .chart-actions #feedState{display:none!important}
 body.trade-fullscreen .chart-overlay-top .chart-actions button{min-width:30px!important;padding:4px 6px!important;white-space:nowrap!important}
@@ -485,7 +489,7 @@ body.trade-fullscreen #rsiResizeHandle{flex:0 0 9px!important;height:9px!importa
 body.trade-fullscreen .chart-overlay-bottom .trade-footer{min-height:56px!important;max-height:45dvh;overflow:auto;flex:0 0 auto!important}
 @media(max-width:600px){
  body.trade-fullscreen .chart-overlay-top .chart-pickers strong{display:none!important}
- body.trade-fullscreen .chart-overlay-top .chart-pickers select{max-width:78px!important}
+ body.trade-fullscreen .chart-overlay-top .chart-pickers select{min-width:68px!important;width:auto!important;max-width:none!important;flex:0 0 auto!important}
  body.trade-fullscreen .chart-overlay-top .chart-actions button{min-width:27px!important;padding:4px!important;font-size:10px!important}
  body.trade-fullscreen .chart-overlay-top .chart-actions #fullscreenToggle{min-width:29px!important;width:29px!important;font-size:18px!important}
  body.trade-fullscreen .chart-overlay-top .quick-tf button,
@@ -514,7 +518,7 @@ body.trade-fullscreen .chart-overlay-bottom .trade-footer{max-height:none!import
 <div id="rsiChart"></div>
 <div class="chart-overlay-top"><div class="panel-head chart-head">
 <div class="chart-pickers"><strong id="chartTitle">EURUSD · M15</strong><select id="symbol"><option>EURUSD</option><option>GBPUSD</option><option>USDJPY</option><option>XAUUSD</option><option>BTCUSD</option><option>USDCAD</option><option>NZDUSD</option><option>USDCHF</option></select><select id="tf"><option>M15</option><option>H1</option></select></div>
-<div class="chart-actions"><span class="small" id="clockGMT7">GMT+7 --:--:--</span><span class="small server-state" id="serverState"><i></i> Server: kiểm tra...</span><span class="small" id="feedState">Đang kết nối dữ liệu...</span><button id="settingsButton" type="button" aria-label="Cài đặt" title="Cài đặt chế độ, Risk và Entry">⚙</button><button id="positionsButton" type="button" aria-label="Vị thế đang mở" title="Xem các vị thế đang mở">▣<span id="positionCount">0</span></button><button id="statsButton" type="button" aria-label="Thống kê" title="Thống kê tín hiệu và lịch sử PAPER">▤</button><button id="fitChart" aria-label="Vừa khung" title="Vừa khung biểu đồ">⤢</button><button id="refresh" title="Làm mới dữ liệu">↻</button><button id="fullscreenToggle" type="button" aria-label="Toàn màn hình" title="Bật/tắt toàn màn hình">⛶</button></div>
+<div class="chart-actions"><span class="small" id="clockGMT7">GMT+7 --:--:--</span><span class="small server-state" id="serverState"><i></i> Server: kiểm tra...</span><span class="small" id="feedState">Đang kết nối dữ liệu...</span><button id="settingsButton" type="button" aria-label="Cài đặt" title="Cài đặt chế độ, Risk và Entry">⚙</button><button id="positionsButton" type="button" aria-label="Vị thế đang mở" title="Xem các vị thế đang mở">▣<span id="positionCount">0</span></button><button id="statsButton" type="button" aria-label="Thống kê" title="Thống kê tín hiệu và lịch sử giao dịch thật">▤</button><button id="fitChart" aria-label="Vừa khung" title="Vừa khung biểu đồ">⤢</button><button id="refresh" title="Làm mới dữ liệu">↻</button><button id="fullscreenToggle" type="button" aria-label="Toàn màn hình" title="Bật/tắt toàn màn hình">⛶</button></div>
 </div>
 <div class="ohlc-strip" id="ohlcLegend"><b>O —</b><span>H —</span><span>L —</span><span>C —</span><span class="ohlc-change">—</span></div>
 </div>
@@ -549,21 +553,21 @@ body.trade-fullscreen .chart-overlay-bottom .trade-footer{max-height:none!import
 </dialog>
 
 <dialog id="positionsDialog" class="positions-dialog">
- <div class="positions-dialog-head"><div><strong>VỊ THẾ ĐANG MỞ</strong><div class="small">Đồng bộ từ MT5 / Trade V9 · chỉ xem</div></div><button type="button" id="closePositionsDialog" aria-label="Đóng">✕</button></div>
- <div class="positions-dialog-body"><div id="positionsUpdated" class="small">Đang đồng bộ...</div><div class="positions-table-wrap"><table><thead><tr><th>Mã</th><th>TF</th><th>Hướng</th><th>Entry</th><th>SL</th><th>TP</th><th>Lot</th><th>P/L</th></tr></thead><tbody id="chartPositions"><tr><td colspan="8" class="empty">Đang tải vị thế...</td></tr></tbody></table></div></div>
+ <div class="positions-dialog-head"><div><strong>VỊ THẾ ĐANG MỞ</strong><div class="small">Đồng bộ từ MT5 / Trade V9 · hỗ trợ đóng vị thế</div></div><button type="button" id="closePositionsDialog" aria-label="Đóng">✕</button></div>
+ <div class="positions-dialog-body"><div id="positionsUpdated" class="small">Đang đồng bộ...</div><div class="positions-table-wrap"><table><thead><tr><th>Mã</th><th>TF</th><th>Hướng</th><th>Entry</th><th>SL</th><th>TP</th><th>Lot</th><th>P/L</th><th>Thao tác</th></tr></thead><tbody id="chartPositions"><tr><td colspan="9" class="empty">Đang tải vị thế...</td></tr></tbody></table></div></div>
 </dialog>
 
 <dialog id="statsDialog" class="positions-dialog stats-dialog">
- <div class="positions-dialog-head"><div><strong>THỐNG KÊ & LỊCH SỬ</strong><div class="small">Tín hiệu hôm nay · Giao dịch PAPER đã đóng</div></div><button type="button" id="closeStatsDialog" aria-label="Đóng">✕</button></div>
+ <div class="positions-dialog-head"><div><strong>THỐNG KÊ & LỊCH SỬ THẬT</strong><div class="small">Tín hiệu hôm nay · Lịch sử giao dịch thật (MT5 / Trade V9)</div></div><button type="button" id="closeStatsDialog" aria-label="Đóng">✕</button></div>
  <div class="stats-body">
   <div class="stats-kpis">
    <div class="stats-kpi"><span>Tín hiệu hôm nay</span><strong id="statsSignalCount">—</strong></div>
-   <div class="stats-kpi"><span>Giao dịch đóng hôm nay</span><strong id="statsClosedCount">—</strong></div>
+   <div class="stats-kpi"><span>Giao dịch thật đóng hôm nay</span><strong id="statsClosedCount">—</strong></div>
    <div class="stats-kpi"><span>Thắng / Thua</span><strong id="statsWinLoss">—</strong></div>
-   <div class="stats-kpi"><span>P/L hôm nay</span><strong id="statsTodayPL">—</strong></div>
+   <div class="stats-kpi"><span>P/L thật hôm nay</span><strong id="statsTodayPL">—</strong></div>
   </div>
   <section class="stats-section"><div class="stats-section-head"><strong>TÍN HIỆU HÔM NAY</strong><span id="statsSignalMeta" class="small">—</span></div><div class="positions-table-wrap"><table><thead><tr><th>Thời gian</th><th>Mã</th><th>TF</th><th>Hướng</th><th>Phân kỳ</th><th>Loại</th><th>Giá</th></tr></thead><tbody id="statsTodaySignals"><tr><td colspan="7" class="empty">Đang tải...</td></tr></tbody></table></div></section>
-  <section class="stats-section"><div class="stats-section-head"><strong>LỊCH SỬ GIAO DỊCH PAPER</strong><span id="statsHistoryMeta" class="small">—</span></div><div class="positions-table-wrap"><table><thead><tr><th>Đóng lúc</th><th>Mã</th><th>Hướng</th><th>Lot</th><th>Entry</th><th>SL</th><th>TP</th><th>Kết quả</th><th>P/L</th></tr></thead><tbody id="statsPaperHistory"><tr><td colspan="9" class="empty">Đang tải...</td></tr></tbody></table></div></section>
+  <section class="stats-section"><div class="stats-section-head"><strong>LỊCH SỬ GIAO DỊCH THẬT</strong><span id="statsHistoryMeta" class="small">—</span></div><div class="positions-table-wrap"><table><thead><tr><th>Đóng lúc</th><th>Mã</th><th>Hướng</th><th>Lot</th><th>Entry</th><th>SL</th><th>TP</th><th>Kết quả</th><th>P/L</th></tr></thead><tbody id="statsPaperHistory"><tr><td colspan="9" class="empty">Đang tải lịch sử giao dịch thật...</td></tr></tbody></table></div></section>
   <div id="statsUpdated" class="small stats-updated">Đang đồng bộ...</div>
  </div>
 </dialog>
@@ -622,14 +626,46 @@ if(signature!==lastBarsSignature){
 }
 renderSignals(data.signals||[],bars);renderRsiDivergences(data.signals||[],bars);if(bars.length){const symbolChanged=lastLoadedSymbol!==symbol;if(symbolChanged){const base=Number(bars[bars.length-1].close),gap=Math.max(mt5TickSize*20,Math.abs(base)*0.001);latestMarketPrice=base;$('entryPrice').value=base.toFixed(mt5Digits);if(autoDirection==='BUY'){$('slPrice').value=(base-gap).toFixed(mt5Digits);$('tpPrice').value=(base+gap).toFixed(mt5Digits)}else{$('slPrice').value=(base+gap).toFixed(mt5Digits);$('tpPrice').value=(base-gap).toFixed(mt5Digits)}lastLoadedSymbol=symbol}if($('orderMode').value==='MARKET')$('entryPrice').value=Number(bars[bars.length-1].close).toFixed(mt5Digits);if(firstLoad){priceChart.timeScale().fitContent();priceChart.timeScale().applyOptions({rightOffset:10});rsiChart.timeScale().applyOptions({rightOffset:10});firstLoad=false}else if(oldRange){priceChart.timeScale().setVisibleLogicalRange(oldRange)}calcLot();$('feedState').textContent=bars.length+' nến · cập nhật '+new Date().toLocaleTimeString()}else{$('feedState').textContent='Chưa có nến MT5 được gửi lên server';$('signalDetails').textContent='API đã kết nối, đang chờ MT5 gửi dữ liệu OHLC.'} }catch(e){$('feedState').textContent='Lỗi tải dữ liệu: '+e.message}}
 
-let chartOpenPositions=[],positionLines=[],positionSignature='';
+let chartOpenPositions=[],positionLines=[],positionSignature='',closingIds=new Set();
+function getPositionId(p){return p&&(p.id??p.ticket??p.position_id??p.order_id??p.deal_id??'')}
+async function closePosition(posId,btn){
+ const idStr=String(posId??'').trim();
+ if(!idStr){$('positionsUpdated').textContent='Không tìm thấy ID/Ticket của vị thế để đóng.';return}
+ const pos=chartOpenPositions.find(x=>String(getPositionId(x))===idStr);
+ const label=pos?(pos.symbol+' '+pos.direction+' '+pos.volume+' lot'):('#'+idStr);
+ if(!window.confirm('Xác nhận đóng vị thế '+label+'?'))return;
+ closingIds.add(idStr);
+ if(btn)btn.disabled=true;
+ $('positionsUpdated').textContent='Đang gửi lệnh đóng vị thế '+label+'...';
+ const payload={id:pos?.id??idStr,ticket:pos?.ticket??idStr,position_id:pos?.position_id??idStr,symbol:pos?.symbol||'',direction:pos?.direction||'',source:'web-chart'};
+ const endpoints=['/api/chart/close','/api/positions/close','/api/paper/close'];
+ let ok=false,lastErr='Không có phản hồi từ server';
+ for(const url of endpoints){
+  try{
+   const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+   if(r.status===404||r.status===405)continue;
+   const d=await r.json().catch(()=>({}));
+   if(!r.ok)throw new Error(d.detail||d.message||('HTTP '+r.status));
+   ok=true;
+   $('positionsUpdated').textContent='Đã gửi yêu cầu đóng vị thế '+label+(d.status?' · '+d.status:'');
+   break;
+  }catch(e){lastErr=e.message}
+ }
+ closingIds.delete(idStr);
+ if(!ok){
+  if(btn)btn.disabled=false;
+  $('positionsUpdated').textContent='Không đóng được vị thế '+label+': '+lastErr;
+  return;
+ }
+ await refreshChartPositions();
+}
 function renderChartPositions(positions){
  const rows=Array.isArray(positions)?positions:[];
  chartOpenPositions=rows;
  $('positionCount').textContent=String(rows.length);
- $('positionsUpdated').textContent='Đồng bộ '+new Date().toLocaleTimeString('vi-VN')+' · '+rows.length+' vị thế';
+ if(!closingIds.size)$('positionsUpdated').textContent='Đồng bộ '+new Date().toLocaleTimeString('vi-VN')+' · '+rows.length+' vị thế';
  const visible=rows.filter(p=>String(p.symbol||'').toUpperCase()===String($('symbol').value).toUpperCase());
- const signature=JSON.stringify(visible.map(p=>[p.id,p.symbol,p.direction,p.entry,p.sl,p.tp,p.volume,p.profit]));
+ const signature=JSON.stringify(visible.map(p=>[getPositionId(p),p.symbol,p.direction,p.entry,p.sl,p.tp,p.volume,p.profit]));
  if(signature!==positionSignature){
   positionLines.forEach(x=>{try{candleSeries.removePriceLine(x)}catch(_){}});positionLines=[];positionSignature=signature;
   visible.forEach(p=>{
@@ -640,10 +676,15 @@ function renderChartPositions(positions){
    });
   });
  }
- $('chartPositions').innerHTML=rows.length?rows.map(p=>'<tr><td>'+esc(p.symbol)+'</td><td>'+esc(p.timeframe)+'</td><td class="'+(String(p.direction).toUpperCase()==='BUY'?'buy':'sell')+'">'+esc(p.direction)+'</td><td>'+fmt(p.entry)+'</td><td>'+(Number(p.sl)>0?fmt(p.sl):'—')+'</td><td>'+(Number(p.tp)>0?fmt(p.tp):'—')+'</td><td>'+fmt(p.volume)+'</td><td style="font-weight:700;color:'+(Number(p.profit)>=0?'#27c995':'#f06b7e')+'">'+fmt(p.profit)+'</td></tr>').join(''):'<tr><td colspan="8" class="empty">Chưa có vị thế đang mở</td></tr>';
+ $('chartPositions').innerHTML=rows.length?rows.map(p=>{
+  const pid=String(getPositionId(p));
+  const busy=closingIds.has(pid);
+  return '<tr><td>'+esc(p.symbol)+'</td><td>'+esc(p.timeframe||'—')+'</td><td class="'+(String(p.direction).toUpperCase()==='BUY'?'buy':'sell')+'">'+esc(p.direction)+'</td><td>'+fmt(p.entry)+'</td><td>'+(Number(p.sl)>0?fmt(p.sl):'—')+'</td><td>'+(Number(p.tp)>0?fmt(p.tp):'—')+'</td><td>'+fmt(p.volume)+'</td><td style="font-weight:700;color:'+(Number(p.profit)>=0?'#27c995':'#f06b7e')+'">'+fmt(p.profit)+'</td><td><button type="button" class="btn-close-pos" data-close-id="'+esc(pid)+'"'+(busy?' disabled':'')+'>'+(busy?'Đang đóng...':'Đóng')+'</button></td></tr>';
+ }).join(''):'<tr><td colspan="9" class="empty">Chưa có vị thế đang mở</td></tr>';
+ $('chartPositions').querySelectorAll('[data-close-id]').forEach(btn=>btn.addEventListener('click',()=>closePosition(btn.dataset.closeId,btn)));
 }
 async function refreshChartPositions(){
- try{const r=await fetch('/api/dashboard',{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();renderChartPositions(d.paper_positions||[])}
+ try{const r=await fetch('/api/dashboard',{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();const openList=Array.isArray(d.mt5_positions)&&d.mt5_positions.length?d.mt5_positions:(Array.isArray(d.open_positions)?d.open_positions:(d.paper_positions||[]));renderChartPositions(openList)}
  catch(e){$('positionsUpdated').textContent='Không thể đồng bộ vị thế: '+e.message}
 }
 $('settingsButton').addEventListener('click',()=>$('tradeSettingsDialog').showModal());
@@ -654,16 +695,39 @@ $('closePositionsDialog').addEventListener('click',()=>$('positionsDialog').clos
 $('positionsDialog').addEventListener('click',e=>{if(e.target===$('positionsDialog'))$('positionsDialog').close()});
 
 
-function localDayKey(seconds){return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Ho_Chi_Minh',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(Number(seconds)*1000))}
-function localDateTime(seconds){return new Date(Number(seconds)*1000).toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',hour12:false})}
+function normalizeTimestamp(val){
+ if(val==null||val==='')return NaN;
+ if(typeof val==='number')return val>1e12?val/1000:val;
+ const n=Number(val);
+ if(Number.isFinite(n)&&n>0)return n>1e12?n/1000:n;
+ const parsed=Date.parse(String(val));
+ return Number.isFinite(parsed)?parsed/1000:NaN;
+}
+function localDayKey(ts){const sec=normalizeTimestamp(ts);if(!Number.isFinite(sec))return '';return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Ho_Chi_Minh',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(sec*1000))}
+function localDateTime(ts){const sec=normalizeTimestamp(ts);if(!Number.isFinite(sec))return String(ts||'—');return new Date(sec*1000).toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',hour12:false})}
+function extractRealHistory(data){
+ const candidates=[
+  {key:'mt5_history',label:'Lịch sử thật MT5'},
+  {key:'real_history',label:'Lịch sử giao dịch thật'},
+  {key:'mt5_deals',label:'Lịch sử lệnh MT5'},
+  {key:'deals_history',label:'Lịch sử lệnh thật'},
+  {key:'closed_positions',label:'Vị thế thật đã đóng'},
+  {key:'trade_history',label:'Lịch sử giao dịch thật'}
+ ];
+ for(const c of candidates){
+  if(Array.isArray(data[c.key]))return {rows:data[c.key],source:c.label,isReal:true};
+ }
+ return {rows:[],source:'Chưa có nguồn lịch sử thật từ MT5',isReal:false};
+}
 function renderStats(data){
  const todaySignals=Array.isArray(data.today_signals)?data.today_signals:[];
- const history=Array.isArray(data.paper_history)?data.paper_history:[];
+ const realHist=extractRealHistory(data);
+ const history=realHist.rows;
  const todayKey=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Ho_Chi_Minh',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
- const closedToday=history.filter(p=>localDayKey(p.closed_at)===todayKey);
- const wins=closedToday.filter(p=>Number(p.profit)>0).length;
- const losses=closedToday.filter(p=>Number(p.profit)<0).length;
- const net=closedToday.reduce((sum,p)=>sum+(Number(p.profit)||0),0);
+ const closedToday=history.filter(p=>localDayKey(p.closed_at??p.close_time??p.time)===todayKey);
+ const wins=closedToday.filter(p=>Number(p.profit??p.pnl??0)>0).length;
+ const losses=closedToday.filter(p=>Number(p.profit??p.pnl??0)<0).length;
+ const net=closedToday.reduce((sum,p)=>sum+(Number(p.profit??p.pnl)||0),0);
  $('statsSignalCount').textContent=String(todaySignals.length);
  $('statsClosedCount').textContent=String(closedToday.length);
  $('statsWinLoss').textContent=wins+' / '+losses;
@@ -671,8 +735,14 @@ function renderStats(data){
  $('statsTodayPL').style.color=net>=0?'#27c995':'#f06b7e';
  $('statsSignalMeta').textContent=todaySignals.length+' tín hiệu nhận được';
  $('statsTodaySignals').innerHTML=todaySignals.length?todaySignals.map(x=>'<tr><td>'+esc(localDateTime(x.signal_time))+'</td><td>'+esc(x.symbol)+'</td><td>'+esc(x.timeframe)+'</td><td class="'+(String(x.direction).toUpperCase()==='BUY'?'buy':'sell')+'">'+esc(x.direction)+'</td><td>'+esc(x.divergence)+'</td><td>'+esc(x.signal_type)+'</td><td>'+fmt(x.price2)+'</td></tr>').join(''):'<tr><td colspan="7" class="empty">Hôm nay chưa có tín hiệu</td></tr>';
- $('statsHistoryMeta').textContent=history.length+' giao dịch gần nhất · thống kê hôm nay tính theo ngày Việt Nam';
- $('statsPaperHistory').innerHTML=history.length?history.map(p=>'<tr><td>'+esc(localDateTime(p.closed_at))+'</td><td>'+esc(p.symbol)+'</td><td class="'+(String(p.direction).toUpperCase()==='BUY'?'buy':'sell')+'">'+esc(p.direction)+'</td><td>'+fmt(p.volume)+'</td><td>'+fmt(p.entry)+'</td><td>'+(Number(p.sl)>0?fmt(p.sl):'—')+'</td><td>'+(Number(p.tp)>0?fmt(p.tp):'—')+'</td><td>'+esc(p.outcome)+'</td><td style="font-weight:700;color:'+(Number(p.profit)>=0?'#27c995':'#f06b7e')+'">'+(Number(p.profit)>0?'+':'')+fmt(p.profit)+'</td></tr>').join(''):'<tr><td colspan="9" class="empty">Chưa có giao dịch PAPER đã đóng</td></tr>';
+ $('statsHistoryMeta').textContent=realHist.isReal?(history.length+' giao dịch thật ('+realHist.source+') · tính theo GMT+7'):'Chưa nhận dữ liệu lịch sử giao dịch thật từ server/MT5';
+ $('statsPaperHistory').innerHTML=history.length?history.map(p=>{
+  const profit=Number(p.profit??p.pnl??0);
+  const closeTs=p.closed_at??p.close_time??p.time;
+  const entryVal=p.entry??p.open_price??p.price??0;
+  const volVal=p.volume??p.lots??p.lot??0;
+  return '<tr><td>'+esc(localDateTime(closeTs))+'</td><td>'+esc(p.symbol)+'</td><td class="'+(String(p.direction??p.type).toUpperCase().includes('BUY')?'buy':'sell')+'">'+esc(p.direction??p.type)+'</td><td>'+fmt(volVal)+'</td><td>'+fmt(entryVal)+'</td><td>'+(Number(p.sl)>0?fmt(p.sl):'—')+'</td><td>'+(Number(p.tp)>0?fmt(p.tp):'—')+'</td><td>'+esc(p.outcome??p.reason??p.status??'Đã đóng')+'</td><td style="font-weight:700;color:'+(profit>=0?'#27c995':'#f06b7e')+'">'+(profit>0?'+':'')+fmt(profit)+'</td></tr>';
+ }).join(''):'<tr><td colspan="9" class="empty">'+(realHist.isReal?'Chưa có giao dịch thật đã đóng':'Chưa có lịch sử giao dịch thật từ MT5/Trade V9')+'</td></tr>';
  $('statsUpdated').textContent='Cập nhật '+new Date().toLocaleTimeString('vi-VN');
 }
 async function refreshStats(){try{const r=await fetch('/api/dashboard',{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);renderStats(await r.json())}catch(e){$('statsUpdated').textContent='Không thể tải thống kê: '+e.message}}
