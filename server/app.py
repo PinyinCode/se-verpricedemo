@@ -259,7 +259,7 @@ def next_signal(consumer: str = Query(default="mt5-demo", min_length=2, max_leng
             (datetime.fromtimestamp(now - 45, timezone.utc).isoformat(),),
         )
         row = conn.execute(
-            "SELECT * FROM signals WHERE status='pending' ORDER BY created_at LIMIT 1"
+            "SELECT * FROM signals WHERE status='pending' AND source!='web-chart' ORDER BY created_at LIMIT 1"
         ).fetchone()
         if row is None:
             return {"ok": True, "signal": None}
@@ -274,6 +274,54 @@ def next_signal(consumer: str = Query(default="mt5-demo", min_length=2, max_leng
         result = dict(row)
         result.update(status="claimed", claimed_by=consumer)
         return {"ok": True, "signal": result}
+
+
+@app.get("/api/chart/next", dependencies=[Depends(require_key)])
+def next_chart_request():
+    """Dedicated consumer for manual chart PAPER requests; isolated from AI signal queue."""
+    now = time.time()
+    with db() as conn:
+        conn.execute(
+            "UPDATE signals SET status='pending',claimed_by=NULL,claimed_at=NULL "
+            "WHERE source='web-chart' AND status='claimed' AND claimed_at < ?",
+            (datetime.fromtimestamp(now - 45, timezone.utc).isoformat(),),
+        )
+        row = conn.execute(
+            "SELECT * FROM signals WHERE source='web-chart' AND status='pending' "
+            "ORDER BY created_at LIMIT 1"
+        ).fetchone()
+        if row is None:
+            return {"ok": True, "signal": None}
+        age = (datetime.now(timezone.utc) - datetime.fromisoformat(row["created_at"])).total_seconds()
+        if age > STALE_SECONDS:
+            conn.execute("UPDATE signals SET status='expired' WHERE id=?", (row["id"],))
+            return {"ok": True, "signal": None}
+        consumer = "trade-v9-paper-chart"
+        conn.execute(
+            "UPDATE signals SET status='claimed',claimed_by=?,claimed_at=? "
+            "WHERE id=? AND status='pending'",
+            (consumer, utc_now(), row["id"]),
+        )
+        result = dict(row)
+        result.update(status="claimed", claimed_by=consumer)
+        return {"ok": True, "signal": result}
+
+
+@app.post("/api/chart/ack", dependencies=[Depends(require_key)])
+def acknowledge_chart_request(payload: AckIn):
+    now = utc_now()
+    with db() as conn:
+        cur = conn.execute(
+            "UPDATE signals SET status='completed',ack_at=?,ack_status=?,ack_message=? "
+            "WHERE id=? AND status='claimed' AND source='web-chart' "
+            "AND claimed_by='trade-v9-paper-chart'",
+            (now, payload.status, payload.message, payload.signal_id),
+        )
+        if cur.rowcount != 1:
+            raise HTTPException(status_code=404, detail="Không tìm thấy yêu cầu chart PAPER đang được nhận")
+        conn.execute("INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
+                     ("chart_paper_ack", f"{payload.signal_id}: {payload.status} {payload.message}", now))
+    return {"ok": True}
 
 
 @app.post("/api/mt5/ack", dependencies=[Depends(require_key)])
