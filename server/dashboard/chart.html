@@ -492,6 +492,12 @@ body.trade-fullscreen .chart-overlay-bottom .trade-footer{min-height:56px!import
  body.trade-fullscreen .chart-overlay-bottom .trade-footer{min-height:56px!important}
 }
 
+
+/* Reliable touch drag targets and independently resizable panels */
+#rsiResizeHandle,#lotResizeHandle{display:block!important;min-height:14px!important;height:14px!important;flex:0 0 14px!important;touch-action:none!important;pointer-events:auto!important;cursor:row-resize!important;position:relative!important;z-index:100!important;user-select:none!important;-webkit-user-select:none!important}
+#rsiResizeHandle:after,#lotResizeHandle:after{width:52px!important;height:4px!important;top:4px!important;background:#9aabc2!important}
+body.trade-fullscreen .chart-overlay-bottom #lotResizeHandle{width:100%!important;flex:0 0 14px!important;max-height:none!important;margin:0!important;border-radius:0!important}
+body.trade-fullscreen .chart-overlay-bottom .trade-footer{max-height:none!important;min-height:56px!important;overflow:auto!important}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.2/dist/lightweight-charts.standalone.production.js"></script>
 </head>
@@ -761,43 +767,59 @@ chartResizeObserver.observe($('priceChart'));
 chartResizeObserver.observe($('rsiChart'));
 document.querySelectorAll('[data-tf]').forEach(x=>x.classList.toggle('selected',x.dataset.tf===$('tf').value));
 const rsiResizeHandle=$('rsiResizeHandle');
-let rsiDragStartY=0,rsiDragStartHeight=170;
-try{const saved=Number(localStorage.getItem('chartRsiHeight'));if(Number.isFinite(saved)&&saved>=0){const stage=$('.chart-stage');const max=Math.max(0,stage.clientHeight-rsiResizeHandle.offsetHeight-80);const height=Math.min(saved,max);$('rsiChart').style.setProperty('height',height+'px','important');$('rsiChart').style.setProperty('flex-basis',height+'px','important')}}catch(_){}
-rsiResizeHandle.addEventListener('pointerdown',e=>{e.preventDefault();rsiDragStartY=e.clientY;rsiDragStartHeight=$('rsiChart').getBoundingClientRect().height;rsiResizeHandle.setPointerCapture(e.pointerId);rsiResizeHandle.dataset.dragging='1'});
-rsiResizeHandle.addEventListener('pointermove',e=>{if(rsiResizeHandle.dataset.dragging!=='1')return;const stage=$('.chart-stage');const max=Math.max(0,stage.clientHeight-rsiResizeHandle.offsetHeight-80);const next=Math.max(0,Math.min(max,rsiDragStartHeight+rsiDragStartY-e.clientY));$('rsiChart').style.setProperty('height',next+'px','important');$('rsiChart').style.setProperty('flex-basis',next+'px','important');rsiChart.applyOptions({width:$('rsiChart').clientWidth,height:next});try{localStorage.setItem('chartRsiHeight',String(Math.round(next)))}catch(_){}});
-const stopRsiResize=()=>{rsiResizeHandle.dataset.dragging='0';requestAnimationFrame(()=>{rsiChart.applyOptions({width:$('rsiChart').clientWidth,height:$('rsiChart').clientHeight});priceChart.applyOptions({width:$('priceChart').clientWidth,height:$('priceChart').clientHeight})})};
-rsiResizeHandle.addEventListener('pointerup',stopRsiResize);rsiResizeHandle.addEventListener('pointercancel',stopRsiResize);
-
-/* Drag-resize the lot information area independently from RSI. */
 const lotResizeHandle=$('lotResizeHandle');
-let lotDragStartY=0,lotDragStartHeight=0;
-try{
- const savedLot=Number(localStorage.getItem('chartLotPanelHeight'));
- if(Number.isFinite(savedLot)&&savedLot>=56){
-  const maxLot=Math.floor($('.chart-workspace').clientHeight*.45);
-  const h=Math.min(savedLot,maxLot||savedLot);
-  $('lotResizeHandle').nextElementSibling.style.setProperty('height',h+'px','important');
-  $('lotResizeHandle').nextElementSibling.style.setProperty('flex-basis',h+'px','important');
- }
-}catch(_){}
-lotResizeHandle.addEventListener('pointerdown',e=>{
- e.preventDefault();lotDragStartY=e.clientY;
- lotDragStartHeight=lotResizeHandle.nextElementSibling.getBoundingClientRect().height;
- lotResizeHandle.setPointerCapture(e.pointerId);lotResizeHandle.dataset.dragging='1';
-});
-lotResizeHandle.addEventListener('pointermove',e=>{
- if(lotResizeHandle.dataset.dragging!=='1')return;
+let activeResize=null,resizeStartY=0,resizeStartHeight=0;
+function setRsiHeight(height){
+ const stage=$('.chart-stage'),handle=rsiResizeHandle,chart=$('rsiChart');
+ const max=Math.max(0,stage.clientHeight-handle.offsetHeight-80);
+ const next=Math.max(0,Math.min(max,height));
+ chart.style.setProperty('height',next+'px','important');
+ chart.style.setProperty('flex',`0 0 ${next}px`,'important');
+ rsiChart.applyOptions({width:chart.clientWidth,height:Math.max(1,next)});
+ try{localStorage.setItem('chartRsiHeight',String(Math.round(next)))}catch(_){}
+}
+function setLotHeight(height){
+ const footer=lotResizeHandle.nextElementSibling;
  const workspace=$('.chart-workspace');
  const max=Math.max(56,Math.floor(workspace.clientHeight*.45));
- const next=Math.max(56,Math.min(max,lotDragStartHeight+lotDragStartY-e.clientY));
- const footer=lotResizeHandle.nextElementSibling;
+ const next=Math.max(56,Math.min(max,height));
  footer.style.setProperty('height',next+'px','important');
- footer.style.setProperty('flex-basis',next+'px','important');
+ footer.style.setProperty('flex',`0 0 ${next}px`,'important');
  try{localStorage.setItem('chartLotPanelHeight',String(Math.round(next)))}catch(_){}
-});
-const stopLotResize=()=>{lotResizeHandle.dataset.dragging='0';};
-lotResizeHandle.addEventListener('pointerup',stopLotResize);
-lotResizeHandle.addEventListener('pointercancel',stopLotResize);
+}
+try{
+ const saved=Number(localStorage.getItem('chartRsiHeight'));
+ if(Number.isFinite(saved)&&saved>=0)setRsiHeight(saved);
+ const savedLot=Number(localStorage.getItem('chartLotPanelHeight'));
+ if(Number.isFinite(savedLot)&&savedLot>=56)setLotHeight(savedLot);
+}catch(_){}
+function startResize(kind,e){
+ e.preventDefault();
+ activeResize=kind;resizeStartY=e.clientY;
+ resizeStartHeight=kind==='rsi'?$('rsiChart').getBoundingClientRect().height:lotResizeHandle.nextElementSibling.getBoundingClientRect().height;
+ document.body.style.setProperty('user-select','none');
+ document.body.style.setProperty('-webkit-user-select','none');
+}
+rsiResizeHandle.addEventListener('pointerdown',e=>startResize('rsi',e));
+lotResizeHandle.addEventListener('pointerdown',e=>startResize('lot',e));
+document.addEventListener('pointermove',e=>{
+ if(!activeResize)return;
+ e.preventDefault();
+ const next=resizeStartHeight+resizeStartY-e.clientY;
+ if(activeResize==='rsi')setRsiHeight(next);else setLotHeight(next);
+},{passive:false});
+function stopResize(){
+ if(!activeResize)return;
+ activeResize=null;
+ document.body.style.removeProperty('user-select');
+ document.body.style.removeProperty('-webkit-user-select');
+ requestAnimationFrame(()=>{
+  rsiChart.applyOptions({width:$('rsiChart').clientWidth,height:Math.max(1,$('rsiChart').clientHeight)});
+  priceChart.applyOptions({width:$('priceChart').clientWidth,height:$('priceChart').clientHeight});
+ });
+}
+document.addEventListener('pointerup',stopResize);
+document.addEventListener('pointercancel',stopResize);
 
 load();setInterval(load,5000);refreshChartPositions();setInterval(refreshChartPositions,3000);
 </script>
