@@ -22,6 +22,7 @@ table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:8px;bord
 </style>
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.2/dist/lightweight-charts.standalone.production.js">
 /* Draggable Entry / SL / TP overlays. Price precision follows the selected symbol. */
+let mt5Digits=5,mt5TickSize=0.00001,mt5TickValue=0;
 const dragOverlay=document.createElement('div');
 dragOverlay.className='drag-overlay';
 $('priceChart').appendChild(dragOverlay);
@@ -45,13 +46,7 @@ for(const k of ['entry','sl','tp']){
   const stop=()=>{el.dataset.drag='0'};
   el.addEventListener('pointerup',stop);el.addEventListener('pointercancel',stop);
 }
-function priceDigits(){
-  const sym=$('symbol').value.toUpperCase();
-  if(sym.includes('JPY'))return 3;
-  if(sym==='XAUUSD')return 2;
-  if(sym==='BTCUSD')return 2;
-  return 5;
-}
+function priceDigits(){return mt5Digits;}
 function setLevelLines(){
   for(const k of ['entry','sl','tp']){
     const id=k==='entry'?'entryPrice':k==='sl'?'slPrice':'tpPrice';
@@ -63,16 +58,16 @@ function setLevelLines(){
   }
 }
 function calcLot(){
-  const risk=Number($('riskMoney').value),e=Number($('entryPrice').value),sl=Number($('slPrice').value),unit=Number($('unitValue').value);
-  if(!(risk>0&&e>0&&sl>0&&unit>0&&e!==sl)){
+  const risk=Number($('riskMoney').value),e=Number($('entryPrice').value),sl=Number($('slPrice').value);
+  if(!(risk>0&&e>0&&sl>0&&mt5TickSize>0&&mt5TickValue>0&&e!==sl)){
     $('lotResult').textContent='Kiểm tra Risk, Entry, SL và giá trị biến động/lot.';
     setLevelLines();return null;
   }
-  const distance=Math.abs(e-sl),lot=risk/(distance*unit);
-  $('lotResult').textContent='Khối lượng tham khảo: '+lot.toFixed(4)+' lot · Khoảng SL: '+distance.toFixed(priceDigits())+' · Risk: '+risk.toFixed(2);
+  const distance=Math.abs(e-sl),lossPerLot=(distance/mt5TickSize)*mt5TickValue,lot=risk/lossPerLot;
+  $('lotResult').textContent='Khối lượng tham khảo: '+lot.toFixed(4)+' lot · Khoảng SL: '+distance.toFixed(priceDigits())+' · Lỗ/lot tại SL: '+lossPerLot.toFixed(2)+' · Risk: '+risk.toFixed(2);
   setLevelLines();return {risk,e,s:sl,lot};
 }
-['entryPrice','slPrice','tpPrice','riskMoney','unitValue'].forEach(id=>$(id).addEventListener('input',()=>calcLot()));
+['entryPrice','slPrice','tpPrice','riskMoney'].forEach(id=>$(id).addEventListener('input',()=>calcLot()));
 $('symbol').addEventListener('change',()=>{setTimeout(()=>{for(const id of ['entryPrice','slPrice','tpPrice'])if($(id).value)$(id).value=Number($(id).value).toFixed(priceDigits());calcLot()},0)});
 new ResizeObserver(()=>setLevelLines()).observe($('priceChart'));
 </script>
@@ -92,7 +87,7 @@ new ResizeObserver(()=>setLevelLines()).observe($('priceChart'));
 <div id="priceChart"></div><div id="rsiChart"></div>
 <div class="statusline">RSI 14 được tính từ chuỗi nến nhận từ MT5; RSI không tạo tín hiệu giao dịch. Mũi tên chỉ hiển thị tín hiệu AI OOP V8.</div>
 </section>
-<section class="panel" style="margin-top:12px"><div class="panel-head"><strong>Công cụ tính khối lượng & mức giá</strong><span class="small">Tính tham khảo · không tự đặt lệnh broker</span></div><div class="side"><div class="toolbar"><label>Risk tiền <input id="riskMoney" type="number" min="0.01" step="1" value="25" style="width:90px"></label><label>Entry <input id="entryPrice" type="number" step="any" style="width:120px"></label><label>Stop Loss <input id="slPrice" type="number" step="any" style="width:120px"></label><label>Giá trị 1.0 biến động / 1 lot (tiền tài khoản) <input id="unitValue" type="number" min="0.000001" step="any" value="100000" style="width:150px"></label><label>Take Profit <input id="tpPrice" type="number" step="any" style="width:120px"></label><button id="calcLot">Tính & vẽ mức giá</button></div><div id="lotResult" class="small">Nhập Entry, SL và giá trị biến động/lot để tính lot.</div><div class="toolbar" style="margin-top:10px"><button id="sendBuy" class="active">Gửi BUY request</button><button id="sendSell">Gửi SELL request</button><span id="requestState" class="small">Yêu cầu chỉ được đưa vào hàng đợi PAPER.</span></div></div></section>
+<section class="panel" style="margin-top:12px"><div class="panel-head"><strong>Công cụ tính khối lượng & mức giá</strong><span class="small">Tính tham khảo · không tự đặt lệnh broker</span></div><div class="side"><div class="toolbar"><label>Risk tiền <input id="riskMoney" type="number" min="0.01" step="1" value="25" style="width:90px"></label><label>Entry <input id="entryPrice" type="number" step="any" style="width:120px"></label><label>Stop Loss <input id="slPrice" type="number" step="any" style="width:120px"></label><span id="contractMeta" class="small">Đang chờ thông số hợp đồng từ MT5...</span><label>Take Profit <input id="tpPrice" type="number" step="any" style="width:120px"></label><button id="calcLot">Tính & vẽ mức giá</button></div><div id="lotResult" class="small">Nhập Entry, SL và giá trị biến động/lot để tính lot.</div><div class="toolbar" style="margin-top:10px"><button id="sendBuy" class="active">Gửi BUY request</button><button id="sendSell">Gửi SELL request</button><span id="requestState" class="small">Yêu cầu chỉ được đưa vào hàng đợi PAPER.</span></div></div></section>
 <section class="panel" style="margin-top:12px"><div class="panel-head"><strong>Tín hiệu AI OOP V8</strong><span class="small" id="signalCount">0 tín hiệu</span></div><div id="signalTable"><div class="empty">Chưa có tín hiệu cho mã và khung đang chọn</div></div></section>
 </div>
 <aside class="panel side"><h3>Chi tiết tín hiệu</h3><div id="signalDetails" class="muted">Chọn một tín hiệu trong danh sách để xem chi tiết.</div><h3 style="margin-top:20px">Chú giải</h3>
@@ -119,7 +114,7 @@ function nearestTime(t,bars){if(!bars.length)return t;let best=bars[0].time,delt
 function renderSignals(signals,bars){const list=signals||[];$('signalCount').textContent=list.length+' tín hiệu';const markers=list.map(s=>({time:nearestTime(Number(s.signal_time),bars),position:s.direction==='BUY'?'belowBar':'aboveBar',color:s.direction==='BUY'?'#22c58b':'#f06478',shape:s.direction==='BUY'?'arrowUp':'arrowDown',text:s.direction+' '+s.divergence+' '+s.signal_type}));candleSeries.setMarkers(bars.length?markers:[]);
 $('signalTable').innerHTML=list.length?'<table><thead><tr><th>Thời gian</th><th>Hướng</th><th>Loại</th><th>Phân kỳ</th><th>Giá</th></tr></thead><tbody>'+list.map((s,i)=>'<tr data-i="'+i+'"><td>'+esc(new Date(Number(s.signal_time)*1000).toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh'}))+'</td><td class="'+(s.direction==='BUY'?'buy':'sell')+'">'+esc(s.direction)+'</td><td>'+esc(s.signal_type)+'</td><td>'+esc(s.divergence)+'</td><td>'+fmt(s.price2)+'</td></tr>').join('')+'</tbody></table>':'<div class="empty">Không có tín hiệu AI OOP V8 cho lựa chọn này.</div>';
 $('signalTable').querySelectorAll('tr[data-i]').forEach(row=>row.addEventListener('click',()=>{const s=list[Number(row.dataset.i)];$('signalDetails').innerHTML='<b class="'+(s.direction==='BUY'?'buy':'sell')+'">'+esc(s.direction)+' · '+esc(s.divergence)+' · '+esc(s.signal_type)+'</b><p>'+esc(s.symbol)+' / '+esc(s.timeframe)+'</p><p>Thời gian: '+esc(new Date(Number(s.signal_time)*1000).toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh'}))+'</p><p>Price 1: '+fmt(s.price1)+'<br>Price 2: '+fmt(s.price2)+'</p><p>RSI 1: '+fmt(s.rsi1)+'<br>RSI 2: '+fmt(s.rsi2)+'</p>'; }));}
-async function load(){const symbol=$('symbol').value,tf=$('tf').value;$('chartTitle').textContent=symbol+' · '+tf;$('feedState').textContent='Đang tải...';try{const res=await fetch('/api/chart/data?symbol='+encodeURIComponent(symbol)+'&timeframe='+encodeURIComponent(tf)+'&limit=1000',{cache:'no-store'});if(!res.ok)throw new Error('HTTP '+res.status);const data=await res.json();const bars=(data.candles||[]).map(c=>({time:Number(c.time),open:Number(c.open),high:Number(c.high),low:Number(c.low),close:Number(c.close)}));const oldRange=firstLoad?null:priceChart.timeScale().getVisibleLogicalRange();candleSeries.setData(bars);rsiSeries.setData(rsi(bars));renderSignals(data.signals||[],bars);if(bars.length){if(firstLoad){priceChart.timeScale().fitContent();priceChart.timeScale().applyOptions({rightOffset:10});rsiChart.timeScale().applyOptions({rightOffset:10});firstLoad=false}else if(oldRange){priceChart.timeScale().setVisibleLogicalRange(oldRange)}$('feedState').textContent=bars.length+' nến · cập nhật '+new Date().toLocaleTimeString()}else{$('feedState').textContent='Chưa có nến MT5 được gửi lên server';$('signalDetails').textContent='API đã kết nối, đang chờ MT5 gửi dữ liệu OHLC.'} }catch(e){$('feedState').textContent='Lỗi tải dữ liệu: '+e.message}}
+async function load(){const symbol=$('symbol').value,tf=$('tf').value;$('chartTitle').textContent=symbol+' · '+tf;$('feedState').textContent='Đang tải...';try{const res=await fetch('/api/chart/data?symbol='+encodeURIComponent(symbol)+'&timeframe='+encodeURIComponent(tf)+'&limit=1000',{cache:'no-store'});if(!res.ok)throw new Error('HTTP '+res.status);const data=await res.json();mt5Digits=Number(data.digits??5);mt5TickSize=Number(data.tick_size??0.00001);mt5TickValue=Number(data.tick_value??0);$('contractMeta').textContent='Digits '+mt5Digits+' · Tick size '+mt5TickSize.toFixed(mt5Digits)+' · Tick value/lot '+mt5TickValue;const bars=(data.candles||[]).map(c=>({time:Number(c.time),open:Number(c.open),high:Number(c.high),low:Number(c.low),close:Number(c.close)}));const oldRange=firstLoad?null:priceChart.timeScale().getVisibleLogicalRange();candleSeries.setData(bars);rsiSeries.setData(rsi(bars));renderSignals(data.signals||[],bars);if(bars.length){if(firstLoad){if(!$('entryPrice').value)$('entryPrice').value=Number(bars[bars.length-1].close).toFixed(mt5Digits);if(!$('slPrice').value)$('slPrice').value=Number(bars[bars.length-1].close-(Math.max(mt5TickSize,0.00001)*20)).toFixed(mt5Digits);priceChart.timeScale().fitContent();priceChart.timeScale().applyOptions({rightOffset:10});rsiChart.timeScale().applyOptions({rightOffset:10});firstLoad=false}else if(oldRange){priceChart.timeScale().setVisibleLogicalRange(oldRange)}$('feedState').textContent=bars.length+' nến · cập nhật '+new Date().toLocaleTimeString()}else{$('feedState').textContent='Chưa có nến MT5 được gửi lên server';$('signalDetails').textContent='API đã kết nối, đang chờ MT5 gửi dữ liệu OHLC.'} }catch(e){$('feedState').textContent='Lỗi tải dữ liệu: '+e.message}}
 function setLevelLines(){const e=Number($('entryPrice').value),s=Number($('slPrice').value),t=Number($('tpPrice').value);if(entryLine)candleSeries.removePriceLine(entryLine);if(slLine)candleSeries.removePriceLine(slLine);if(tpLine)candleSeries.removePriceLine(tpLine);entryLine=Number.isFinite(e)&&e>0?candleSeries.createPriceLine({price:e,color:'#60a5fa',lineWidth:2,lineStyle:2,axisLabelVisible:true,title:'ENTRY'}):null;slLine=Number.isFinite(s)&&s>0?candleSeries.createPriceLine({price:s,color:'#f06478',lineWidth:2,lineStyle:2,axisLabelVisible:true,title:'SL'}):null;tpLine=Number.isFinite(t)&&t>0?candleSeries.createPriceLine({price:t,color:'#22c58b',lineWidth:2,lineStyle:2,axisLabelVisible:true,title:'TP'}):null}
 function calcLot(){const risk=Number($('riskMoney').value),e=Number($('entryPrice').value),s=Number($('slPrice').value),v=Number($('unitValue').value);if(!(risk>0&&e>0&&s>0&&v>0&&e!==s)){$('lotResult').textContent='Kiểm tra Risk, Entry, SL và giá trị biến động/lot.';return null}const lot=risk/(Math.abs(e-s)*v);$('lotResult').textContent='Khối lượng tham khảo: '+lot.toFixed(4)+' lot · Khoảng SL: '+fmt(Math.abs(e-s))+' · Rủi ro dự kiến: '+fmt(risk);setLevelLines();return {risk,e,s,lot}}
 $('calcLot').addEventListener('click',calcLot);
