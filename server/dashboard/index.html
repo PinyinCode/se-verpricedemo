@@ -14,6 +14,28 @@ h2{font-size:15px;margin:0 0 12px}table{width:100%;border-collapse:collapse;whit
 .item{padding:10px 0;border-bottom:1px solid var(--line);font-size:12px}.item:last-child{border:0}
 .scan-head{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center}.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.chip{display:inline-flex;align-items:center;gap:8px;border:1px solid #334155;background:#17243a;border-radius:8px;padding:5px 9px;font-size:12px}.chip b{font-weight:650}.chip small{color:#a5b4c7;font-size:11px;border-left:1px solid #40516a;padding-left:8px}.scan-muted{color:var(--muted);font-size:12px}
 @media(max-width:800px){.grid{grid-template-columns:repeat(2,1fr)}.layout{grid-template-columns:1fr}main{padding:14px}#tradeWorkspace iframe{height:1120px}}
+
+/* Dashboard visual system */
+:root{--bg:#080f1b;--panel:#101b2c;--line:#293a52;--muted:#91a2b8;--text:#e8eef7;--green:#34d3a0;--red:#fb7185}
+body{background:radial-gradient(ellipse at 50% -18%,#172944 0%,#080f1b 60%);letter-spacing:.05px}
+main{max-width:1600px;padding:18px}
+.top{padding:3px 2px 10px}
+h1{font-size:23px;letter-spacing:.1px}
+.pill{background:rgba(52,211,153,.08);font-weight:700;letter-spacing:.45px}
+.card,section{background:linear-gradient(145deg,#121f33,#0f1929);border-color:#2a3b53;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.12)}
+.grid{gap:10px;margin:12px 0}
+.metric{font-size:27px;letter-spacing:-.5px}
+.layout{gap:10px}
+h2{letter-spacing:.15px}
+th{background:#142239}
+td,th{border-bottom-color:#26374e}
+tr:hover td{background:rgba(85,128,176,.055)}
+.chip{background:#17263c;border-color:#344963;border-radius:7px}
+.item{border-bottom-color:#2a3b53}
+#tradeWorkspace{box-shadow:0 12px 32px rgba(0,0,0,.2)}
+#tradeWorkspace iframe{background:#080f1b}
+select{background:#17263c;color:var(--text);border:1px solid #354963;border-radius:7px}
+@media(max-width:800px){main{padding:9px}.grid{gap:7px;margin:9px 0}.card,section{border-radius:9px;padding:12px}#tradeWorkspace iframe{height:1000px}}
 </style></head><body><main>
 <div class="top"><div><h1>Forex AI Server</h1><div class="muted">Giám sát hệ thống phân tích và MT5 bridge</div></div><div style="display:flex;align-items:center;gap:10px"><span class="pill">DEMO / PAPER ONLY</span></div></div>
 <section id="tradeWorkspace" style="margin:16px 0;padding:0;overflow:hidden"><iframe src="/chart?embedded=1" title="Forex AI Trading Chart" allow="fullscreen" style="display:block;width:100%;height:980px;border:0;background:#0b1220"></iframe></section>
