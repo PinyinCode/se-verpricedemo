@@ -13,9 +13,10 @@ h2{font-size:15px;margin:0 0 12px}table{width:100%;border-collapse:collapse;whit
 .wrap{overflow:auto}.status{font-weight:700}.BUY{color:var(--green)}.SELL{color:var(--red)}.empty{padding:24px;text-align:center;color:var(--muted)}
 .item{padding:10px 0;border-bottom:1px solid var(--line);font-size:12px}.item:last-child{border:0}
 .scan-head{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;align-items:center}.chips{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}.chip{display:inline-flex;align-items:center;gap:8px;border:1px solid #334155;background:#17243a;border-radius:8px;padding:5px 9px;font-size:12px}.chip b{font-weight:650}.chip small{color:#a5b4c7;font-size:11px;border-left:1px solid #40516a;padding-left:8px}.scan-muted{color:var(--muted);font-size:12px}
-@media(max-width:800px){.grid{grid-template-columns:repeat(2,1fr)}.layout{grid-template-columns:1fr}main{padding:14px}}
+@media(max-width:800px){.grid{grid-template-columns:repeat(2,1fr)}.layout{grid-template-columns:1fr}main{padding:14px}#tradeWorkspace iframe{height:1120px}}
 </style></head><body><main>
-<div class="top"><div><h1>Forex AI Server</h1><div class="muted">Giám sát hệ thống phân tích và MT5 bridge</div></div><div style="display:flex;align-items:center;gap:10px"><a href="/chart" style="color:#7dd3fc;text-decoration:none;border:1px solid #334155;border-radius:8px;padding:7px 11px">Mở Web Chart ↗</a><span class="pill">DEMO / PAPER ONLY</span></div></div>
+<div class="top"><div><h1>Forex AI Server</h1><div class="muted">Giám sát hệ thống phân tích và MT5 bridge</div></div><div style="display:flex;align-items:center;gap:10px"><span class="pill">DEMO / PAPER ONLY</span></div></div>
+<section id="tradeWorkspace" style="margin:16px 0;padding:0;overflow:hidden"><iframe src="/chart?embedded=1" title="Forex AI Trading Chart" allow="fullscreen" style="display:block;width:100%;height:980px;border:0;background:#0b1220"></iframe></section>
 <div class="grid">
 <div class="card"><div class="muted">Tín hiệu chờ</div><div class="metric" id="pending">0</div></div>
 <div class="card"><div class="muted">Đã mô phỏng</div><div class="metric" id="done">0</div></div>
