@@ -277,13 +277,13 @@ void PublishTodaySignals()
          if(symbol=="" || (direction!="BUY" && direction!="SELL") || signalTime<=0) continue;
          if(sigType!="RT" && sigType!="HIST") sigType="RT";
          if(items!="") items+=",";
-         items+=StringFormat("{\\"symbol\\":\\"%s\\",\\"timeframe\\":\\"%s\\",\\"direction\\":\\"%s\\",\\"divergence\\":\\"%s\\",\\"signal_type\\":\\"%s\\",\\"signal_time\\":%d,\\"price1\\":%.8f,\\"price2\\":%.8f,\\"rsi1\\":%.2f,\\"rsi2\\":%.2f}",
+         items+=StringFormat("{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\",\"divergence\":\"%s\",\"signal_type\":\"%s\",\"signal_time\":%d,\"price1\":%.8f,\"price2\":%.8f,\"rsi1\":%.2f,\"rsi2\":%.2f}",
             symbol,tf,direction,divType,sigType,(int)signalTime,
             StringToDouble(p[6]),StringToDouble(p[7]),StringToDouble(p[8]),StringToDouble(p[9]));
       }
       FileClose(file);
    }
-   string body="{\\"signals\\":["+items+"]}";
+   string body="{\"signals\":["+items+"]}";
    string response; int status;
    if(!HttpRequest("POST","/api/today-signals",body,response,status))
       Print("[SERVER] Today signals upload failed. HTTP=",status," response=",response);
