@@ -71,6 +71,13 @@ def init_db() -> None:
           updated_at TEXT NOT NULL
         )""")
         conn.execute("""
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS candles (
+          symbol TEXT NOT NULL, timeframe TEXT NOT NULL, candle_time INTEGER NOT NULL,
+          open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL, close REAL NOT NULL,
+          volume REAL NOT NULL DEFAULT 0,
+          PRIMARY KEY(symbol,timeframe,candle_time)
+        )""")
         CREATE TABLE IF NOT EXISTS today_signals (
           signal_key TEXT PRIMARY KEY, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
           direction TEXT NOT NULL, divergence TEXT NOT NULL, signal_type TEXT NOT NULL,
@@ -151,12 +158,39 @@ class TodaySignalItem(BaseModel):
         return value.strip().upper()
 
 
+
+class CandleItem(BaseModel):
+    time: int = Field(gt=0)
+    open: float = Field(gt=0)
+    high: float = Field(gt=0)
+    low: float = Field(gt=0)
+    close: float = Field(gt=0)
+    volume: float = Field(default=0, ge=0)
+
+
+class CandleBatchIn(BaseModel):
+    symbol: str = Field(min_length=3, max_length=32)
+    timeframe: Literal["M1", "M5", "M15", "M30", "H1", "H4", "D1"]
+    candles: list[CandleItem] = Field(min_length=1, max_length=1000)
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_candle_symbol(cls, value: str) -> str:
+        return value.strip().upper()
+
+
 class TodaySignalsIn(BaseModel):
     signals: list[TodaySignalItem] = Field(default_factory=list, max_length=200)
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
     return FileResponse(BASE_DIR / "dashboard" / "index.html")
+
+
+
+@app.get("/chart", response_class=HTMLResponse)
+def chart_page():
+    return FileResponse(BASE_DIR / "dashboard" / "chart.html")
 
 
 @app.get("/api/health")
@@ -284,6 +318,56 @@ def update_today_signals(payload: TodaySignalsIn):
                  item.rsi1, item.rsi2, now),
             )
     return {"ok": True, "count": len(payload.signals), "updated_at": now}
+
+
+@app.post("/api/mt5/candles", dependencies=[Depends(require_key)])
+def update_candles(payload: CandleBatchIn):
+    now = utc_now()
+    rows = []
+    for candle in payload.candles:
+        if candle.high < max(candle.open, candle.close, candle.low) or candle.low > min(candle.open, candle.close, candle.high):
+            raise HTTPException(status_code=422, detail="OHLC không hợp lệ")
+        rows.append((payload.symbol, payload.timeframe, candle.time, candle.open,
+                     candle.high, candle.low, candle.close, candle.volume))
+    with db() as conn:
+        conn.executemany(
+            "INSERT INTO candles(symbol,timeframe,candle_time,open,high,low,close,volume) "
+            "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(symbol,timeframe,candle_time) DO UPDATE SET "
+            "open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,volume=excluded.volume",
+            rows,
+        )
+        # Keep storage bounded per symbol/timeframe.
+        conn.execute(
+            "DELETE FROM candles WHERE symbol=? AND timeframe=? AND candle_time NOT IN "
+            "(SELECT candle_time FROM candles WHERE symbol=? AND timeframe=? ORDER BY candle_time DESC LIMIT 2000)",
+            (payload.symbol, payload.timeframe, payload.symbol, payload.timeframe),
+        )
+    return {"ok": True, "symbol": payload.symbol, "timeframe": payload.timeframe,
+            "received": len(rows), "updated_at": now}
+
+
+@app.get("/api/chart/data")
+def chart_data(
+    symbol: str = Query(min_length=3, max_length=32),
+    timeframe: Literal["M1", "M5", "M15", "M30", "H1", "H4", "D1"] = Query(default="M15"),
+    limit: int = Query(default=500, ge=50, le=2000),
+):
+    symbol = symbol.strip().upper()
+    with db() as conn:
+        candles = [dict(r) for r in conn.execute(
+            "SELECT candle_time AS time,open,high,low,close,volume FROM candles "
+            "WHERE symbol=? AND timeframe=? ORDER BY candle_time DESC LIMIT ?",
+            (symbol, timeframe, limit),
+        ).fetchall()]
+        candles.reverse()
+        signals = [dict(r) for r in conn.execute(
+            "SELECT symbol,timeframe,direction,divergence,signal_type,signal_time,price1,price2,rsi1,rsi2 "
+            "FROM today_signals WHERE symbol=? AND timeframe=? ORDER BY signal_time DESC LIMIT 200",
+            (symbol, timeframe),
+        ).fetchall()]
+    return {"mode": "DEMO_ONLY", "symbol": symbol, "timeframe": timeframe,
+            "candles": candles, "signals": signals, "server_time": utc_now()}
+
 
 @app.get("/api/dashboard")
 def dashboard_data():
