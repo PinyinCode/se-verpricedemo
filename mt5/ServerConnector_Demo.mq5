@@ -6,7 +6,7 @@
 #property strict
 #property version "1.00"
 
-input string ServerBaseURL = "https://forex-ai-server-demo.onrender.com";
+input string ServerBaseURL = "https://investforex.onrender.com";
 input string ApiKey = "SET_A_LONG_RANDOM_API_KEY";
 input string ConsumerId = "mt5-demo-vps";
 input int PollSeconds = 3;
@@ -84,6 +84,44 @@ bool AckSignal(string id,string result,string message)
    return ok;
 }
 
+
+string JsonObjectValue(string json, string key)
+{
+   string token = "\"" + key + "\"";
+   int p = StringFind(json, token);
+   if(p < 0) return "";
+   p = StringFind(json, ":", p + StringLen(token));
+   if(p < 0) return "";
+   p++;
+   while(p < StringLen(json) && (StringGetCharacter(json,p)==' ' ||
+         StringGetCharacter(json,p)=='\t' || StringGetCharacter(json,p)=='\r' ||
+         StringGetCharacter(json,p)=='\n')) p++;
+   if(p >= StringLen(json) || StringGetCharacter(json,p)!='{') return "";
+
+   int depth=0;
+   bool inString=false;
+   bool escaped=false;
+   for(int i=p; i<StringLen(json); i++)
+   {
+      ushort ch=StringGetCharacter(json,i);
+      if(inString)
+      {
+         if(escaped) escaped=false;
+         else if(ch=='\\') escaped=true;
+         else if(ch=='"') inString=false;
+         continue;
+      }
+      if(ch=='"') { inString=true; continue; }
+      if(ch=='{') depth++;
+      else if(ch=='}')
+      {
+         depth--;
+         if(depth==0) return StringSubstr(json,p,i-p+1);
+      }
+   }
+   return "";
+}
+
 void ImportLegacyDivergenceSignal()
 {
    if(!EnableLegacyDivergenceImport) return;
@@ -138,13 +176,19 @@ void PollSignal()
       return;
    }
    if(StringFind(response,"\"signal\":null")>=0) return;
-   string id=JsonValue(response,"id");
-   string symbol=JsonValue(response,"symbol");
-   string tf=JsonValue(response,"timeframe");
-   string direction=JsonValue(response,"direction");
-   string entry=JsonValue(response,"entry");
-   string sl=JsonValue(response,"sl");
-   string created=JsonValue(response,"created_at");
+   string signalJson=JsonObjectValue(response,"signal");
+   if(signalJson=="")
+   {
+      Print("[SERVER] Invalid response: missing signal object: ",response);
+      return;
+   }
+   string id=JsonValue(signalJson,"id");
+   string symbol=JsonValue(signalJson,"symbol");
+   string tf=JsonValue(signalJson,"timeframe");
+   string direction=JsonValue(signalJson,"direction");
+   string entry=JsonValue(signalJson,"entry");
+   string sl=JsonValue(signalJson,"sl");
+   string created=JsonValue(signalJson,"created_at");
    if(id=="" || symbol=="" || (direction!="BUY" && direction!="SELL") || entry=="" || sl=="")
    {
       Print("[SERVER] Invalid signal payload: ",response);
