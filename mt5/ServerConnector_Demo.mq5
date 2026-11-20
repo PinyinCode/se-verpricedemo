@@ -279,15 +279,16 @@ void PublishTodaySignals()
          string line=FileReadString(file);
          if(line=="") continue;
          string p[];
-         if(StringSplit(line,'|',p)<10) continue;
+         if(StringSplit(line,'|',p)<12) continue;
          string symbol=p[0], tf=p[1], direction=p[2], divType=p[3], sigType=p[4];
          long signalTime=StringToInteger(p[5]);
          if(symbol=="" || (direction!="BUY" && direction!="SELL") || signalTime<=0) continue;
          if(sigType!="RT" && sigType!="HIST") sigType="RT";
          if(items!="") items+=",";
-         items+=StringFormat("{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\",\"divergence\":\"%s\",\"signal_type\":\"%s\",\"signal_time\":%d,\"price1\":%.8f,\"price2\":%.8f,\"rsi1\":%.2f,\"rsi2\":%.2f}",
+         items+=StringFormat("{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\",\"divergence\":\"%s\",\"signal_type\":\"%s\",\"signal_time\":%d,\"price1\":%.8f,\"price2\":%.8f,\"rsi1\":%.2f,\"rsi2\":%.2f,\"time1\":%d,\"time2\":%d}",
             symbol,tf,direction,divType,sigType,(int)signalTime,
-            StringToDouble(p[6]),StringToDouble(p[7]),StringToDouble(p[8]),StringToDouble(p[9]));
+            StringToDouble(p[6]),StringToDouble(p[7]),StringToDouble(p[8]),StringToDouble(p[9]),
+            (int)StringToInteger(p[10]),(int)StringToInteger(p[11]));
       }
       FileClose(file);
    }
