@@ -5,7 +5,7 @@
 //| UsePaperSimulation=false -> REAL broker orders via CTrade        |
 //+------------------------------------------------------------------+
 #property strict
-#property version "2.10"
+#property version "2.11"
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
@@ -24,6 +24,7 @@ input bool   UsePaperSimulation  = true;    // true=paper, false=đặt lệnh t
 input long   MagicNumber         = 20240915;
 input int    SlippagePoints      = 20;
 input string OrderComment        = "TRADE-V9";
+input bool   SyncRealHistory     = true;    // Đồng bộ lịch sử lệnh thật đã đóng
 
 //--- Globals --------------------------------------------------------
 CTrade        trade;
@@ -54,14 +55,74 @@ string   realDirections[];
 double   realRisks[];
 datetime realOpenTimes[];
 
+// chống xử lý trùng signal_id trong phiên
+string   processedSignalIds[];
+string   lastHistoryDigest = "";
+
 uint lastPollMs          = 0;
 uint lastPositionsSyncMs = 0;
 uint lastHeartbeatMs     = 0;
+uint lastHistorySyncMs   = 0;
 
 //--- Forward declarations -------------------------------------------
 void SendPaperPositions();
+void PublishRealClosedDeals();
 
-//--- JSON helpers ---------------------------------------------------
+//--- JSON & string helpers ------------------------------------------
+string JsonEscape(string s)
+{
+   StringReplace(s, "\\", "\\\\");
+   StringReplace(s, "\"", "\\\"");
+   StringReplace(s, "\r", " ");
+   StringReplace(s, "\n", " ");
+   return s;
+}
+
+datetime ParseIsoOrEpochTime(string raw)
+{
+   StringTrimLeft(raw);
+   StringTrimRight(raw);
+   if(raw == "") return 0;
+
+   bool allDigits = true;
+   for(int i=0; i<StringLen(raw); i++)
+   {
+      ushort ch = StringGetCharacter(raw, i);
+      if(ch < '0' || ch > '9') { allDigits = false; break; }
+   }
+   if(allDigits) return (datetime)StringToInteger(raw);
+
+   // Hỗ trợ định dạng ISO như "2026-11-20T12:30:00Z" hoặc "2026.11.20 12:30:00"
+   string s = raw;
+   StringReplace(s, "T", " ");
+   StringReplace(s, "Z", "");
+   int plusPos = StringFind(s, "+");
+   if(plusPos > 0) s = StringSubstr(s, 0, plusPos);
+   StringReplace(s, "-", ".");
+   return StringToTime(s);
+}
+
+bool HasProcessedSignal(string id)
+{
+   for(int i=0; i<ArraySize(processedSignalIds); i++)
+      if(processedSignalIds[i] == id) return true;
+   return false;
+}
+
+void MarkProcessedSignal(string id)
+{
+   if(id == "" || HasProcessedSignal(id)) return;
+   int n = ArraySize(processedSignalIds);
+   if(n >= 500)
+   {
+      for(int i=0; i<n-1; i++) processedSignalIds[i] = processedSignalIds[i+1];
+      processedSignalIds[n-1] = id;
+      return;
+   }
+   ArrayResize(processedSignalIds, n+1);
+   processedSignalIds[n] = id;
+}
+
 string JsonValue(string json,string key)
 {
    string token="\""+key+"\"";
@@ -199,7 +260,7 @@ void SendHeartbeat()
 bool Ack(string id,string state,string message)
 {
    Print("[V9 ACK] signal=",id," status=",state," message=",message);
-   string body="{\"signal_id\":\""+id+"\",\"status\":\""+state+"\",\"message\":\""+message+"\"}";
+   string body="{\"signal_id\":\""+JsonEscape(id)+"\",\"status\":\""+JsonEscape(state)+"\",\"message\":\""+JsonEscape(message)+"\"}";
    string response; int status;
    bool ok=Request("POST","/api/chart/ack",body,response,status);
    if(!ok) Print("[V9 ACK ERROR] signal=",id," HTTP=",status," response=",response);
@@ -369,20 +430,24 @@ bool OpenTrade(string id,string symbol,string tf,string direction,
       return false;
    }
 
+   ulong posTicket = trade.ResultOrder();
+   if(PositionSelectByTicket(posTicket))
+      posTicket = (ulong)PositionGetInteger(POSITION_TICKET);
+
    Print("[REAL OPEN] signal=",id," ",symbol," ",tf," ",direction,
          " lots=",DoubleToString(volume,4),
          " SL=",DoubleToString(sl,digits),
          " TP=",DoubleToString(tp,digits),
-         " order=",trade.ResultOrder(),
+         " ticket=",posTicket,
          " risk=$",DoubleToString(actualRisk,2));
 
    RememberRealPosition(
-      IntegerToString(trade.ResultOrder()),
+      IntegerToString((long)posTicket),
       id, symbol, tf, direction, actualRisk);
 
    Ack(id,"SIMULATED",
-       StringFormat("Real broker order placed lot=%.4f ticket=%I64d (not in server-side paper DB)",
-                    volume,trade.ResultOrder()));
+       StringFormat("Real broker order placed lot=%.4f ticket=%I64u",
+                    volume,posTicket));
    return true;
 }
 
@@ -394,9 +459,9 @@ void SendPaperClosed(int i,string outcome,double realized)
       "\"entry\":%.10f,\"sl\":%.10f,\"tp\":%.10f,\"volume\":%.8f,"
       "\"risk\":%.2f,\"profit\":%.2f,\"opened_at\":%.0f,"
       "\"outcome\":\"%s\",\"closed_at\":%.0f}",
-      trades[i].id,trades[i].symbol,trades[i].timeframe,trades[i].direction,
+      JsonEscape(trades[i].id),JsonEscape(trades[i].symbol),JsonEscape(trades[i].timeframe),trades[i].direction,
       trades[i].entry,trades[i].sl,trades[i].tp,trades[i].volume,trades[i].riskMoney,
-      realized,(double)trades[i].opened,outcome,(double)TimeCurrent());
+      realized,(double)trades[i].opened,JsonEscape(outcome),(double)TimeCurrent());
    string response; int status;
    if(!Request("POST","/api/paper/closed",body,response,status))
       Print("[V9] Closed history sync failed HTTP=",status," response=",response);
@@ -449,7 +514,7 @@ void AckCloseCommand(string requestId,string targetId,bool ok,string detail)
 {
    string body=StringFormat(
       "{\"request_id\":\"%s\",\"position_id\":\"%s\",\"ok\":%s,\"message\":\"%s\"}",
-      requestId,targetId,(ok?"true":"false"),detail);
+      JsonEscape(requestId),JsonEscape(targetId),(ok?"true":"false"),JsonEscape(detail));
    string response; int status;
    if(!Request("POST","/api/paper/close-requests/ack",body,response,status))
       Print("[V9 CLOSE ACK FAIL] req=",requestId," HTTP=",status," response=",response);
@@ -480,10 +545,11 @@ bool CloseRealPositionById(string targetId,string symbol,string &detailOut)
       {
          if(!posInfo.SelectByIndex(i)) continue;
          if(posInfo.Magic()!=MagicNumber) continue;
-         string tk=IntegerToString(posInfo.Ticket());
+         string tk=IntegerToString((long)posInfo.Ticket());
+         string posId=IntegerToString((long)PositionGetInteger(POSITION_IDENTIFIER));
          int rIdx=FindTicketIndex(tk);
          string sigId=(rIdx>=0) ? realSignalIds[rIdx] : "";
-         if(tk==targetId || (sigId!="" && sigId==targetId))
+         if(tk==targetId || posId==targetId || (sigId!="" && sigId==targetId))
          {
             targetTicket=posInfo.Ticket();
             break;
@@ -522,7 +588,7 @@ bool CloseRealPositionById(string targetId,string symbol,string &detailOut)
       return false;
    }
 
-   ForgetRealPosition(IntegerToString(targetTicket));
+   ForgetRealPosition(IntegerToString((long)targetTicket));
    detailOut=StringFormat("Closed ticket=%I64u",targetTicket);
    Print("[REAL CLOSE] ",detailOut);
    return true;
@@ -564,7 +630,11 @@ void ExecuteCloseCommand(string cmdJson)
    }
 
    AckCloseCommand(reqId,targetId,closed,detail);
-   if(closed) SendPaperPositions();
+   if(closed)
+   {
+      SendPaperPositions();
+      if(!UsePaperSimulation) PublishRealClosedDeals();
+   }
 }
 
 void PollCloseCommands()
@@ -612,6 +682,7 @@ void PollServer()
    double tp        = StringToDouble(JsonValue(obj,"tp"));
    double riskMoney = StringToDouble(JsonValue(obj,"risk_money"));
    double reqLot    = StringToDouble(JsonValue(obj,"requested_lot"));
+   datetime sigTime = ParseIsoOrEpochTime(JsonValue(obj,"created_at"));
 
    Print("[V9 RECEIVE] signal=",id," ",symbol," ",tf," ",direction,
          " entry=",DoubleToString(entry,8)," SL=",DoubleToString(sl,8),
@@ -622,12 +693,25 @@ void PollServer()
    { Print("[V9 REJECT] Malformed signal id=",id);
      if(id!="") Ack(id,"REJECTED","Malformed signal"); return; }
 
+   if(HasProcessedSignal(id))
+      return;
+
+   if(MaxSignalAgeSeconds > 0 && sigTime > 0 && (TimeCurrent() - sigTime) > MaxSignalAgeSeconds)
+   {
+      MarkProcessedSignal(id);
+      Print("[V9 REJECT] Signal expired age=", (TimeCurrent() - sigTime), "s id=", id);
+      Ack(id,"REJECTED","Signal exceeded MaxSignalAgeSeconds");
+      return;
+   }
+
    if((direction=="BUY" && sl>=entry) || (direction=="SELL" && sl<=entry))
-   { Print("[V9 REJECT] Invalid entry/SL geometry signal=",id);
+   { MarkProcessedSignal(id);
+     Print("[V9 REJECT] Invalid entry/SL geometry signal=",id);
      Ack(id,"REJECTED","Invalid entry/SL geometry"); return; }
 
    if(tp>0 && ((direction=="BUY" && tp<=entry) || (direction=="SELL" && tp>=entry)))
-   { Print("[V9 REJECT] Invalid TP geometry signal=",id);
+   { MarkProcessedSignal(id);
+     Print("[V9 REJECT] Invalid TP geometry signal=",id);
      Ack(id,"REJECTED","Invalid TP geometry"); return; }
 
    int openCount = UsePaperSimulation ? ArraySize(trades) : CountRealPositions();
@@ -635,10 +719,11 @@ void PollServer()
    { Print("[V9 REJECT] Max positions reached signal=",id," open=",openCount);
      Ack(id,"REJECTED","Max positions reached"); return; }
 
+   MarkProcessedSignal(id);
    OpenTrade(id,symbol,tf,direction,entry,sl,tp,riskMoney,reqLot);
 }
 
-//--- Sync positions ------------------------------------------------
+//--- Sync positions & real closed history --------------------------
 void SendPaperPositions()
 {
    string body="{\"positions\":[";
@@ -661,7 +746,7 @@ void SendPaperPositions()
             "{\"id\":\"%s\",\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\","
             "\"entry\":%.10f,\"sl\":%.10f,\"tp\":%.10f,\"volume\":%.8f,"
             "\"risk\":%.2f,\"profit\":%.2f,\"opened_at\":%.0f}",
-            trades[i].id,symbol,trades[i].timeframe,trades[i].direction,
+            JsonEscape(trades[i].id),JsonEscape(symbol),JsonEscape(trades[i].timeframe),trades[i].direction,
             trades[i].entry,trades[i].sl,trades[i].tp,trades[i].volume,
             trades[i].riskMoney,profit,(double)trades[i].opened);
       }
@@ -674,13 +759,11 @@ void SendPaperPositions()
          if(!posInfo.SelectByIndex(i)) continue;
          if(posInfo.Magic()!=MagicNumber) continue;
 
-         string ticket=IntegerToString(posInfo.Ticket());
+         string ticket=IntegerToString((long)posInfo.Ticket());
          int    idx   =FindTicketIndex(ticket);
 
-         // nếu position mồ côi (EA restart), vẫn gửi với fallback hợp lệ
-         // Ticket là ID duy nhất cho từng position, tránh trùng signal ID khi khớp nhiều phần.
          string positionId = ticket;
-         string tfValue   = (idx>=0) ? realTimeframes[idx] : "M15";  // phải thuộc Literal
+         string tfValue   = (idx>=0) ? realTimeframes[idx] : "M15";
          double riskMoney = (idx>=0) ? realRisks[idx]      : 0.0;
 
          double profit=posInfo.Profit()+posInfo.Swap()+posInfo.Commission();
@@ -690,7 +773,7 @@ void SendPaperPositions()
             "{\"id\":\"%s\",\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\","
             "\"entry\":%.10f,\"sl\":%.10f,\"tp\":%.10f,\"volume\":%.8f,"
             "\"risk\":%.2f,\"profit\":%.2f,\"opened_at\":%.0f}",
-            positionId, posInfo.Symbol(), tfValue,
+            JsonEscape(positionId), JsonEscape(posInfo.Symbol()), JsonEscape(tfValue),
             (posInfo.PositionType()==POSITION_TYPE_BUY?"BUY":"SELL"),
             posInfo.PriceOpen(), posInfo.StopLoss(), posInfo.TakeProfit(),
             posInfo.Volume(), riskMoney, profit, (double)posInfo.Time());
@@ -703,6 +786,55 @@ void SendPaperPositions()
    if(!ok)
       Print("[V9] Position sync failed HTTP=",status,
             " body=",body," response=",response);
+}
+
+void PublishRealClosedDeals()
+{
+   if(UsePaperSimulation || !SyncRealHistory) return;
+   datetime now = TimeCurrent();
+   datetime fromTime = now - (datetime)(7 * 86400);
+   if(!HistorySelect(fromTime, now)) return;
+
+   int totalDeals = HistoryDealsTotal();
+   if(totalDeals <= 0) return;
+
+   string tradesJson = "";
+   int count = 0;
+   for(int i = totalDeals - 1; i >= 0 && count < 200; i--)
+   {
+      ulong dealTicket = HistoryDealGetTicket(i);
+      if(dealTicket == 0) continue;
+      if(HistoryDealGetInteger(dealTicket, DEAL_MAGIC) != MagicNumber) continue;
+      long entryType = HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
+      if(entryType != DEAL_ENTRY_OUT && entryType != DEAL_ENTRY_INOUT) continue;
+
+      string sym = HistoryDealGetString(dealTicket, DEAL_SYMBOL);
+      if(sym == "") continue;
+      long dealType = HistoryDealGetInteger(dealTicket, DEAL_TYPE);
+      string dir = (dealType == DEAL_TYPE_BUY) ? "SELL" : "BUY";
+      double vol = HistoryDealGetDouble(dealTicket, DEAL_VOLUME);
+      double price = HistoryDealGetDouble(dealTicket, DEAL_PRICE);
+      double profit = HistoryDealGetDouble(dealTicket, DEAL_PROFIT)
+                  + HistoryDealGetDouble(dealTicket, DEAL_SWAP)
+                  + HistoryDealGetDouble(dealTicket, DEAL_COMMISSION);
+      long closedAt = HistoryDealGetInteger(dealTicket, DEAL_TIME);
+      if(vol <= 0 || closedAt <= 0) continue;
+
+      if(tradesJson != "") tradesJson += ",";
+      tradesJson += StringFormat(
+         "{\"id\":\"v9-%I64u\",\"ticket\":\"%I64u\",\"symbol\":\"%s\",\"timeframe\":\"MT5\",\"direction\":\"%s\",\"entry\":%.8f,\"sl\":0,\"tp\":0,\"volume\":%.4f,\"profit\":%.2f,\"outcome\":\"CLOSED\",\"opened_at\":0,\"closed_at\":%I64d}",
+         dealTicket, dealTicket, JsonEscape(sym), dir, price, vol, profit, closedAt
+      );
+      count++;
+   }
+
+   if(count <= 0 || tradesJson == lastHistoryDigest) return;
+   string body = "{\"replace\":false,\"trades\":[" + tradesJson + "]}";
+   string response; int status;
+   if(Request("POST", "/api/mt5/history", body, response, status))
+      lastHistoryDigest = tradesJson;
+   else
+      Print("[V9] Real history sync failed HTTP=", status, " response=", response);
 }
 
 //--- Lifecycle -----------------------------------------------------
@@ -749,5 +881,12 @@ void OnTimer()
    {
       lastPositionsSyncMs=nowMs;
       SendPaperPositions();
+   }
+
+   if(!UsePaperSimulation && SyncRealHistory &&
+      (lastHistorySyncMs==0 || (uint)(nowMs-lastHistorySyncMs)>=15000))
+   {
+      lastHistorySyncMs=nowMs;
+      PublishRealClosedDeals();
    }
 }
