@@ -2,6 +2,7 @@
 """Forex AI bridge API. Demo/paper-trading only; no broker order execution."""
 from __future__ import annotations
 
+import json
 import os
 import secrets
 import sqlite3
@@ -64,6 +65,11 @@ def init_db() -> None:
           component TEXT PRIMARY KEY, status TEXT NOT NULL,
           details TEXT NOT NULL, updated_at TEXT NOT NULL
         )""")
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS scan_status (
+          component TEXT PRIMARY KEY, symbols_json TEXT NOT NULL,
+          updated_at TEXT NOT NULL
+        )""")
 
 
 @app.on_event("startup")
@@ -103,6 +109,21 @@ class HeartbeatIn(BaseModel):
     component: str = Field(min_length=2, max_length=40)
     status: Literal["online", "warning", "offline"]
     details: str = Field(default="", max_length=500)
+
+
+class ScanUpdateIn(BaseModel):
+    component: str = Field(min_length=2, max_length=40)
+    symbols: list[str] = Field(default_factory=list, max_length=500)
+
+    @field_validator("symbols")
+    @classmethod
+    def clean_symbols(cls, values: list[str]) -> list[str]:
+        cleaned = []
+        for value in values:
+            item = value.strip().upper()[:48]
+            if item and item not in cleaned:
+                cleaned.append(item)
+        return cleaned
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -205,6 +226,20 @@ def heartbeat(payload: HeartbeatIn):
     return {"ok": True}
 
 
+@app.post("/api/scans", dependencies=[Depends(require_key)])
+def update_scans(payload: ScanUpdateIn):
+    now = utc_now()
+    symbols_json = json.dumps(payload.symbols, ensure_ascii=True)
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO scan_status(component,symbols_json,updated_at) VALUES(?,?,?) "
+            "ON CONFLICT(component) DO UPDATE SET symbols_json=excluded.symbols_json,updated_at=excluded.updated_at",
+            (payload.component, symbols_json, now),
+        )
+    return {"ok": True, "component": payload.component, "symbol_count": len(payload.symbols),
+            "updated_at": now}
+
+
 @app.get("/api/dashboard")
 def dashboard_data():
     with db() as conn:
@@ -229,7 +264,16 @@ def dashboard_data():
         counts["errors"] = conn.execute(
             "SELECT COUNT(*) FROM signals WHERE status='completed' AND ack_status='ERROR'"
         ).fetchone()[0]
+        scans = [dict(r) for r in conn.execute(
+            "SELECT component,symbols_json,updated_at FROM scan_status ORDER BY component").fetchall()]
+        for item in scans:
+            item["symbols"] = json.loads(item.pop("symbols_json"))
+            age = (datetime.now(timezone.utc) - datetime.fromisoformat(item["updated_at"])).total_seconds()
+            item["age_seconds"] = int(max(0, age))
+            item["active"] = age <= 30 and len(item["symbols"]) > 0
+            if age > 30:
+                item["symbols"] = []
         events = [dict(r) for r in conn.execute(
             "SELECT event_type,message,created_at FROM events ORDER BY id DESC LIMIT 30").fetchall()]
     return {"mode": "DEMO_ONLY", "signals": signals, "heartbeats": heartbeats,
-            "counts": counts, "events": events, "server_time": utc_now()}
+            "scan_status": scans, "counts": counts, "events": events, "server_time": utc_now()}
