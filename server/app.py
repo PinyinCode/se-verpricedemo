@@ -88,6 +88,14 @@ def init_db() -> None:
         signal_cols = {row[1] for row in conn.execute("PRAGMA table_info(signals)")}
         if "risk_money" not in signal_cols: conn.execute("ALTER TABLE signals ADD COLUMN risk_money REAL NOT NULL DEFAULT 25")
         if "requested_lot" not in signal_cols: conn.execute("ALTER TABLE signals ADD COLUMN requested_lot REAL NOT NULL DEFAULT 0")
+        if "tp" not in signal_cols: conn.execute("ALTER TABLE signals ADD COLUMN tp REAL NOT NULL DEFAULT 0")
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS paper_positions (
+          id TEXT PRIMARY KEY, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
+          direction TEXT NOT NULL, entry REAL NOT NULL, sl REAL NOT NULL, tp REAL NOT NULL,
+          volume REAL NOT NULL, risk REAL NOT NULL, profit REAL NOT NULL,
+          opened_at REAL NOT NULL, updated_at TEXT NOT NULL
+        )""")
         conn.execute("""
         CREATE TABLE IF NOT EXISTS today_signals (
           signal_key TEXT PRIMARY KEY, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
@@ -115,6 +123,7 @@ class SignalIn(BaseModel):
     direction: Literal["BUY", "SELL"]
     entry: float = Field(gt=0)
     sl: float = Field(gt=0)
+    tp: float = Field(default=0, ge=0)
     score: float = Field(default=0, ge=0, le=100)
     source: str = Field(default="api", max_length=40)
     risk_money: float = Field(default=25, gt=0, le=1000000)
@@ -124,6 +133,24 @@ class SignalIn(BaseModel):
     @classmethod
     def normalize_symbol(cls, value: str) -> str:
         return value.strip().upper()
+
+
+class PaperPositionIn(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+    symbol: str = Field(min_length=3, max_length=32)
+    timeframe: Literal["M1", "M5", "M15", "M30", "H1", "H4", "D1"]
+    direction: Literal["BUY", "SELL"]
+    entry: float = Field(gt=0)
+    sl: float = Field(gt=0)
+    tp: float = Field(ge=0)
+    volume: float = Field(gt=0)
+    risk: float = Field(ge=0)
+    profit: float
+    opened_at: float = Field(gt=0)
+
+
+class PaperPositionsIn(BaseModel):
+    positions: list[PaperPositionIn] = Field(default_factory=list, max_length=100)
 
 
 class AckIn(BaseModel):
@@ -242,10 +269,10 @@ def create_signal(payload: SignalIn):
                         "status": existing["status"], "created_at": existing["created_at"]}
         signal_id = secrets.token_hex(12)
         conn.execute(
-            "INSERT INTO signals(id,symbol,timeframe,direction,entry,sl,score,risk_money,requested_lot,source,status,created_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO signals(id,symbol,timeframe,direction,entry,sl,tp,score,risk_money,requested_lot,source,status,created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (signal_id, payload.symbol, payload.timeframe, payload.direction,
-             payload.entry, payload.sl, payload.score, payload.risk_money, payload.requested_lot,
+             payload.entry, payload.sl, payload.tp, payload.score, payload.risk_money, payload.requested_lot,
              payload.source, "pending", created),
         )
         conn.execute("INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
@@ -354,6 +381,21 @@ def acknowledge(payload: AckIn):
     return {"ok": True}
 
 
+@app.post("/api/paper/positions", dependencies=[Depends(require_key)])
+def update_paper_positions(payload: PaperPositionsIn):
+    now = utc_now()
+    with db() as conn:
+        conn.execute("DELETE FROM paper_positions")
+        for p in payload.positions:
+            conn.execute(
+                "INSERT INTO paper_positions(id,symbol,timeframe,direction,entry,sl,tp,volume,risk,profit,opened_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (p.id, p.symbol.upper(), p.timeframe, p.direction, p.entry, p.sl, p.tp,
+                 p.volume, p.risk, p.profit, p.opened_at, now),
+            )
+    return {"ok": True, "open_positions": len(payload.positions), "updated_at": now}
+
+
 @app.post("/api/heartbeat", dependencies=[Depends(require_key)])
 def heartbeat(payload: HeartbeatIn):
     with db() as conn:
@@ -454,8 +496,11 @@ def chart_data(
 def dashboard_data():
     with db() as conn:
         signals = [dict(r) for r in conn.execute(
-            "SELECT id,symbol,timeframe,direction,entry,sl,score,source,status,created_at,ack_status,ack_message "
+            "SELECT id,symbol,timeframe,direction,entry,sl,tp,score,source,status,created_at,ack_status,ack_message "
             "FROM signals ORDER BY created_at DESC LIMIT 100").fetchall()]
+        paper_positions = [dict(r) for r in conn.execute(
+            "SELECT id,symbol,timeframe,direction,entry,sl,tp,volume,risk,profit,opened_at,updated_at "
+            "FROM paper_positions ORDER BY opened_at DESC").fetchall()]
         heartbeats = [dict(r) for r in conn.execute(
             "SELECT component,status,details,updated_at FROM heartbeats ORDER BY component").fetchall()]
         for item in heartbeats:
@@ -489,5 +534,6 @@ def dashboard_data():
             "SELECT symbol,timeframe,direction,divergence,signal_type,signal_time,price1,price2,rsi1,rsi2 "
             "FROM today_signals ORDER BY signal_time DESC LIMIT 200").fetchall()]
     return {"mode": "DEMO_ONLY", "signals": signals, "today_signals": today_signals,
+            "paper_positions": paper_positions,
             "heartbeats": heartbeats, "scan_status": scans, "counts": counts,
             "events": events, "server_time": utc_now()}
