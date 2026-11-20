@@ -17,60 +17,10 @@ button{cursor:pointer}button.active{border-color:#36bd91;color:#62dfb3}
 .side{padding:12px}.side h3{font-size:13px;margin:0 0 10px}.signal{padding:10px 0;border-bottom:1px solid var(--line)}.signal:last-child{border:0}
 .buy{color:var(--green)}.sell{color:var(--red)}.small{font-size:11px;color:var(--muted)}.empty{padding:24px;text-align:center;color:var(--muted)}
 table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:8px;border-bottom:1px solid var(--line);font-size:11px}th{color:var(--muted);font-weight:600}
-#signalTable{max-height:240px;overflow:auto}.statusline{padding:9px 12px;color:var(--muted);font-size:11px;border-top:1px solid var(--line)}
+#signalTable{max-height:240px;overflow:auto}.level-toggles{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.level-toggles label{display:inline-flex;gap:5px;align-items:center;color:var(--muted);font-size:12px}.level-toggles input{accent-color:#60a5fa}.statusline{padding:9px 12px;color:var(--muted);font-size:11px;border-top:1px solid var(--line)}
 @media(max-width:900px){.layout{grid-template-columns:1fr}#priceChart{height:390px}}
 </style>
-<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.2/dist/lightweight-charts.standalone.production.js">
-/* Draggable Entry / SL / TP overlays. Price precision follows the selected symbol. */
-let mt5Digits=5,mt5TickSize=0.00001,mt5TickValue=0;
-const dragOverlay=document.createElement('div');
-dragOverlay.className='drag-overlay';
-$('priceChart').appendChild(dragOverlay);
-const dragLevels={};
-for(const k of ['entry','sl','tp']){
-  const el=document.createElement('div');
-  el.className='drag-line '+k;
-  const tag=document.createElement('span');
-  el.appendChild(tag); dragOverlay.appendChild(el); dragLevels[k]=el;
-  el.addEventListener('pointerdown',ev=>{ev.preventDefault();el.setPointerCapture(ev.pointerId);el.dataset.drag='1'});
-  el.addEventListener('pointermove',ev=>{
-    if(el.dataset.drag!=='1')return;
-    const rect=$('priceChart').getBoundingClientRect();
-    const price=candleSeries.coordinateToPrice(ev.clientY-rect.top);
-    if(price==null||!Number.isFinite(price))return;
-    const id=k==='entry'?'entryPrice':k==='sl'?'slPrice':'tpPrice';
-    $('symbol').dispatchEvent(new Event('precision-refresh'));
-    $(id).value=Number(price).toFixed(priceDigits());
-    calcLot();
-  });
-  const stop=()=>{el.dataset.drag='0'};
-  el.addEventListener('pointerup',stop);el.addEventListener('pointercancel',stop);
-}
-function priceDigits(){return mt5Digits;}
-function setLevelLines(){
-  for(const k of ['entry','sl','tp']){
-    const id=k==='entry'?'entryPrice':k==='sl'?'slPrice':'tpPrice';
-    const value=Number($(id).value);
-    const y=value>0?candleSeries.priceToCoordinate(value):null;
-    const el=dragLevels[k];
-    el.style.display=y==null?'none':'block';
-    if(y!=null){el.style.top=y+'px';el.firstChild.textContent=k.toUpperCase()+' '+value.toFixed(priceDigits())}
-  }
-}
-function calcLot(){
-  const risk=Number($('riskMoney').value),e=Number($('entryPrice').value),sl=Number($('slPrice').value);
-  if(!(risk>0&&e>0&&sl>0&&mt5TickSize>0&&mt5TickValue>0&&e!==sl)){
-    $('lotResult').textContent='Kiểm tra Risk, Entry, SL và giá trị biến động/lot.';
-    setLevelLines();return null;
-  }
-  const distance=Math.abs(e-sl),lossPerLot=(distance/mt5TickSize)*mt5TickValue,lot=risk/lossPerLot;
-  $('lotResult').textContent='Khối lượng tham khảo: '+lot.toFixed(4)+' lot · Khoảng SL: '+distance.toFixed(priceDigits())+' · Lỗ/lot tại SL: '+lossPerLot.toFixed(2)+' · Risk: '+risk.toFixed(2);
-  setLevelLines();return {risk,e,s:sl,lot};
-}
-['entryPrice','slPrice','tpPrice','riskMoney'].forEach(id=>$(id).addEventListener('input',()=>calcLot()));
-$('symbol').addEventListener('change',()=>{setTimeout(()=>{for(const id of ['entryPrice','slPrice','tpPrice'])if($(id).value)$(id).value=Number($(id).value).toFixed(priceDigits());calcLot()},0)});
-new ResizeObserver(()=>setLevelLines()).observe($('priceChart'));
-</script>
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.2/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
 <header><div><span class="brand">Forex AI · Chart</span> <span class="muted">/ AI OOP V8 MT5 feed</span></div><span class="tag">DEMO / PAPER ONLY</span></header>
@@ -87,7 +37,7 @@ new ResizeObserver(()=>setLevelLines()).observe($('priceChart'));
 <div id="priceChart"></div><div id="rsiChart"></div>
 <div class="statusline">RSI 14 được tính từ chuỗi nến nhận từ MT5; RSI không tạo tín hiệu giao dịch. Mũi tên chỉ hiển thị tín hiệu AI OOP V8.</div>
 </section>
-<section class="panel" style="margin-top:12px"><div class="panel-head"><strong>Công cụ tính khối lượng & mức giá</strong><span class="small">Tính tham khảo · không tự đặt lệnh broker</span></div><div class="side"><div class="toolbar"><label>Risk tiền <input id="riskMoney" type="number" min="0.01" step="1" value="25" style="width:90px"></label><label>Entry <input id="entryPrice" type="number" step="any" style="width:120px"></label><label>Stop Loss <input id="slPrice" type="number" step="any" style="width:120px"></label><span id="contractMeta" class="small">Đang chờ thông số hợp đồng từ MT5...</span><label>Take Profit <input id="tpPrice" type="number" step="any" style="width:120px"></label><button id="calcLot">Tính & vẽ mức giá</button></div><div id="lotResult" class="small">Nhập Entry, SL và giá trị biến động/lot để tính lot.</div><div class="toolbar" style="margin-top:10px"><button id="sendBuy" class="active">Gửi BUY request</button><button id="sendSell">Gửi SELL request</button><span id="requestState" class="small">Yêu cầu chỉ được đưa vào hàng đợi PAPER.</span></div></div></section>
+<section class="panel" style="margin-top:12px"><div class="panel-head"><strong>Công cụ tính khối lượng & mức giá</strong><span class="small">Tính tham khảo · không tự đặt lệnh broker</span></div><div class="side"><div class="toolbar"><label>Risk tiền <input id="riskMoney" type="number" min="0.01" step="1" value="25" style="width:90px"></label><label>Entry <input id="entryPrice" type="number" step="any" style="width:120px"></label><label>Stop Loss <input id="slPrice" type="number" step="any" style="width:120px"></label><span id="contractMeta" class="small">Đang chờ thông số hợp đồng từ MT5...</span><label>Take Profit <input id="tpPrice" type="number" step="any" style="width:120px"></label><div class="level-toggles"><label><input id="showEntry" type="checkbox" checked> Entry</label><label><input id="showSL" type="checkbox" checked> SL</label><label><input id="showTP" type="checkbox" checked> TP</label></div><button id="calcLot">Cập nhật đường giá</button></div><div id="lotResult" class="small">Nhập Entry, SL và giá trị biến động/lot để tính lot.</div><div class="toolbar" style="margin-top:10px"><button id="sendBuy" class="active">Gửi BUY request</button><button id="sendSell">Gửi SELL request</button><span id="requestState" class="small">Yêu cầu chỉ được đưa vào hàng đợi PAPER.</span></div></div></section>
 <section class="panel" style="margin-top:12px"><div class="panel-head"><strong>Tín hiệu AI OOP V8</strong><span class="small" id="signalCount">0 tín hiệu</span></div><div id="signalTable"><div class="empty">Chưa có tín hiệu cho mã và khung đang chọn</div></div></section>
 </div>
 <aside class="panel side"><h3>Chi tiết tín hiệu</h3><div id="signalDetails" class="muted">Chọn một tín hiệu trong danh sách để xem chi tiết.</div><h3 style="margin-top:20px">Chú giải</h3>
@@ -100,13 +50,22 @@ new ResizeObserver(()=>setLevelLines()).observe($('priceChart'));
 </main>
 <script>
 const $=id=>document.getElementById(id);
-const fmt=n=>Number(n).toLocaleString('en-US',{maximumFractionDigits:5});
+let mt5Digits=5,mt5TickSize=0.00001,mt5TickValue=0;const fmt=n=>Number(n).toLocaleString('en-US',{minimumFractionDigits:mt5Digits,maximumFractionDigits:mt5Digits});
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const priceChart=LightweightCharts.createChart($('priceChart'),{layout:{background:{color:'#111c2e'},textColor:'#a9b8ca'},grid:{vertLines:{color:'#1c2a3e'},horzLines:{color:'#1c2a3e'}},rightPriceScale:{borderColor:'#34445c'},timeScale:{borderColor:'#34445c',timeVisible:true,secondsVisible:false,rightOffset:10,barSpacing:8,minBarSpacing:2},crosshair:{mode:LightweightCharts.CrosshairMode.Normal}});
-const candleSeries=priceChart.addCandlestickSeries({upColor:'#22c58b',downColor:'#f06478',borderUpColor:'#22c58b',borderDownColor:'#f06478',wickUpColor:'#22c58b',wickDownColor:'#f06478'});
+const candleSeries=priceChart.addCandlestickSeries({upColor:'#22c58b',downColor:'#f06478',borderUpColor:'#22c58b',borderDownColor:'#f06478',wickUpColor:'#22c58b',wickDownColor:'#f06478',priceFormat:{type:'price',precision:5,minMove:0.00001}});
 const rsiChart=LightweightCharts.createChart($('rsiChart'),{layout:{background:{color:'#111c2e'},textColor:'#a9b8ca'},grid:{vertLines:{color:'#1c2a3e'},horzLines:{color:'#1c2a3e'}},rightPriceScale:{borderColor:'#34445c',scaleMargins:{top:.1,bottom:.1}},timeScale:{visible:false,borderColor:'#34445c',rightOffset:10,barSpacing:8,minBarSpacing:2},height:150});
 const rsiSeries=rsiChart.addLineSeries({color:'#a78bfa',lineWidth:2,priceLineVisible:false,lastValueVisible:true});
-let syncing=false, firstLoad=true, entryLine=null, slLine=null, tpLine=null;
+let syncing=false, firstLoad=true;
+const dragOverlay=document.createElement('div');dragOverlay.className='drag-overlay';$('priceChart').appendChild(dragOverlay);
+const dragLevels={};
+for(const key of ['entry','sl','tp']){
+ const line=document.createElement('div');line.className='drag-line '+key;
+ const tag=document.createElement('span');line.appendChild(tag);dragOverlay.appendChild(line);dragLevels[key]=line;
+ line.addEventListener('pointerdown',ev=>{if(line.style.display==='none')return;ev.preventDefault();line.setPointerCapture(ev.pointerId);line.dataset.drag='1'});
+ line.addEventListener('pointermove',ev=>{if(line.dataset.drag!=='1')return;const rect=$('priceChart').getBoundingClientRect();const p=candleSeries.coordinateToPrice(ev.clientY-rect.top);if(p==null||!Number.isFinite(p))return;const id=key==='entry'?'entryPrice':key==='sl'?'slPrice':'tpPrice';$(id).value=Number(p).toFixed(mt5Digits);calcLot()});
+ const stop=()=>line.dataset.drag='0';line.addEventListener('pointerup',stop);line.addEventListener('pointercancel',stop);
+}
 priceChart.timeScale().subscribeVisibleLogicalRangeChange(range=>{if(syncing||!range)return;syncing=true;rsiChart.timeScale().setVisibleLogicalRange(range);syncing=false});
 rsiChart.timeScale().subscribeVisibleLogicalRangeChange(range=>{if(syncing||!range)return;syncing=true;priceChart.timeScale().setVisibleLogicalRange(range);syncing=false});
 function rsi(values,period=14){const out=[];let avgGain=0,avgLoss=0;for(let i=0;i<values.length;i++){if(i===0){out.push({time:values[i].time,value:50});continue}const d=values[i].close-values[i-1].close;const gain=Math.max(d,0),loss=Math.max(-d,0);if(i<=period){avgGain+=(gain/period);avgLoss+=(loss/period)}else{avgGain=(avgGain*(period-1)+gain)/period;avgLoss=(avgLoss*(period-1)+loss)/period}const v=avgLoss===0?100:100-(100/(1+avgGain/avgLoss));out.push({time:values[i].time,value:v})}return out}
@@ -114,10 +73,26 @@ function nearestTime(t,bars){if(!bars.length)return t;let best=bars[0].time,delt
 function renderSignals(signals,bars){const list=signals||[];$('signalCount').textContent=list.length+' tín hiệu';const markers=list.map(s=>({time:nearestTime(Number(s.signal_time),bars),position:s.direction==='BUY'?'belowBar':'aboveBar',color:s.direction==='BUY'?'#22c58b':'#f06478',shape:s.direction==='BUY'?'arrowUp':'arrowDown',text:s.direction+' '+s.divergence+' '+s.signal_type}));candleSeries.setMarkers(bars.length?markers:[]);
 $('signalTable').innerHTML=list.length?'<table><thead><tr><th>Thời gian</th><th>Hướng</th><th>Loại</th><th>Phân kỳ</th><th>Giá</th></tr></thead><tbody>'+list.map((s,i)=>'<tr data-i="'+i+'"><td>'+esc(new Date(Number(s.signal_time)*1000).toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh'}))+'</td><td class="'+(s.direction==='BUY'?'buy':'sell')+'">'+esc(s.direction)+'</td><td>'+esc(s.signal_type)+'</td><td>'+esc(s.divergence)+'</td><td>'+fmt(s.price2)+'</td></tr>').join('')+'</tbody></table>':'<div class="empty">Không có tín hiệu AI OOP V8 cho lựa chọn này.</div>';
 $('signalTable').querySelectorAll('tr[data-i]').forEach(row=>row.addEventListener('click',()=>{const s=list[Number(row.dataset.i)];$('signalDetails').innerHTML='<b class="'+(s.direction==='BUY'?'buy':'sell')+'">'+esc(s.direction)+' · '+esc(s.divergence)+' · '+esc(s.signal_type)+'</b><p>'+esc(s.symbol)+' / '+esc(s.timeframe)+'</p><p>Thời gian: '+esc(new Date(Number(s.signal_time)*1000).toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh'}))+'</p><p>Price 1: '+fmt(s.price1)+'<br>Price 2: '+fmt(s.price2)+'</p><p>RSI 1: '+fmt(s.rsi1)+'<br>RSI 2: '+fmt(s.rsi2)+'</p>'; }));}
-async function load(){const symbol=$('symbol').value,tf=$('tf').value;$('chartTitle').textContent=symbol+' · '+tf;$('feedState').textContent='Đang tải...';try{const res=await fetch('/api/chart/data?symbol='+encodeURIComponent(symbol)+'&timeframe='+encodeURIComponent(tf)+'&limit=1000',{cache:'no-store'});if(!res.ok)throw new Error('HTTP '+res.status);const data=await res.json();mt5Digits=Number(data.digits??5);mt5TickSize=Number(data.tick_size??0.00001);mt5TickValue=Number(data.tick_value??0);$('contractMeta').textContent='Digits '+mt5Digits+' · Tick size '+mt5TickSize.toFixed(mt5Digits)+' · Tick value/lot '+mt5TickValue;const bars=(data.candles||[]).map(c=>({time:Number(c.time),open:Number(c.open),high:Number(c.high),low:Number(c.low),close:Number(c.close)}));const oldRange=firstLoad?null:priceChart.timeScale().getVisibleLogicalRange();candleSeries.setData(bars);rsiSeries.setData(rsi(bars));renderSignals(data.signals||[],bars);calcLot();if(bars.length){if(firstLoad){if(!$('entryPrice').value)$('entryPrice').value=Number(bars[bars.length-1].close).toFixed(mt5Digits);if(!$('slPrice').value)$('slPrice').value=Number(bars[bars.length-1].close-(Math.max(mt5TickSize,0.00001)*20)).toFixed(mt5Digits);priceChart.timeScale().fitContent();priceChart.timeScale().applyOptions({rightOffset:10});rsiChart.timeScale().applyOptions({rightOffset:10});firstLoad=false}else if(oldRange){priceChart.timeScale().setVisibleLogicalRange(oldRange)}$('feedState').textContent=bars.length+' nến · cập nhật '+new Date().toLocaleTimeString()}else{$('feedState').textContent='Chưa có nến MT5 được gửi lên server';$('signalDetails').textContent='API đã kết nối, đang chờ MT5 gửi dữ liệu OHLC.'} }catch(e){$('feedState').textContent='Lỗi tải dữ liệu: '+e.message}}
-function setLevelLines(){const e=Number($('entryPrice').value),s=Number($('slPrice').value),t=Number($('tpPrice').value);if(entryLine)candleSeries.removePriceLine(entryLine);if(slLine)candleSeries.removePriceLine(slLine);if(tpLine)candleSeries.removePriceLine(tpLine);entryLine=Number.isFinite(e)&&e>0?candleSeries.createPriceLine({price:e,color:'#60a5fa',lineWidth:2,lineStyle:2,axisLabelVisible:true,title:'ENTRY'}):null;slLine=Number.isFinite(s)&&s>0?candleSeries.createPriceLine({price:s,color:'#f06478',lineWidth:2,lineStyle:2,axisLabelVisible:true,title:'SL'}):null;tpLine=Number.isFinite(t)&&t>0?candleSeries.createPriceLine({price:t,color:'#22c58b',lineWidth:2,lineStyle:2,axisLabelVisible:true,title:'TP'}):null}
-function calcLot(){const risk=Number($('riskMoney').value),e=Number($('entryPrice').value),s=Number($('slPrice').value),v=Number($('unitValue').value);if(!(risk>0&&e>0&&s>0&&v>0&&e!==s)){$('lotResult').textContent='Kiểm tra Risk, Entry, SL và giá trị biến động/lot.';return null}const lot=risk/(Math.abs(e-s)*v);$('lotResult').textContent='Khối lượng tham khảo: '+lot.toFixed(4)+' lot · Khoảng SL: '+fmt(Math.abs(e-s))+' · Rủi ro dự kiến: '+fmt(risk);setLevelLines();return {risk,e,s,lot}}
-$('calcLot').addEventListener('click',calcLot);
+async function load(){const symbol=$('symbol').value,tf=$('tf').value;$('chartTitle').textContent=symbol+' · '+tf;$('feedState').textContent='Đang tải...';try{const res=await fetch('/api/chart/data?symbol='+encodeURIComponent(symbol)+'&timeframe='+encodeURIComponent(tf)+'&limit=1000',{cache:'no-store'});if(!res.ok)throw new Error('HTTP '+res.status);const data=await res.json();mt5Digits=Math.max(0,Math.min(10,Number(data.digits??5)));mt5TickSize=Number(data.tick_size??0.00001);mt5TickValue=Number(data.tick_value??0);candleSeries.applyOptions({priceFormat:{type:'price',precision:mt5Digits,minMove:mt5TickSize>0?mt5TickSize:Math.pow(10,-mt5Digits)}});for(const id of ['entryPrice','slPrice','tpPrice'])if($(id).value!==''&&Number.isFinite(Number($(id).value)))$(id).value=Number($(id).value).toFixed(mt5Digits);$('contractMeta').textContent='Digits '+mt5Digits+' · Tick size '+mt5TickSize.toFixed(mt5Digits)+' · Tick value/lot '+mt5TickValue;const bars=(data.candles||[]).map(c=>({time:Number(c.time),open:Number(c.open),high:Number(c.high),low:Number(c.low),close:Number(c.close)}));const oldRange=firstLoad?null:priceChart.timeScale().getVisibleLogicalRange();candleSeries.setData(bars);rsiSeries.setData(rsi(bars));renderSignals(data.signals||[],bars);calcLot();if(bars.length){if(firstLoad){if(!$('entryPrice').value)$('entryPrice').value=Number(bars[bars.length-1].close).toFixed(mt5Digits);if(!$('slPrice').value)$('slPrice').value=Number(bars[bars.length-1].close-(Math.max(mt5TickSize,0.00001)*20)).toFixed(mt5Digits);priceChart.timeScale().fitContent();priceChart.timeScale().applyOptions({rightOffset:10});rsiChart.timeScale().applyOptions({rightOffset:10});firstLoad=false}else if(oldRange){priceChart.timeScale().setVisibleLogicalRange(oldRange)}$('feedState').textContent=bars.length+' nến · cập nhật '+new Date().toLocaleTimeString()}else{$('feedState').textContent='Chưa có nến MT5 được gửi lên server';$('signalDetails').textContent='API đã kết nối, đang chờ MT5 gửi dữ liệu OHLC.'} }catch(e){$('feedState').textContent='Lỗi tải dữ liệu: '+e.message}}
+function setLevelLines(){
+ for(const key of ['entry','sl','tp']){
+  const id=key==='entry'?'entryPrice':key==='sl'?'slPrice':'tpPrice',value=Number($(id).value),toggle=$(key==='entry'?'showEntry':key==='sl'?'showSL':'showTP');
+  const y=value>0?candleSeries.priceToCoordinate(value):null,line=dragLevels[key];
+  line.style.display=toggle.checked&&y!=null?'block':'none';
+  if(toggle.checked&&y!=null){line.style.top=y+'px';line.firstChild.textContent=key.toUpperCase()+' '+value.toFixed(mt5Digits)}
+ }
+}
+function calcLot(){
+ const risk=Number($('riskMoney').value),e=Number($('entryPrice').value),sl=Number($('slPrice').value);
+ setLevelLines();
+ if(!(risk>0&&e>0&&sl>0&&mt5TickSize>0&&mt5TickValue>0&&e!==sl)){
+  $('lotResult').textContent='Kiểm tra Risk, Entry, SL và thông số Tick Size/Tick Value từ MT5.';return null;
+ }
+ const distance=Math.abs(e-sl),lossPerLot=(distance/mt5TickSize)*mt5TickValue,lot=risk/lossPerLot;
+ $('lotResult').textContent='Khối lượng tham khảo: '+lot.toFixed(4)+' lot · Khoảng SL: '+distance.toFixed(mt5Digits)+' · Lỗ/lot tại SL: '+lossPerLot.toFixed(2)+' · Risk: '+risk.toFixed(2);
+ return {risk,e,s:sl,lot};
+}
+$('calcLot').addEventListener('click',calcLot);['showEntry','showSL','showTP'].forEach(id=>$(id).addEventListener('change',setLevelLines));['entryPrice','slPrice','tpPrice','riskMoney'].forEach(id=>$(id).addEventListener('input',calcLot));new ResizeObserver(setLevelLines).observe($('priceChart'));
 async function sendPaper(direction){const c=calcLot();if(!c)return; if((direction==='BUY'&&c.s>=c.e)||(direction==='SELL'&&c.s<=c.e)){$('requestState').textContent='SL phải nằm dưới Entry với BUY và trên Entry với SELL.';return}const payload={symbol:$('symbol').value,timeframe:$('tf').value,direction,entry:c.e,sl:c.s,score:0,source:'web-chart'};$('requestState').textContent='Đang gửi yêu cầu PAPER...';try{const r=await fetch('/api/chart/request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const d=await r.json();if(!r.ok)throw new Error(d.detail||('HTTP '+r.status));$('requestState').textContent='Đã đưa vào hàng đợi PAPER · ID '+d.signal_id+' · chờ MT5 nhận';}catch(err){$('requestState').textContent='Không gửi được: '+err.message}}
 $('sendBuy').addEventListener('click',()=>sendPaper('BUY'));$('sendSell').addEventListener('click',()=>sendPaper('SELL'));
 $('symbol').addEventListener('change',()=>{firstLoad=true;load()});$('tf').addEventListener('change',()=>{firstLoad=true;load()});$('refresh').addEventListener('click',load);
