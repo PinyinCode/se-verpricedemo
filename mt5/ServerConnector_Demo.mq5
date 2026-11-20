@@ -11,7 +11,7 @@ input string ApiKey = "SET_A_LONG_RANDOM_API_KEY";
 input string ConsumerId = "mt5-demo-vps";
 input int PollSeconds = 3;
 input int HeartbeatSeconds = 15;
-input bool EnableLegacyDivergenceImport = true;
+input bool EnableLegacyDivergenceImport = false;
 input int MaxLegacySignalAgeSeconds = 300;
 
 datetime g_lastHeartbeat = 0;
