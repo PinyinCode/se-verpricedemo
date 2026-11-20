@@ -5,7 +5,7 @@
 //| UsePaperSimulation=false -> REAL broker orders via CTrade        |
 //+------------------------------------------------------------------+
 #property strict
-#property version "2.00"
+#property version "2.10"
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
@@ -58,6 +58,9 @@ uint lastPollMs          = 0;
 uint lastPositionsSyncMs = 0;
 uint lastHeartbeatMs     = 0;
 
+//--- Forward declarations -------------------------------------------
+void SendPaperPositions();
+
 //--- JSON helpers ---------------------------------------------------
 string JsonValue(string json,string key)
 {
@@ -79,9 +82,11 @@ string JsonValue(string json,string key)
    }
    int e=p;
    while(e<StringLen(json) && StringGetCharacter(json,e)!=',' &&
-         StringGetCharacter(json,e)!='}' && StringGetCharacter(json,e)!='\n') e++;
+         StringGetCharacter(json,e)!='}' && StringGetCharacter(json,e)!=']' &&
+         StringGetCharacter(json,e)!='\n') e++;
    string v=StringSubstr(json,p,e-p);
    StringTrimLeft(v); StringTrimRight(v);
+   if(v=="null") return "";
    return v;
 }
 
@@ -105,6 +110,56 @@ string JsonObjectValue(string json,string key)
       if(c=='}' && --depth==0) return StringSubstr(json,p,i-p+1);
    }
    return "";
+}
+
+string JsonArrayValue(string json,string key)
+{
+   string token="\""+key+"\"";
+   int p=StringFind(json,token);
+   if(p<0) return "";
+   p=StringFind(json,":",p+StringLen(token));
+   if(p<0) return "";
+   p++;
+   while(p<StringLen(json) && StringGetCharacter(json,p)<=32) p++;
+   if(p>=StringLen(json) || StringGetCharacter(json,p)!='[') return "";
+   int depth=0; bool quoted=false;
+   for(int i=p;i<StringLen(json);i++)
+   {
+      ushort c=StringGetCharacter(json,i);
+      if(c=='"' && (i==0 || StringGetCharacter(json,i-1)!='\\')) quoted=!quoted;
+      if(quoted) continue;
+      if(c=='[') depth++;
+      if(c==']' && --depth==0) return StringSubstr(json,p,i-p+1);
+   }
+   return "";
+}
+
+void ExtractTopLevelObjects(string arrJson,string &outObjects[])
+{
+   ArrayResize(outObjects,0);
+   int depth=0; bool quoted=false; int start=-1;
+   for(int i=0;i<StringLen(arrJson);i++)
+   {
+      ushort c=StringGetCharacter(arrJson,i);
+      if(c=='"' && (i==0 || StringGetCharacter(arrJson,i-1)!='\\')) quoted=!quoted;
+      if(quoted) continue;
+      if(c=='{')
+      {
+         if(depth==0) start=i;
+         depth++;
+      }
+      else if(c=='}')
+      {
+         depth--;
+         if(depth==0 && start>=0)
+         {
+            int n=ArraySize(outObjects);
+            ArrayResize(outObjects,n+1);
+            outObjects[n]=StringSubstr(arrJson,start,i-start+1);
+            start=-1;
+         }
+      }
+   }
 }
 
 //--- HTTP -----------------------------------------------------------
@@ -347,6 +402,29 @@ void SendPaperClosed(int i,string outcome,double realized)
       Print("[V9] Closed history sync failed HTTP=",status," response=",response);
 }
 
+bool ClosePaperTradeAtIndex(int idx,string outcome)
+{
+   if(idx<0 || idx>=ArraySize(trades)) return false;
+   string s=trades[idx].symbol;
+   double bid=SymbolInfoDouble(s,SYMBOL_BID), ask=SymbolInfoDouble(s,SYMBOL_ASK);
+   double realized=0;
+   if(bid>0 && ask>0)
+   {
+      ENUM_ORDER_TYPE orderType=(trades[idx].direction=="BUY") ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+      double closePrice=(trades[idx].direction=="BUY") ? bid : ask;
+      OrderCalcProfit(orderType,s,trades[idx].volume,trades[idx].entry,closePrice,realized);
+   }
+   Print("[PAPER CLOSE] ",outcome," ",s," signal=",trades[idx].id,
+         " volume=",DoubleToString(trades[idx].volume,4),
+         " realized P/L=",DoubleToString(realized,2));
+   SendPaperClosed(idx,outcome,realized);
+
+   int last=ArraySize(trades)-1;
+   for(int j=idx;j<last;j++) trades[j]=trades[j+1];
+   ArrayResize(trades,last);
+   return true;
+}
+
 void ManagePaperTrades()
 {
    if(!UsePaperSimulation) return;
@@ -361,21 +439,157 @@ void ManagePaperTrades()
       else                            { stop=(ask>=trades[i].sl); target=(ask<=trades[i].tp); }
       if(!stop && !target) continue;
 
-      double realized=0;
-      ENUM_ORDER_TYPE orderType=(trades[i].direction=="BUY") ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-      double closePrice=(trades[i].direction=="BUY") ? bid : ask;
-      OrderCalcProfit(orderType,s,trades[i].volume,trades[i].entry,closePrice,realized);
-
       string outcome=target ? "PAPER_TP" : "PAPER_SL";
-      Print("[PAPER CLOSE] ",outcome," ",s," signal=",trades[i].id,
-            " volume=",DoubleToString(trades[i].volume,4),
-            " realized P/L=",DoubleToString(realized,2));
-      SendPaperClosed(i,outcome,realized);
-
-      int last=ArraySize(trades)-1;
-      for(int j=i;j<last;j++) trades[j]=trades[j+1];
-      ArrayResize(trades,last);
+      ClosePaperTradeAtIndex(i,outcome);
    }
+}
+
+//--- Nhận và thực thi lệnh đóng từ server ------------------------
+void AckCloseCommand(string requestId,string targetId,bool ok,string detail)
+{
+   string body=StringFormat(
+      "{\"request_id\":\"%s\",\"position_id\":\"%s\",\"ok\":%s,\"message\":\"%s\"}",
+      requestId,targetId,(ok?"true":"false"),detail);
+   string response; int status;
+   if(!Request("POST","/api/paper/close-requests/ack",body,response,status))
+      Print("[V9 CLOSE ACK FAIL] req=",requestId," HTTP=",status," response=",response);
+}
+
+int FindPaperTradeIndex(string targetId,string symbol,string direction)
+{
+   if(targetId!="")
+   {
+      for(int i=0;i<ArraySize(trades);i++)
+         if(trades[i].id==targetId) return i;
+   }
+   if(symbol!="")
+   {
+      for(int i=0;i<ArraySize(trades);i++)
+         if(trades[i].symbol==symbol && (direction=="" || trades[i].direction==direction))
+            return i;
+   }
+   return -1;
+}
+
+bool CloseRealPositionById(string targetId,string symbol,string &detailOut)
+{
+   ulong targetTicket=0;
+   if(targetId!="")
+   {
+      for(int i=PositionsTotal()-1;i>=0;i--)
+      {
+         if(!posInfo.SelectByIndex(i)) continue;
+         if(posInfo.Magic()!=MagicNumber) continue;
+         string tk=IntegerToString(posInfo.Ticket());
+         int rIdx=FindTicketIndex(tk);
+         string sigId=(rIdx>=0) ? realSignalIds[rIdx] : "";
+         if(tk==targetId || (sigId!="" && sigId==targetId))
+         {
+            targetTicket=posInfo.Ticket();
+            break;
+         }
+      }
+   }
+   if(targetTicket==0 && symbol!="")
+   {
+      for(int i=PositionsTotal()-1;i>=0;i--)
+      {
+         if(!posInfo.SelectByIndex(i)) continue;
+         if(posInfo.Magic()!=MagicNumber) continue;
+         if(posInfo.Symbol()==symbol)
+         {
+            targetTicket=posInfo.Ticket();
+            break;
+         }
+      }
+   }
+   if(targetTicket==0)
+   {
+      detailOut="Position not found";
+      return false;
+   }
+
+   trade.SetExpertMagicNumber(MagicNumber);
+   trade.SetDeviationInPoints(SlippagePoints);
+   trade.SetTypeFilling(PickFilling(posInfo.Symbol()));
+   trade.SetAsyncMode(false);
+
+   if(!trade.PositionClose(targetTicket))
+   {
+      detailOut=StringFormat("PositionClose failed retcode=%d (%s)",
+         trade.ResultRetcode(),trade.ResultRetcodeDescription());
+      Print("[REAL CLOSE FAIL] ticket=",targetTicket," ",detailOut);
+      return false;
+   }
+
+   ForgetRealPosition(IntegerToString(targetTicket));
+   detailOut=StringFormat("Closed ticket=%I64u",targetTicket);
+   Print("[REAL CLOSE] ",detailOut);
+   return true;
+}
+
+void ExecuteCloseCommand(string cmdJson)
+{
+   string reqId     = JsonValue(cmdJson,"request_id");
+   string targetId  = JsonValue(cmdJson,"position_id");
+   if(targetId=="") targetId = JsonValue(cmdJson,"ticket");
+   if(targetId=="") targetId = JsonValue(cmdJson,"id");
+   string symbol    = JsonValue(cmdJson,"symbol");
+   string direction = JsonValue(cmdJson,"direction");
+   if(reqId=="") reqId = targetId;
+
+   if(targetId=="" && symbol=="") return;
+
+   Print("[V9 CLOSE REQ] id=",targetId," symbol=",symbol," mode=",(UsePaperSimulation?"PAPER":"REAL"));
+
+   bool closed=false;
+   string detail="";
+
+   if(UsePaperSimulation)
+   {
+      int idx=FindPaperTradeIndex(targetId,symbol,direction);
+      if(idx>=0)
+      {
+         closed=ClosePaperTradeAtIndex(idx,"MANUAL_CLOSE");
+         detail="Closed paper position";
+      }
+      else
+      {
+         detail="Paper position not found";
+      }
+   }
+   else
+   {
+      closed=CloseRealPositionById(targetId,symbol,detail);
+   }
+
+   AckCloseCommand(reqId,targetId,closed,detail);
+   if(closed) SendPaperPositions();
+}
+
+void PollCloseCommands()
+{
+   string response; int status;
+   if(!Request("GET","/api/paper/close-requests","",response,status))
+      return;
+
+   string arr=JsonArrayValue(response,"close_requests");
+   if(arr=="") arr=JsonArrayValue(response,"requests");
+   if(arr=="") arr=JsonArrayValue(response,"items");
+
+   if(arr!="")
+   {
+      string items[];
+      ExtractTopLevelObjects(arr,items);
+      for(int i=0;i<ArraySize(items);i++)
+         ExecuteCloseCommand(items[i]);
+      return;
+   }
+
+   string single=JsonObjectValue(response,"close_request");
+   if(single=="") single=JsonObjectValue(response,"request");
+   if(single!="")
+      ExecuteCloseCommand(single);
 }
 
 //--- Poll server ---------------------------------------------------
@@ -526,6 +740,7 @@ void OnTimer()
       (uint)(nowMs-lastPollMs)>=(uint)(PollSeconds*1000))
    {
       lastPollMs=nowMs;
+      PollCloseCommands();
       PollServer();
    }
 
