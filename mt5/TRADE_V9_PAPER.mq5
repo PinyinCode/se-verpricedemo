@@ -207,7 +207,6 @@ void PollServer()
    { if(id!="") Ack(id,"REJECTED","Malformed signal"); return; }
    if((direction=="BUY" && sl>=entry) || (direction=="SELL" && sl<=entry))
    { Ack(id,"REJECTED","Invalid entry/SL geometry"); return; }
-   if(tf!="M15" && tf!="H1") { Ack(id,"REJECTED","Timeframe disabled in paper V9"); return; }
    if(ArraySize(trades)>=MaxOpenPaperTrades) { Ack(id,"REJECTED","Paper max positions reached"); return; }
    if(CountSymbol(symbol)>=MaxPerSymbol) { Ack(id,"REJECTED","Paper per-symbol limit reached"); return; }
    for(int i=0;i<ArraySize(lastTradeTime);i++)
