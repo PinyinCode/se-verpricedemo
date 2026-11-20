@@ -1,20 +1,32 @@
 //+------------------------------------------------------------------+
 //| TRADE_V9_PAPER.mq5                                               |
-//| Independent paper simulator for Forex AI Server signals.         |
-//| No CTrade, OrderSend, PositionOpen, or broker order execution.    |
+//| Forex AI Server consumer.                                        |
+//| UsePaperSimulation=true  -> virtual paper trades (no broker order)|
+//| UsePaperSimulation=false -> REAL broker orders via CTrade        |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.00"
+#property version "1.10"
 
-input string ServerBaseURL = "https://investforex.onrender.com";
-input string ApiKey = "SET_A_LONG_RANDOM_API_KEY";
-input string ConsumerId = "trade-v9-paper";
-input int PollSeconds = 3;
-input int HeartbeatSeconds = 15;
-// Chart requests supply their own cash risk and calculated lot.
-input double RewardRiskRatio = 2.0;
-input int MaxOpenPaperTrades = 3;
-input int MaxSignalAgeSeconds = 300;
+#include <Trade\Trade.mqh>
+#include <Trade\PositionInfo.mqh>
+
+input string ServerBaseURL      = "https://investforex.onrender.com";
+input string ApiKey             = "SET_A_LONG_RANDOM_API_KEY";
+input string ConsumerId         = "trade-v9-paper";
+input int    PollSeconds        = 3;
+input int    HeartbeatSeconds   = 15;
+input double RewardRiskRatio    = 2.0;
+input int    MaxOpenPaperTrades = 3;
+input int    MaxSignalAgeSeconds= 300;
+
+// --- NEW: chế độ chạy ---
+input bool   UsePaperSimulation = true;   // true=paper, false=đặt lệnh thật
+input long   MagicNumber        = 20240915;
+input int    SlippagePoints     = 20;
+input string OrderComment       = "TRADE-V9";
+
+CTrade        trade;
+CPositionInfo posInfo;
 
 struct PaperTrade
 {
@@ -34,6 +46,7 @@ uint lastPollMs=0;
 uint lastPositionsSyncMs=0;
 uint lastHeartbeatMs=0;
 
+//------------------------------------------------------------------//
 string JsonValue(string json,string key)
 {
    string token="\""+key+"\"";
@@ -94,35 +107,56 @@ bool Request(string method,string path,string body,string &response,int &status)
    string headers="X-API-Key: "+ApiKey+"\r\nContent-Type: application/json\r\n";
    string responseHeaders;
    status=WebRequest(method,ServerBaseURL+path,headers,5000,data,result,responseHeaders);
-   if(status==-1) { Print("[PAPER V9] WebRequest error=",GetLastError()); response=""; return false; }
+   if(status==-1) { Print("[V9] WebRequest error=",GetLastError()); response=""; return false; }
    response=CharArrayToString(result,0,-1,CP_UTF8);
    return status>=200 && status<300;
 }
 
-void SendPaperHeartbeat()
+void SendHeartbeat()
 {
-   string body=StringFormat("{\"component\":\"TRADE-V9-PAPER\",\"status\":\"online\",\"details\":\"Paper consumer active; virtual_positions=%d; no broker orders\"}",ArraySize(trades));
+   int openCount = UsePaperSimulation ? ArraySize(trades) : CountRealPositions();
+   string mode = UsePaperSimulation ? "PAPER" : "REAL";
+   string body=StringFormat(
+      "{\"component\":\"TRADE-V9-%s\",\"status\":\"online\",\"details\":\"%s consumer active; positions=%d\"}",
+      mode,mode,openCount);
    string response; int status;
    if(Request("POST","/api/heartbeat",body,response,status))
       lastHeartbeatMs=GetTickCount();
    else
-      Print("[PAPER V9] Heartbeat failed HTTP=",status," response=",response);
+      Print("[V9] Heartbeat failed HTTP=",status," response=",response);
 }
 
 bool Ack(string id,string state,string message)
 {
-   Print("[PAPER ACK] signal=",id," status=",state," message=",message);
+   Print("[V9 ACK] signal=",id," status=",state," message=",message);
    string body="{\"signal_id\":\""+id+"\",\"status\":\""+state+"\",\"message\":\""+message+"\"}";
    string response; int status;
    bool ok=Request("POST","/api/chart/ack",body,response,status);
-   if(!ok) Print("[PAPER ACK ERROR] signal=",id," HTTP=",status," response=",response);
+   if(!ok) Print("[V9 ACK ERROR] signal=",id," HTTP=",status," response=",response);
    return ok;
 }
 
 int CountSymbol(string symbol)
 {
    int n=0;
-   for(int i=0;i<ArraySize(trades);i++) if(trades[i].symbol==symbol) n++;
+   if(UsePaperSimulation)
+   {
+      for(int i=0;i<ArraySize(trades);i++) if(trades[i].symbol==symbol) n++;
+   }
+   else
+   {
+      for(int i=PositionsTotal()-1;i>=0;i--)
+         if(posInfo.SelectByIndex(i) && posInfo.Magic()==MagicNumber &&
+            (symbol=="" || posInfo.Symbol()==symbol)) n++;
+   }
+   return n;
+}
+
+int CountRealPositions()
+{
+   int n=0;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+      if(posInfo.SelectByIndex(i) && posInfo.Magic()==MagicNumber) n++;
    return n;
 }
 
@@ -137,43 +171,103 @@ double NormalizeVolume(string symbol,double raw)
    return NormalizeDouble(v,8);
 }
 
-bool AddPaperTrade(string id,string symbol,string tf,string direction,double entry,double sl,double tpRequested,double riskMoney,double requestedLot)
+ENUM_ORDER_TYPE_FILLING PickFilling(string symbol)
 {
-   if(!SymbolSelect(symbol,true)) { Ack(id,"REJECTED","Symbol unavailable in Market Watch"); return false; }
+   long modes=SymbolInfoInteger(symbol,SYMBOL_FILLING_MODE);
+   if((modes & SYMBOL_FILLING_FOK)!=0) return ORDER_FILLING_FOK;
+   if((modes & SYMBOL_FILLING_IOC)!=0) return ORDER_FILLING_IOC;
+   return ORDER_FILLING_RETURN;
+}
+
+//------------------------------------------------------------------//
+//  OPEN TRADE — paper hoặc real tùy UsePaperSimulation             //
+//------------------------------------------------------------------//
+bool OpenTrade(string id,string symbol,string tf,string direction,
+               double entry,double sl,double tpRequested,
+               double riskMoney,double requestedLot)
+{
+   if(!SymbolSelect(symbol,true))
+   { Ack(id,"REJECTED","Symbol unavailable in Market Watch"); return false; }
+
    double bid=SymbolInfoDouble(symbol,SYMBOL_BID);
    double ask=SymbolInfoDouble(symbol,SYMBOL_ASK);
-   if(bid<=0 || ask<=0) { Ack(id,"REJECTED","No live quote; paper entry not recorded"); return false; }
+   if(bid<=0 || ask<=0) { Ack(id,"REJECTED","No live quote"); return false; }
+
    double distance=MathAbs(entry-sl);
    double tickSize=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_SIZE);
    double tickValue=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_VALUE_LOSS);
    if(tickValue<=0) tickValue=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_VALUE);
    if(distance<=0 || tickSize<=0 || tickValue<=0 || riskMoney<=0)
    { Ack(id,"REJECTED","Invalid risk or MT5 tick contract data"); return false; }
+
    double volume=NormalizeVolume(symbol,requestedLot);
    if(volume<=0)
    { Ack(id,"REJECTED","Requested lot is outside MT5 min/max/step"); return false; }
+
    double actualRisk=(distance/tickSize)*tickValue*volume;
    if(actualRisk>riskMoney+MathMax(0.01,riskMoney*0.005))
-   { Ack(id,"REJECTED","Calculated lot exceeds requested cash risk using MT5 contract data"); return false; }
-   double tp=tpRequested>0 ? tpRequested : ((direction=="BUY") ? entry+distance*RewardRiskRatio : entry-distance*RewardRiskRatio);
+   { Ack(id,"REJECTED","Calculated lot exceeds requested cash risk"); return false; }
+
+   double tp=tpRequested>0 ? tpRequested
+                           : ((direction=="BUY") ? entry+distance*RewardRiskRatio
+                                                 : entry-distance*RewardRiskRatio);
    if((direction=="BUY" && tp<=entry) || (direction=="SELL" && tp>=entry))
    { Ack(id,"REJECTED","Invalid TP geometry"); return false; }
 
-   int n=ArraySize(trades); ArrayResize(trades,n+1);
-   trades[n].id=id; trades[n].symbol=symbol; trades[n].timeframe=tf;
-   trades[n].direction=direction; trades[n].entry=entry; trades[n].sl=sl;
-   trades[n].tp=tp; trades[n].volume=volume; trades[n].riskMoney=actualRisk; trades[n].opened=TimeCurrent();
+   int digits=(int)SymbolInfoInteger(symbol,SYMBOL_DIGITS);
+   sl=NormalizeDouble(sl,digits);
+   tp=NormalizeDouble(tp,digits);
 
-   Print("[PAPER OPEN] ",symbol," ",tf," ",direction,
-         " entry=",DoubleToString(entry,(int)SymbolInfoInteger(symbol,SYMBOL_DIGITS)),
-         " SL=",DoubleToString(sl,(int)SymbolInfoInteger(symbol,SYMBOL_DIGITS)),
-         " TP=",DoubleToString(tp,(int)SymbolInfoInteger(symbol,SYMBOL_DIGITS)),
-         " virtual lots=",DoubleToString(volume,4)," risk=$",DoubleToString(actualRisk,2),
-         " requested risk=$",DoubleToString(riskMoney,2));
-   Ack(id,"SIMULATED","Paper position opened with chart-calculated lot; MT5 risk revalidated; no broker order sent");
+   // ==================== PAPER ====================
+   if(UsePaperSimulation)
+   {
+      int n=ArraySize(trades); ArrayResize(trades,n+1);
+      trades[n].id=id; trades[n].symbol=symbol; trades[n].timeframe=tf;
+      trades[n].direction=direction; trades[n].entry=entry; trades[n].sl=sl;
+      trades[n].tp=tp; trades[n].volume=volume; trades[n].riskMoney=actualRisk; trades[n].opened=TimeCurrent();
+
+      Print("[PAPER OPEN] ",symbol," ",tf," ",direction,
+            " entry=",DoubleToString(entry,digits),
+            " SL=",DoubleToString(sl,digits),
+            " TP=",DoubleToString(tp,digits),
+            " virtual lots=",DoubleToString(volume,4),
+            " risk=$",DoubleToString(actualRisk,2),
+            " requested risk=$",DoubleToString(riskMoney,2));
+      Ack(id,"SIMULATED","Paper position opened; no broker order sent");
+      return true;
+   }
+
+   // ==================== REAL ====================
+   trade.SetExpertMagicNumber(MagicNumber);
+   trade.SetDeviationInPoints(SlippagePoints);
+   trade.SetTypeFilling(PickFilling(symbol));
+   trade.SetAsyncMode(false);
+
+   bool ok = (direction=="BUY")
+             ? trade.Buy (volume,symbol,0.0,sl,tp,OrderComment)
+             : trade.Sell(volume,symbol,0.0,sl,tp,OrderComment);
+
+   if(!ok || trade.ResultRetcode()!=TRADE_RETCODE_DONE)
+   {
+      string err=StringFormat("OrderSend failed retcode=%d (%s) [%s]",
+         trade.ResultRetcode(),trade.ResultRetcodeDescription(),trade.ResultComment());
+      Print("[REAL OPEN FAIL] ",err," signal=",id);
+      Ack(id,"REJECTED",err);
+      return false;
+   }
+
+   Print("[REAL OPEN] signal=",id," ",symbol," ",tf," ",direction,
+         " lots=",DoubleToString(volume,4),
+         " SL=",DoubleToString(sl,digits),
+         " TP=",DoubleToString(tp,digits),
+         " order=",trade.ResultOrder(),
+         " risk=$",DoubleToString(actualRisk,2));
+   Ack(id,"EXECUTED",
+       StringFormat("Real order placed lot=%.4f ticket=%I64d",volume,trade.ResultOrder()));
    return true;
 }
 
+//------------------------------------------------------------------//
 void SendPaperClosed(int i,string outcome,double realized)
 {
    string body=StringFormat("{\"id\":\"%s\",\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\",\"entry\":%.10f,\"sl\":%.10f,\"tp\":%.10f,\"volume\":%.8f,\"risk\":%.2f,\"profit\":%.2f,\"opened_at\":%.0f,\"outcome\":\"%s\",\"closed_at\":%.0f}",
@@ -182,11 +276,14 @@ void SendPaperClosed(int i,string outcome,double realized)
       realized,(double)trades[i].opened,outcome,(double)TimeCurrent());
    string response; int status;
    if(!Request("POST","/api/paper/closed",body,response,status))
-      Print("[PAPER V9] Closed history sync failed HTTP=",status," response=",response);
+      Print("[V9] Closed history sync failed HTTP=",status," response=",response);
 }
 
+// chỉ chạy khi paper mode
 void ManagePaperTrades()
 {
+   if(!UsePaperSimulation) return;
+
    for(int i=ArraySize(trades)-1;i>=0;i--)
    {
       string s=trades[i].symbol;
@@ -210,67 +307,106 @@ void ManagePaperTrades()
    }
 }
 
+//------------------------------------------------------------------//
 void PollServer()
 {
    string response; int status;
-   string path="/api/chart/next";
-   if(!Request("GET",path,"",response,status)) { Print("[PAPER V9] Poll failed HTTP=",status); return; }
+   if(!Request("GET","/api/chart/next","",response,status))
+   { Print("[V9] Poll failed HTTP=",status); return; }
    if(StringFind(response,"\"signal\":null")>=0) return;
    string obj=JsonObjectValue(response,"signal");
    if(obj=="") return;
+
    string id=JsonValue(obj,"id"), symbol=JsonValue(obj,"symbol");
    string tf=JsonValue(obj,"timeframe"), direction=JsonValue(obj,"direction");
    double entry=StringToDouble(JsonValue(obj,"entry")), sl=StringToDouble(JsonValue(obj,"sl"));
-   Print("[PAPER RECEIVE] signal=",id," ",symbol," ",tf," ",direction,
+   Print("[V9 RECEIVE] signal=",id," ",symbol," ",tf," ",direction,
          " entry=",DoubleToString(entry,8)," SL=",DoubleToString(sl,8));
    double tp=StringToDouble(JsonValue(obj,"tp"));
    double riskMoney=StringToDouble(JsonValue(obj,"risk_money"));
    double requestedLot=StringToDouble(JsonValue(obj,"requested_lot"));
+
    if(id=="" || symbol=="" || entry<=0 || sl<=0 || riskMoney<=0 || requestedLot<=0 ||
       (direction!="BUY" && direction!="SELL"))
-   { Print("[PAPER REJECT] Malformed signal id=",id); if(id!="") Ack(id,"REJECTED","Malformed signal"); return; }
+   { Print("[V9 REJECT] Malformed signal id=",id); if(id!="") Ack(id,"REJECTED","Malformed signal"); return; }
+
    if((direction=="BUY" && sl>=entry) || (direction=="SELL" && sl<=entry))
-   { Print("[PAPER REJECT] Invalid entry/SL geometry signal=",id); Ack(id,"REJECTED","Invalid entry/SL geometry"); return; }
+   { Print("[V9 REJECT] Invalid entry/SL geometry signal=",id); Ack(id,"REJECTED","Invalid entry/SL geometry"); return; }
+
    if(tp>0 && ((direction=="BUY" && tp<=entry) || (direction=="SELL" && tp>=entry)))
-   { Print("[PAPER REJECT] Invalid TP geometry signal=",id); Ack(id,"REJECTED","Invalid TP geometry"); return; }
-   if(ArraySize(trades)>=MaxOpenPaperTrades)
-   { Print("[PAPER REJECT] Max paper positions reached signal=",id," open=",ArraySize(trades)); Ack(id,"REJECTED","Paper max positions reached"); return; }
-   if(!AddPaperTrade(id,symbol,tf,direction,entry,sl,tp,riskMoney,requestedLot)) return;
+   { Print("[V9 REJECT] Invalid TP geometry signal=",id); Ack(id,"REJECTED","Invalid TP geometry"); return; }
+
+   int openCount = UsePaperSimulation ? ArraySize(trades) : CountRealPositions();
+   if(openCount>=MaxOpenPaperTrades)
+   { Print("[V9 REJECT] Max positions reached signal=",id," open=",openCount);
+     Ack(id,"REJECTED","Max positions reached"); return; }
+
+   OpenTrade(id,symbol,tf,direction,entry,sl,tp,riskMoney,requestedLot);
 }
 
+//------------------------------------------------------------------//
 void SendPaperPositions()
 {
    string body="{\"positions\":[";
-   for(int i=0;i<ArraySize(trades);i++)
+
+   if(UsePaperSimulation)
    {
-      string symbol=trades[i].symbol;
-      double bid=SymbolInfoDouble(symbol,SYMBOL_BID), ask=SymbolInfoDouble(symbol,SYMBOL_ASK);
-      double profit=0;
-      if(bid>0 && ask>0)
+      for(int i=0;i<ArraySize(trades);i++)
       {
-         ENUM_ORDER_TYPE ot=(trades[i].direction=="BUY") ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
-         double closePrice=(trades[i].direction=="BUY") ? bid : ask;
-         OrderCalcProfit(ot,symbol,trades[i].volume,trades[i].entry,closePrice,profit);
+         string symbol=trades[i].symbol;
+         double bid=SymbolInfoDouble(symbol,SYMBOL_BID), ask=SymbolInfoDouble(symbol,SYMBOL_ASK);
+         double profit=0;
+         if(bid>0 && ask>0)
+         {
+            ENUM_ORDER_TYPE ot=(trades[i].direction=="BUY") ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+            double closePrice=(trades[i].direction=="BUY") ? bid : ask;
+            OrderCalcProfit(ot,symbol,trades[i].volume,trades[i].entry,closePrice,profit);
+         }
+         if(i>0) body+=",";
+         body+=StringFormat("{\"id\":\"%s\",\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\",\"entry\":%.10f,\"sl\":%.10f,\"tp\":%.10f,\"volume\":%.8f,\"risk\":%.2f,\"profit\":%.2f,\"opened_at\":%.0f}",
+            trades[i].id,symbol,trades[i].timeframe,trades[i].direction,trades[i].entry,
+            trades[i].sl,trades[i].tp,trades[i].volume,trades[i].riskMoney,profit,(double)trades[i].opened);
       }
-      if(i>0) body+=",";
-      body+=StringFormat("{\"id\":\"%s\",\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\",\"entry\":%.10f,\"sl\":%.10f,\"tp\":%.10f,\"volume\":%.8f,\"risk\":%.2f,\"profit\":%.2f,\"opened_at\":%.0f}",
-         trades[i].id,symbol,trades[i].timeframe,trades[i].direction,trades[i].entry,
-         trades[i].sl,trades[i].tp,trades[i].volume,trades[i].riskMoney,profit,(double)trades[i].opened);
+   }
+   else
+   {
+      bool first=true;
+      for(int i=PositionsTotal()-1;i>=0;i--)
+      {
+         if(!posInfo.SelectByIndex(i)) continue;
+         if(posInfo.Magic()!=MagicNumber) continue;
+         if(!first) body+=",";
+         first=false;
+         double profit=posInfo.Profit()+posInfo.Swap()+posInfo.Commission();
+         body+=StringFormat(
+            "{\"id\":\"%I64d\",\"symbol\":\"%s\",\"direction\":\"%s\","
+            "\"volume\":%.8f,\"entry\":%.10f,\"sl\":%.10f,\"tp\":%.10f,"
+            "\"profit\":%.2f,\"opened_at\":%.0f}",
+            posInfo.Ticket(),posInfo.Symbol(),
+            (posInfo.PositionType()==POSITION_TYPE_BUY?"BUY":"SELL"),
+            posInfo.Volume(),posInfo.PriceOpen(),
+            posInfo.StopLoss(),posInfo.TakeProfit(),
+            profit,(double)posInfo.Time());
+      }
    }
    body+="]}";
    string response; int status;
    if(!Request("POST","/api/paper/positions",body,response,status))
-      Print("[PAPER V9] Position sync failed HTTP=",status," response=",response);
+      Print("[V9] Position sync failed HTTP=",status," response=",response);
 }
 
+//------------------------------------------------------------------//
 int OnInit()
 {
    if(StringFind(ServerBaseURL,"https://")!=0)
-   { Print("[PAPER V9] HTTPS server URL required."); return INIT_PARAMETERS_INCORRECT; }
+   { Print("[V9] HTTPS server URL required."); return INIT_PARAMETERS_INCORRECT; }
    if(ApiKey=="" || ApiKey=="SET_A_LONG_RANDOM_API_KEY")
-   { Print("[PAPER V9] Set ApiKey privately in EA inputs."); return INIT_PARAMETERS_INCORRECT; }
+   { Print("[V9] Set ApiKey privately in EA inputs."); return INIT_PARAMETERS_INCORRECT; }
+
+   trade.SetExpertMagicNumber(MagicNumber);
    EventSetTimer(1);
-   Print("[PAPER V9] Started. Simulation only; broker order functions are not used.");
+   Print("[V9] Started in ",UsePaperSimulation?"PAPER (no broker orders)":"REAL (live orders enabled)",
+         " mode. magic=",MagicNumber);
    return INIT_SUCCEEDED;
 }
 void OnDeinit(const int reason) { EventKillTimer(); }
@@ -280,7 +416,7 @@ void OnTimer()
    ManagePaperTrades();
    uint nowMs=GetTickCount();
    if(lastHeartbeatMs==0 || (uint)(nowMs-lastHeartbeatMs)>=(uint)(HeartbeatSeconds*1000))
-      SendPaperHeartbeat();
+      SendHeartbeat();
    if(lastPollMs==0 || (uint)(nowMs-lastPollMs)>=(uint)(PollSeconds*1000))
    {
       lastPollMs=nowMs;
