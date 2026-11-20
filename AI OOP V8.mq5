@@ -445,7 +445,8 @@ void WriteStrongSignalToGV(string sym, string tfStr, string type, double entryPr
    if(q!=INVALID_HANDLE)
    {
       FileSeek(q,0,SEEK_END);
-      string queueLine=StringFormat("%s|%s|%s|%s|%d|%.8f|%.8f|%.2f\r\n",sym,tfStr,type,divType,(int)signalTime,entryPrice,slPrice,score);
+      // Keep pivot time for chart history and append detection time for queue freshness.
+      string queueLine=StringFormat("%s|%s|%s|%s|%d|%.8f|%.8f|%.2f|%d\r\n",sym,tfStr,type,divType,(int)signalTime,entryPrice,slPrice,score,(int)TimeCurrent());
       FileWriteString(q,queueLine);
       FileClose(q);
    }
