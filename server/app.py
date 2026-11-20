@@ -148,7 +148,7 @@ class PaperPositionIn(BaseModel):
     timeframe: Literal["M1", "M5", "M15", "M30", "H1", "H4", "D1"]
     direction: Literal["BUY", "SELL"]
     entry: float = Field(gt=0)
-    sl: float = Field(gt=0)
+    sl: float = Field(ge=0)  # 0 = position has no Stop Loss
     tp: float = Field(ge=0)
     volume: float = Field(gt=0)
     risk: float = Field(ge=0)
