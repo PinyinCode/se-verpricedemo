@@ -188,11 +188,29 @@ void ImportDivergenceQueue()
       double entry=StringToDouble(p[5]), sl=StringToDouble(p[6]), score=StringToDouble(p[7]);
       if(symbol=="" || (direction!="BUY" && direction!="SELL") || signalTime<=0 || entry<=0 || sl<=0)
       { GlobalVariableSet(g_queueCursorName,(double)lineNo); continue; }
-      string source=StringFormat("div-%s-%s-%s-%s-%d",symbol,tf,direction,divType,(int)signalTime);
+
+      // Do not upload old backlog entries from the append-only AI queue.
+      if(TimeCurrent()-signalTime>MaxLegacySignalAgeSeconds)
+      {
+         GlobalVariableSet(g_queueCursorName,(double)lineNo);
+         Print("[SERVER] Skipped expired queued signal: ",symbol," ",tf," ",direction);
+         continue;
+      }
+
+      // The API source field is limited to 40 characters; keep the ID compact and unique per queue row.
+      string source=StringFormat("div-%d-%d",(int)signalTime,(int)lineNo);
       string body=StringFormat("{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\",\"entry\":%.8f,\"sl\":%.8f,\"score\":%.2f,\"source\":\"%s\"}",symbol,tf,direction,entry,sl,score,source);
       string response; int status;
       if(!HttpRequest("POST","/api/signals",body,response,status))
       {
+         // Skip malformed client payloads so one bad row cannot block later valid signals.
+         // Authentication, network and server errors remain retryable.
+         if(status==400 || status==422)
+         {
+            GlobalVariableSet(g_queueCursorName,(double)lineNo);
+            Print("[SERVER] Invalid queued signal skipped. HTTP=",status," response=",response);
+            continue;
+         }
          Print("[SERVER] Divergence queue upload failed. HTTP=",status," response=",response);
          break;
       }
