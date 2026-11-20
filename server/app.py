@@ -91,17 +91,27 @@ def init_db() -> None:
         if "tp" not in signal_cols: conn.execute("ALTER TABLE signals ADD COLUMN tp REAL NOT NULL DEFAULT 0")
         conn.execute("""
         CREATE TABLE IF NOT EXISTS paper_positions (
-          id TEXT PRIMARY KEY, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
+          id TEXT PRIMARY KEY, ticket TEXT, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
           direction TEXT NOT NULL, entry REAL NOT NULL, sl REAL NOT NULL, tp REAL NOT NULL,
           volume REAL NOT NULL, risk REAL NOT NULL, profit REAL NOT NULL,
           opened_at REAL NOT NULL, updated_at TEXT NOT NULL
         )""")
+        pos_cols = {row[1] for row in conn.execute("PRAGMA table_info(paper_positions)")}
+        if "ticket" not in pos_cols:
+            conn.execute("ALTER TABLE paper_positions ADD COLUMN ticket TEXT")
         conn.execute("""
         CREATE TABLE IF NOT EXISTS paper_history (
           id TEXT PRIMARY KEY, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
           direction TEXT NOT NULL, entry REAL NOT NULL, sl REAL NOT NULL, tp REAL NOT NULL,
           volume REAL NOT NULL, risk REAL NOT NULL, profit REAL NOT NULL,
           outcome TEXT NOT NULL, opened_at REAL NOT NULL, closed_at REAL NOT NULL
+        )""")
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS real_history (
+          id TEXT PRIMARY KEY, ticket TEXT, symbol TEXT NOT NULL, timeframe TEXT NOT NULL DEFAULT '—',
+          direction TEXT NOT NULL, entry REAL NOT NULL, sl REAL NOT NULL DEFAULT 0, tp REAL NOT NULL DEFAULT 0,
+          volume REAL NOT NULL, profit REAL NOT NULL, outcome TEXT NOT NULL DEFAULT 'CLOSED',
+          opened_at REAL NOT NULL DEFAULT 0, closed_at REAL NOT NULL, updated_at TEXT NOT NULL
         )""")
         conn.execute("""
         CREATE TABLE IF NOT EXISTS close_requests (
@@ -155,16 +165,17 @@ class SignalIn(BaseModel):
 
 class PaperPositionIn(BaseModel):
     id: str = Field(min_length=1, max_length=64)
+    ticket: str | int | None = None
     symbol: str = Field(min_length=3, max_length=32)
-    timeframe: Literal["M1", "M5", "M15", "M30", "H1", "H4", "D1"]
+    timeframe: str = Field(default="—", min_length=1, max_length=16)
     direction: Literal["BUY", "SELL"]
     entry: float = Field(gt=0)
     sl: float = Field(ge=0)  # 0 = position has no Stop Loss
     tp: float = Field(ge=0)
     volume: float = Field(gt=0)
-    risk: float = Field(ge=0)
+    risk: float = Field(default=0, ge=0)
     profit: float
-    opened_at: float = Field(gt=0)
+    opened_at: float = Field(default=0, ge=0)
 
 
 class PaperPositionsIn(BaseModel):
@@ -176,13 +187,51 @@ class PaperClosedIn(PaperPositionIn):
     closed_at: float = Field(gt=0)
 
 
+class RealTradeItemIn(BaseModel):
+    id: str | None = Field(default=None, max_length=64)
+    ticket: str | int | None = None
+    symbol: str = Field(min_length=3, max_length=32)
+    timeframe: str = Field(default="—", max_length=16)
+    direction: str = Field(min_length=2, max_length=16)
+    entry: float = Field(ge=0)
+    sl: float = Field(default=0, ge=0)
+    tp: float = Field(default=0, ge=0)
+    volume: float = Field(gt=0)
+    profit: float
+    outcome: str = Field(default="CLOSED", max_length=40)
+    opened_at: float = Field(default=0, ge=0)
+    closed_at: float = Field(gt=0)
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_real_symbol(cls, value: str) -> str:
+        return value.strip().upper()
+
+    @field_validator("direction")
+    @classmethod
+    def normalize_real_dir(cls, value: str) -> str:
+        up = value.strip().upper()
+        if "BUY" in up:
+            return "BUY"
+        if "SELL" in up:
+            return "SELL"
+        return up or "BUY"
+
+
+class RealHistoryBatchIn(BaseModel):
+    replace: bool = Field(default=False)
+    trades: list[RealTradeItemIn] = Field(default_factory=list, max_length=500)
+
+
 class ClosePositionIn(BaseModel):
     id: str | None = Field(default=None, max_length=64)
     ticket: str | int | None = None
+    position_id: str | None = Field(default=None, max_length=64)
     symbol: str | None = Field(default=None, max_length=32)
     direction: Literal["BUY", "SELL"] | None = None
     volume: float | None = Field(default=None, ge=0)
     entry: float | None = Field(default=None, ge=0)
+    source: str | None = Field(default=None, max_length=40)
 
     @field_validator("symbol")
     @classmethod
@@ -247,7 +296,6 @@ class TodaySignalItem(BaseModel):
         return value.strip().upper()
 
 
-
 class CandleItem(BaseModel):
     time: int = Field(gt=0)
     open: float = Field(gt=0)
@@ -277,10 +325,10 @@ class CandleBatchIn(BaseModel):
 class TodaySignalsIn(BaseModel):
     signals: list[TodaySignalItem] = Field(default_factory=list, max_length=200)
 
+
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
     return FileResponse(BASE_DIR / "dashboard" / "index.html")
-
 
 
 @app.get("/chart", response_class=HTMLResponse)
@@ -301,7 +349,6 @@ def health():
 
 @app.post("/api/signals", dependencies=[Depends(require_key)])
 def create_signal(payload: SignalIn):
-    # A signal is informational only. The MT5 bridge records a simulation, never sends an order.
     if (payload.direction == "BUY" and payload.sl >= payload.entry) or (
         payload.direction == "SELL" and payload.sl <= payload.entry
     ):
@@ -342,7 +389,6 @@ def chart_request(payload: SignalIn):
 def next_signal(consumer: str = Query(default="mt5-demo", min_length=2, max_length=40)):
     now = time.time()
     with db() as conn:
-        # Release stale claims so a restarted EA can receive the signal again.
         conn.execute(
             "UPDATE signals SET status='pending',claimed_by=NULL,claimed_at=NULL "
             "WHERE status='claimed' AND claimed_at < ?",
@@ -436,23 +482,22 @@ def update_paper_positions(payload: PaperPositionsIn):
     with db() as conn:
         conn.execute("DELETE FROM paper_positions")
         for p in payload.positions:
+            ticket_str = str(p.ticket).strip() if p.ticket is not None else p.id
             conn.execute(
-                "INSERT INTO paper_positions(id,symbol,timeframe,direction,entry,sl,tp,volume,risk,profit,opened_at,updated_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                (p.id, p.symbol.upper(), p.timeframe, p.direction, p.entry, p.sl, p.tp,
+                "INSERT INTO paper_positions(id,ticket,symbol,timeframe,direction,entry,sl,tp,volume,risk,profit,opened_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (p.id, ticket_str, p.symbol.upper(), p.timeframe, p.direction, p.entry, p.sl, p.tp,
                  p.volume, p.risk, p.profit, p.opened_at, now),
             )
     return {"ok": True, "open_positions": len(payload.positions), "updated_at": now}
 
 
-@app.post("/api/paper/positions/close")
-def queue_close_position(payload: ClosePositionIn, x_api_key: str | None = Header(default=None)):
-    # Cho phép gọi từ dashboard nội bộ hoặc có X-API-Key hợp lệ nếu server đã cấu hình key
+def _enqueue_close_position(payload: ClosePositionIn, x_api_key: str | None) -> dict:
     if API_KEY and x_api_key and not secrets.compare_digest(x_api_key, API_KEY):
         raise HTTPException(status_code=401, detail="API key không hợp lệ")
 
     ticket_str = str(payload.ticket).strip() if payload.ticket is not None else ""
-    pos_id = (payload.id or ticket_str or "").strip()
+    pos_id = (payload.position_id or payload.id or ticket_str or "").strip()
     if not pos_id and not payload.symbol:
         raise HTTPException(status_code=422, detail="Thiếu thông tin vị thế cần đóng")
 
@@ -460,7 +505,10 @@ def queue_close_position(payload: ClosePositionIn, x_api_key: str | None = Heade
     with db() as conn:
         row = None
         if pos_id:
-            row = conn.execute("SELECT * FROM paper_positions WHERE id=?", (pos_id,)).fetchone()
+            row = conn.execute(
+                "SELECT * FROM paper_positions WHERE id=? OR ticket=?",
+                (pos_id, pos_id),
+            ).fetchone()
         if row is None and payload.symbol:
             if payload.direction:
                 row = conn.execute(
@@ -474,13 +522,14 @@ def queue_close_position(payload: ClosePositionIn, x_api_key: str | None = Heade
                 ).fetchone()
 
         resolved_id = row["id"] if row else pos_id
+        resolved_ticket = (row["ticket"] if row and row["ticket"] else "") or ticket_str or resolved_id
         resolved_sym = row["symbol"] if row else (payload.symbol or "")
         resolved_dir = row["direction"] if row else (payload.direction or "")
 
         existing = conn.execute(
             "SELECT request_id FROM close_requests WHERE status='pending' "
             "AND ((? != '' AND position_id=?) OR (? != '' AND ticket=?) OR (? != '' AND symbol=? AND (? = '' OR direction=?)))",
-            (resolved_id, resolved_id, ticket_str, ticket_str, resolved_sym, resolved_sym, resolved_dir, resolved_dir),
+            (resolved_id, resolved_id, resolved_ticket, resolved_ticket, resolved_sym, resolved_sym, resolved_dir, resolved_dir),
         ).fetchone()
         if existing:
             return {"ok": True, "request_id": existing["request_id"], "status": "pending",
@@ -490,14 +539,24 @@ def queue_close_position(payload: ClosePositionIn, x_api_key: str | None = Heade
         conn.execute(
             "INSERT INTO close_requests(request_id,position_id,ticket,symbol,direction,status,created_at) "
             "VALUES(?,?,?,?,?,'pending',?)",
-            (request_id, resolved_id, ticket_str or resolved_id, resolved_sym, resolved_dir, now),
+            (request_id, resolved_id, resolved_ticket, resolved_sym, resolved_dir, now),
         )
         conn.execute(
             "INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
-            ("close_requested", f"Yêu cầu đóng {resolved_sym} {resolved_dir} ({resolved_id or request_id})", now),
+            ("close_requested", f"Yêu cầu đóng {resolved_sym} {resolved_dir} ({resolved_id or resolved_ticket or request_id})", now),
         )
     return {"ok": True, "request_id": request_id, "status": "pending",
             "message": f"Đã gửi yêu cầu đóng {resolved_sym} {resolved_dir}".strip()}
+
+
+@app.post("/api/chart/close")
+def chart_close_position(payload: ClosePositionIn, x_api_key: str | None = Header(default=None)):
+    return _enqueue_close_position(payload, x_api_key)
+
+
+@app.post("/api/paper/positions/close")
+def queue_close_position(payload: ClosePositionIn, x_api_key: str | None = Header(default=None)):
+    return _enqueue_close_position(payload, x_api_key)
 
 
 @app.get("/api/paper/close-requests", dependencies=[Depends(require_key)])
@@ -530,7 +589,7 @@ def ack_close_request(payload: CloseRequestAckIn):
         )
         pos_target = (payload.position_id or (req_row["position_id"] if req_row else "") or "").strip()
         if payload.ok and pos_target:
-            conn.execute("DELETE FROM paper_positions WHERE id=?", (pos_target,))
+            conn.execute("DELETE FROM paper_positions WHERE id=? OR ticket=?", (pos_target, pos_target))
         conn.execute(
             "INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
             ("close_ack", f"{payload.request_id} ({pos_target}): ok={payload.ok} {payload.message}".strip(), now),
@@ -552,6 +611,25 @@ def record_paper_closed(payload: PaperClosedIn):
         conn.execute("INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
                      ("paper_closed", f"{payload.symbol} {payload.direction} {payload.outcome} P/L={payload.profit:.2f}", utc_now()))
     return {"ok": True}
+
+
+@app.post("/api/mt5/history", dependencies=[Depends(require_key)])
+def update_real_history(payload: RealHistoryBatchIn):
+    now = utc_now()
+    with db() as conn:
+        if payload.replace:
+            conn.execute("DELETE FROM real_history")
+        for item in payload.trades:
+            ticket_str = str(item.ticket).strip() if item.ticket is not None else ""
+            row_id = (item.id or ticket_str or f"{item.symbol}_{item.direction}_{int(item.closed_at)}_{abs(hash((item.symbol, item.entry, item.volume, item.profit))) % 100000}").strip()
+            conn.execute(
+                "INSERT OR REPLACE INTO real_history(id,ticket,symbol,timeframe,direction,entry,sl,tp,volume,profit,outcome,opened_at,closed_at,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (row_id, ticket_str or row_id, item.symbol, item.timeframe or "—", item.direction,
+                 item.entry, item.sl, item.tp, item.volume, item.profit, item.outcome or "CLOSED",
+                 item.opened_at, item.closed_at, now),
+            )
+    return {"ok": True, "count": len(payload.trades), "updated_at": now}
 
 
 @app.post("/api/heartbeat", dependencies=[Depends(require_key)])
@@ -616,7 +694,6 @@ def update_candles(payload: CandleBatchIn):
             "volume_min=excluded.volume_min,volume_max=excluded.volume_max,volume_step=excluded.volume_step",
             rows,
         )
-        # Keep storage bounded per symbol/timeframe.
         conn.execute(
             "DELETE FROM candles WHERE symbol=? AND timeframe=? AND candle_time NOT IN "
             "(SELECT candle_time FROM candles WHERE symbol=? AND timeframe=? ORDER BY candle_time DESC LIMIT 2000)",
@@ -657,11 +734,14 @@ def dashboard_data():
             "SELECT id,symbol,timeframe,direction,entry,sl,tp,score,source,status,created_at,ack_status,ack_message "
             "FROM signals ORDER BY created_at DESC LIMIT 100").fetchall()]
         paper_positions = [dict(r) for r in conn.execute(
-            "SELECT id,symbol,timeframe,direction,entry,sl,tp,volume,risk,profit,opened_at,updated_at "
+            "SELECT id,ticket,symbol,timeframe,direction,entry,sl,tp,volume,risk,profit,opened_at,updated_at "
             "FROM paper_positions ORDER BY opened_at DESC").fetchall()]
         paper_history = [dict(r) for r in conn.execute(
             "SELECT id,symbol,timeframe,direction,entry,sl,tp,volume,risk,profit,outcome,opened_at,closed_at "
             "FROM paper_history ORDER BY closed_at DESC LIMIT 50").fetchall()]
+        real_history = [dict(r) for r in conn.execute(
+            "SELECT id,ticket,symbol,timeframe,direction,entry,sl,tp,volume,profit,outcome,opened_at,closed_at "
+            "FROM real_history ORDER BY closed_at DESC LIMIT 100").fetchall()]
         heartbeats = [dict(r) for r in conn.execute(
             "SELECT component,status,details,updated_at FROM heartbeats ORDER BY component").fetchall()]
         for item in heartbeats:
@@ -695,6 +775,7 @@ def dashboard_data():
             "SELECT symbol,timeframe,direction,divergence,signal_type,signal_time,price1,price2,rsi1,rsi2,time1,time2 "
             "FROM today_signals ORDER BY signal_time DESC LIMIT 200").fetchall()]
     return {"mode": "DEMO_ONLY", "signals": signals, "today_signals": today_signals,
-            "paper_positions": paper_positions, "paper_history": paper_history,
+            "paper_positions": paper_positions, "open_positions": paper_positions,
+            "paper_history": paper_history, "real_history": real_history, "mt5_history": real_history,
             "heartbeats": heartbeats, "scan_status": scans, "counts": counts,
             "events": events, "server_time": utc_now()}
