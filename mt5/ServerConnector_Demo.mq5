@@ -263,7 +263,7 @@ void PublishTodaySignals()
 {
    string items="";
    int file=FileOpen("DIVTODAY_SIGNALS.txt",FILE_READ|FILE_TXT|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
-   if(file!=INVALID_HANDLE)
+   if(file==INVALID_HANDLE) return;
    {
       if(!FileIsEnding(file)) FileReadString(file); // GMT+7 snapshot header
       while(!FileIsEnding(file))
