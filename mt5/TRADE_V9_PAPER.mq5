@@ -114,9 +114,12 @@ void SendPaperHeartbeat()
 
 bool Ack(string id,string state,string message)
 {
+   Print("[PAPER ACK] signal=",id," status=",state," message=",message);
    string body="{\"signal_id\":\""+id+"\",\"status\":\""+state+"\",\"message\":\""+message+"\"}";
    string response; int status;
-   return Request("POST","/api/chart/ack",body,response,status);
+   bool ok=Request("POST","/api/chart/ack",body,response,status);
+   if(!ok) Print("[PAPER ACK ERROR] signal=",id," HTTP=",status," response=",response);
+   return ok;
 }
 
 int CountSymbol(string symbol)
@@ -203,18 +206,22 @@ void PollServer()
    string id=JsonValue(obj,"id"), symbol=JsonValue(obj,"symbol");
    string tf=JsonValue(obj,"timeframe"), direction=JsonValue(obj,"direction");
    double entry=StringToDouble(JsonValue(obj,"entry")), sl=StringToDouble(JsonValue(obj,"sl"));
+   Print("[PAPER RECEIVE] signal=",id," ",symbol," ",tf," ",direction,
+         " entry=",DoubleToString(entry,8)," SL=",DoubleToString(sl,8));
    double riskMoney=StringToDouble(JsonValue(obj,"risk_money"));
    double requestedLot=StringToDouble(JsonValue(obj,"requested_lot"));
    if(id=="" || symbol=="" || entry<=0 || sl<=0 || riskMoney<=0 || requestedLot<=0 ||
       (direction!="BUY" && direction!="SELL"))
-   { if(id!="") Ack(id,"REJECTED","Malformed signal"); return; }
+   { Print("[PAPER REJECT] Malformed signal id=",id); if(id!="") Ack(id,"REJECTED","Malformed signal"); return; }
    if((direction=="BUY" && sl>=entry) || (direction=="SELL" && sl<=entry))
-   { Ack(id,"REJECTED","Invalid entry/SL geometry"); return; }
-   if(ArraySize(trades)>=MaxOpenPaperTrades) { Ack(id,"REJECTED","Paper max positions reached"); return; }
-   if(CountSymbol(symbol)>=MaxPerSymbol) { Ack(id,"REJECTED","Paper per-symbol limit reached"); return; }
+   { Print("[PAPER REJECT] Invalid entry/SL geometry signal=",id); Ack(id,"REJECTED","Invalid entry/SL geometry"); return; }
+   if(ArraySize(trades)>=MaxOpenPaperTrades)
+   { Print("[PAPER REJECT] Max paper positions reached signal=",id," open=",ArraySize(trades)); Ack(id,"REJECTED","Paper max positions reached"); return; }
+   if(CountSymbol(symbol)>=MaxPerSymbol)
+   { Print("[PAPER REJECT] Per-symbol limit reached signal=",id," symbol=",symbol," open=",CountSymbol(symbol)); Ack(id,"REJECTED","Paper per-symbol limit reached"); return; }
    for(int i=0;i<ArraySize(lastTradeTime);i++)
       if(lastSource[i]==symbol && TimeCurrent()-lastTradeTime[i]<CooldownMinutes*60)
-      { Ack(id,"REJECTED","Paper cooldown active"); return; }
+      { Print("[PAPER REJECT] Cooldown active signal=",id," symbol=",symbol," remaining_sec=",CooldownMinutes*60-(int)(TimeCurrent()-lastTradeTime[i])); Ack(id,"REJECTED","Paper cooldown active"); return; }
    if(!AddPaperTrade(id,symbol,tf,direction,entry,sl,riskMoney,requestedLot)) return;
    int n=ArraySize(lastSource);
    if(n==0) { ArrayResize(lastSource,1); ArrayResize(lastTradeTime,1); }
