@@ -641,7 +641,7 @@ void PublishTodaySignals()
       string direction=(g_todaySignals[i].type=="BEAR")?"SELL":"BUY";
       string line=StringFormat("%s|%s|%s|%s|%s|%d|%.8f|%.8f|%.2f|%.2f\r\n",
          g_todaySignals[i].sym,g_todaySignals[i].tfStr,direction,g_todaySignals[i].divType,
-         g_todaySignals[i].signalType,(int)g_todaySignals[i].time,
+         g_todaySignals[i].signalType,(int)(ServerTimeToGMT7(g_todaySignals[i].time)-g_gmt7TargetOffset),
          g_todaySignals[i].price1,g_todaySignals[i].price2,
          g_todaySignals[i].rsi1,g_todaySignals[i].rsi2);
       FileWriteString(h,line);
