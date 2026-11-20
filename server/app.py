@@ -244,7 +244,7 @@ def update_scans(payload: ScanUpdateIn):
 def dashboard_data():
     with db() as conn:
         signals = [dict(r) for r in conn.execute(
-            "SELECT id,symbol,timeframe,direction,entry,sl,score,status,created_at,ack_status,ack_message "
+            "SELECT id,symbol,timeframe,direction,entry,sl,score,source,status,created_at,ack_status,ack_message "
             "FROM signals ORDER BY created_at DESC LIMIT 100").fetchall()]
         heartbeats = [dict(r) for r in conn.execute(
             "SELECT component,status,details,updated_at FROM heartbeats ORDER BY component").fetchall()]
