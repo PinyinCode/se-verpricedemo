@@ -115,7 +115,7 @@ bool Ack(string id,string state,string message)
 {
    string body="{\"signal_id\":\""+id+"\",\"status\":\""+state+"\",\"message\":\""+message+"\"}";
    string response; int status;
-   return Request("POST","/api/mt5/ack",body,response,status);
+   return Request("POST","/api/chart/ack",body,response,status);
 }
 
 int CountSymbol(string symbol)
@@ -194,7 +194,7 @@ void ManagePaperTrades()
 void PollServer()
 {
    string response; int status;
-   string path="/api/mt5/next?consumer="+ConsumerId;
+   string path="/api/chart/next";
    if(!Request("GET",path,"",response,status)) { Print("[PAPER V9] Poll failed HTTP=",status); return; }
    if(StringFind(response,"\"signal\":null")>=0) return;
    string obj=JsonObjectValue(response,"signal");
