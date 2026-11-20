@@ -17,6 +17,7 @@ input int MaxLegacySignalAgeSeconds = 300;
 datetime g_lastHeartbeat = 0;
 datetime g_lastPoll = 0;
 string g_lastLegacySignature = "";
+datetime g_lastScanPost = 0;
 
 string JsonValue(string json, string key)
 {
@@ -166,6 +167,44 @@ void ImportLegacyDivergenceSignal()
       Print("[SERVER] Legacy signal import failed. HTTP=",status," response=",response);
 }
 
+void PublishScanStatus()
+{
+   if(TimeCurrent()-g_lastScanPost<3) return;
+   g_lastScanPost=TimeCurrent();
+   string raw="";
+   int file=FileOpen("DIVSCAN_SYMBOLS.txt",FILE_READ|FILE_TXT|FILE_COMMON);
+   if(file!=INVALID_HANDLE)
+   {
+      raw=FileReadString(file);
+      FileClose(file);
+   }
+   string fields[];
+   int fieldCount=StringSplit(raw,'#',fields);
+   datetime scanTime=0;
+   string symbolsJson="[]";
+   if(fieldCount>=1) scanTime=(datetime)StringToInteger(fields[0]);
+   if(fieldCount>=2 && scanTime>0 && TimeCurrent()-scanTime<=30)
+   {
+      string entries[];
+      int entryCount=StringSplit(fields[1],';',entries);
+      string jsonItems="";
+      for(int i=0;i<entryCount;i++)
+      {
+         string pair[];
+         if(StringSplit(entries[i],'|',pair)<2) continue;
+         string item=pair[0]+" "+pair[1];
+         if(item==" ") continue;
+         if(jsonItems!="") jsonItems+=",";
+         jsonItems+="\""+item+"\"";
+      }
+      symbolsJson="["+jsonItems+"]";
+   }
+   string body="{\"component\":\"AI-OOP-V8\",\"symbols\":"+symbolsJson+"}";
+   string response; int status;
+   if(!HttpRequest("POST","/api/scans",body,response,status))
+      Print("[SERVER] Scan status upload failed. HTTP=",status," response=",response);
+}
+
 void PollSignal()
 {
    string response; int status;
@@ -229,6 +268,7 @@ void OnTimer()
    if(TimeCurrent()-g_lastPoll>=PollSeconds)
    {
       g_lastPoll=TimeCurrent();
+      PublishScanStatus();
       ImportLegacyDivergenceSignal();
       PollSignal();
    }
