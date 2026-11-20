@@ -464,7 +464,8 @@ void SendPaperPositions()
          int    idx   =FindTicketIndex(ticket);
 
          // nếu position mồ côi (EA restart), vẫn gửi với fallback hợp lệ
-         string signalId  = (idx>=0) ? realSignalIds[idx]  : ticket;
+         // Ticket là ID duy nhất cho từng position, tránh trùng signal ID khi khớp nhiều phần.
+         string positionId = ticket;
          string tfValue   = (idx>=0) ? realTimeframes[idx] : "M15";  // phải thuộc Literal
          double riskMoney = (idx>=0) ? realRisks[idx]      : 0.0;
 
@@ -475,7 +476,7 @@ void SendPaperPositions()
             "{\"id\":\"%s\",\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\","
             "\"entry\":%.10f,\"sl\":%.10f,\"tp\":%.10f,\"volume\":%.8f,"
             "\"risk\":%.2f,\"profit\":%.2f,\"opened_at\":%.0f}",
-            signalId, posInfo.Symbol(), tfValue,
+            positionId, posInfo.Symbol(), tfValue,
             (posInfo.PositionType()==POSITION_TYPE_BUY?"BUY":"SELL"),
             posInfo.PriceOpen(), posInfo.StopLoss(), posInfo.TakeProfit(),
             posInfo.Volume(), riskMoney, profit, (double)posInfo.Time());
