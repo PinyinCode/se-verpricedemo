@@ -247,10 +247,22 @@ body.trade-fullscreen .chart-workspace{min-height:0}
   body.trade-fullscreen .chart-workspace .request-state{grid-column:auto;text-align:right}
 }
 
+
+.positions-dialog{width:min(900px,calc(100vw - 24px));max-width:900px;max-height:min(76dvh,680px);padding:0;border:1px solid #354963;border-radius:14px;background:#101b2c;color:#e8eef7;box-shadow:0 24px 80px rgba(0,0,0,.55)}
+.positions-dialog::backdrop{background:rgba(3,8,16,.72);backdrop-filter:blur(4px)}
+.positions-dialog-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid #293a52;background:#142239}
+.positions-dialog-head strong{font-size:13px;letter-spacing:.4px}
+.positions-dialog-head button{padding:5px 10px}
+.positions-dialog-body{padding:12px 16px 16px}
+.positions-table-wrap{overflow:auto;max-height:55dvh;margin-top:8px}
+.positions-dialog table{min-width:650px}
+.positions-dialog td,.positions-dialog th{padding:9px 8px;font-size:12px}
+#positionsButton{white-space:nowrap}
+#positionCount{display:inline-grid;place-items:center;min-width:18px;height:18px;margin-left:3px;padding:0 4px;border-radius:10px;background:#263d59;color:#e8eef7;font-size:10px}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.2/dist/lightweight-charts.standalone.production.js"></script>
 </head>
-<body>
+<body class="trade-fullscreen">
 <header><div><span class="brand">Forex AI · Chart</span> <span class="muted">/ AI OOP V8 MT5 feed</span></div><span class="tag">DEMO / PAPER ONLY</span></header>
 <main>
 <div class="layout">
@@ -258,7 +270,7 @@ body.trade-fullscreen .chart-workspace{min-height:0}
 <section class="panel chart-workspace">
 <div class="panel-head chart-head">
 <div class="chart-pickers"><strong id="chartTitle">EURUSD · M15</strong><select id="symbol"><option>EURUSD</option><option>GBPUSD</option><option>USDJPY</option><option>XAUUSD</option><option>BTCUSD</option><option>USDCAD</option><option>NZDUSD</option><option>USDCHF</option></select><select id="tf"><option>M15</option><option>H1</option><option>H4</option><option>D1</option><option>M5</option><option>M30</option><option>M1</option></select></div>
-<div class="chart-actions"><span class="small" id="feedState">Đang kết nối dữ liệu...</span><button id="fitChart" title="Vừa khung biểu đồ">Fit</button><button id="refresh" title="Làm mới dữ liệu">↻</button><button id="fullscreenToggle" type="button">Toàn màn hình</button></div>
+<div class="chart-actions"><span class="small" id="feedState">Đang kết nối dữ liệu...</span><button id="positionsButton" type="button" title="Xem các vị thế đang mở">Vị thế <span id="positionCount">0</span></button><button id="fitChart" title="Vừa khung biểu đồ">Fit</button><button id="refresh" title="Làm mới dữ liệu">↻</button><button id="fullscreenToggle" type="button">Thoát toàn màn hình</button></div>
 </div>
 <div class="chart-tools"><div class="quick-tf" aria-label="Khung thời gian"><button data-tf="M1">1m</button><button data-tf="M5">5m</button><button data-tf="M15" class="selected">15m</button><button data-tf="M30">30m</button><button data-tf="H1">1H</button><button data-tf="H4">4H</button><button data-tf="D1">1D</button></div><div class="chart-style"><button id="candleMode" class="selected">Nến</button><button id="lineMode">Đường</button></div></div><div class="ohlc-strip" id="ohlcLegend"><b>O —</b><span>H —</span><span>L —</span><span>C —</span><span class="ohlc-change">—</span></div>
 <div class="trade-strip">
@@ -287,6 +299,11 @@ body.trade-fullscreen .chart-workspace{min-height:0}
 </aside>
 </div>
 </main>
+
+<dialog id="positionsDialog" class="positions-dialog">
+ <div class="positions-dialog-head"><div><strong>VỊ THẾ ĐANG MỞ</strong><div class="small">Đồng bộ từ MT5 / Trade V9 · chỉ xem</div></div><button type="button" id="closePositionsDialog" aria-label="Đóng">✕</button></div>
+ <div class="positions-dialog-body"><div id="positionsUpdated" class="small">Đang đồng bộ...</div><div class="positions-table-wrap"><table><thead><tr><th>Mã</th><th>TF</th><th>Hướng</th><th>Entry</th><th>SL</th><th>TP</th><th>Lot</th><th>P/L</th></tr></thead><tbody id="chartPositions"><tr><td colspan="8" class="empty">Đang tải vị thế...</td></tr></tbody></table></div></div>
+</dialog>
 <script>
 const $=id=>document.getElementById(id);
 let mt5Digits=5,mt5TickSize=0.00001,mt5TickValue=0,mt5VolumeMin=0,mt5VolumeMax=0,mt5VolumeStep=0,latestMarketPrice=0;const fmt=n=>Number(n).toLocaleString('en-US',{minimumFractionDigits:mt5Digits,maximumFractionDigits:mt5Digits});
@@ -333,6 +350,35 @@ if(signature!==lastBarsSignature){
  lastBarsSignature=signature;
 }
 renderSignals(data.signals||[],bars);if(bars.length){if($('orderMode').value==='MARKET')$('entryPrice').value=Number(bars[bars.length-1].close).toFixed(mt5Digits);if(firstLoad){if(!$('entryPrice').value)$('entryPrice').value=Number(bars[bars.length-1].close).toFixed(mt5Digits);if(!$('slPrice').value)$('slPrice').value=Number(bars[bars.length-1].close-(Math.max(mt5TickSize,0.00001)*20)).toFixed(mt5Digits);priceChart.timeScale().fitContent();priceChart.timeScale().applyOptions({rightOffset:10});rsiChart.timeScale().applyOptions({rightOffset:10});firstLoad=false}else if(oldRange){priceChart.timeScale().setVisibleLogicalRange(oldRange)}calcLot();$('feedState').textContent=bars.length+' nến · cập nhật '+new Date().toLocaleTimeString()}else{$('feedState').textContent='Chưa có nến MT5 được gửi lên server';$('signalDetails').textContent='API đã kết nối, đang chờ MT5 gửi dữ liệu OHLC.'} }catch(e){$('feedState').textContent='Lỗi tải dữ liệu: '+e.message}}
+
+let chartOpenPositions=[],positionLines=[],positionSignature='';
+function renderChartPositions(positions){
+ const rows=Array.isArray(positions)?positions:[];
+ chartOpenPositions=rows;
+ $('positionCount').textContent=String(rows.length);
+ $('positionsUpdated').textContent='Đồng bộ '+new Date().toLocaleTimeString('vi-VN')+' · '+rows.length+' vị thế';
+ const visible=rows.filter(p=>String(p.symbol||'').toUpperCase()===String($('symbol').value).toUpperCase());
+ const signature=JSON.stringify(visible.map(p=>[p.id,p.symbol,p.direction,p.entry,p.sl,p.tp,p.volume,p.profit]));
+ if(signature!==positionSignature){
+  positionLines.forEach(x=>{try{candleSeries.removePriceLine(x)}catch(_){}});positionLines=[];positionSignature=signature;
+  visible.forEach(p=>{
+   const buy=String(p.direction||'').toUpperCase()==='BUY';
+   [['ENTRY',Number(p.entry),buy?'#60a5fa':'#fbbf24'],['SL',Number(p.sl),'#f06478'],['TP',Number(p.tp),'#22c58b']].forEach(([label,value,color])=>{
+    if(!(value>0))return;
+    positionLines.push(candleSeries.createPriceLine({price:value,color,lineWidth:1,lineStyle:2,axisLabelVisible:true,title:(buy?'BUY':'SELL')+' '+label}));
+   });
+  });
+ }
+ $('chartPositions').innerHTML=rows.length?rows.map(p=>'<tr><td>'+esc(p.symbol)+'</td><td>'+esc(p.timeframe)+'</td><td class="'+(String(p.direction).toUpperCase()==='BUY'?'buy':'sell')+'">'+esc(p.direction)+'</td><td>'+fmt(p.entry)+'</td><td>'+(Number(p.sl)>0?fmt(p.sl):'—')+'</td><td>'+(Number(p.tp)>0?fmt(p.tp):'—')+'</td><td>'+fmt(p.volume)+'</td><td style="font-weight:700;color:'+(Number(p.profit)>=0?'#27c995':'#f06b7e')+'">'+fmt(p.profit)+'</td></tr>').join(''):'<tr><td colspan="8" class="empty">Chưa có vị thế đang mở</td></tr>';
+}
+async function refreshChartPositions(){
+ try{const r=await fetch('/api/dashboard',{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();renderChartPositions(d.paper_positions||[])}
+ catch(e){$('positionsUpdated').textContent='Không thể đồng bộ vị thế: '+e.message}
+}
+$('positionsButton').addEventListener('click',()=>{refreshChartPositions();$('positionsDialog').showModal()});
+$('closePositionsDialog').addEventListener('click',()=>$('positionsDialog').close());
+$('positionsDialog').addEventListener('click',e=>{if(e.target===$('positionsDialog'))$('positionsDialog').close()});
+
 function setLevelLines(){
  for(const key of ['entry','sl','tp']){
   const id=key==='entry'?'entryPrice':key==='sl'?'slPrice':'tpPrice',value=Number($(id).value),toggle=$(key==='entry'?'showEntry':key==='sl'?'showSL':'showTP');
@@ -419,6 +465,6 @@ const chartResizeObserver=new ResizeObserver(()=>{
 chartResizeObserver.observe($('priceChart'));
 chartResizeObserver.observe($('rsiChart'));
 document.querySelectorAll('[data-tf]').forEach(x=>x.classList.toggle('selected',x.dataset.tf===$('tf').value));
-load();setInterval(load,5000);
+load();setInterval(load,5000);refreshChartPositions();setInterval(refreshChartPositions,3000);
 </script>
 </body></html>
