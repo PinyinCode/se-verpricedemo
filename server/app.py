@@ -16,7 +16,7 @@ from typing import Literal
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("FOREX_DB_PATH", str(BASE_DIR / "forex_demo.db")))
@@ -61,7 +61,8 @@ def init_db() -> None:
         conn.execute("""
         CREATE TABLE IF NOT EXISTS signals (
           id TEXT PRIMARY KEY, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
-          direction TEXT NOT NULL, entry REAL NOT NULL, sl REAL NOT NULL,
+          direction TEXT NOT NULL, order_type TEXT NOT NULL DEFAULT 'MARKET',
+          entry REAL NOT NULL, sl REAL NOT NULL,
           score REAL NOT NULL DEFAULT 0, source TEXT NOT NULL DEFAULT 'api',
           status TEXT NOT NULL DEFAULT 'pending', created_at TEXT NOT NULL,
           claimed_by TEXT, claimed_at TEXT, ack_at TEXT, ack_status TEXT, ack_message TEXT
@@ -104,6 +105,8 @@ def init_db() -> None:
             conn.execute("ALTER TABLE candles ADD COLUMN volume_step REAL NOT NULL DEFAULT 0")
 
         signal_cols = {row[1] for row in conn.execute("PRAGMA table_info(signals)")}
+        if "order_type" not in signal_cols:
+            conn.execute("ALTER TABLE signals ADD COLUMN order_type TEXT NOT NULL DEFAULT 'MARKET'")
         if "risk_money" not in signal_cols:
             conn.execute("ALTER TABLE signals ADD COLUMN risk_money REAL NOT NULL DEFAULT 25")
         if "requested_lot" not in signal_cols:
@@ -173,7 +176,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Forex AI Demo Server",
-    version="0.1.1",
+    version="0.1.2",
     description="Signal analysis and MT5 demo bridge. No live order execution.",
     lifespan=lifespan,
 )
@@ -191,6 +194,7 @@ class SignalIn(BaseModel):
     symbol: str = Field(min_length=3, max_length=32)
     timeframe: Literal["M1", "M5", "M15", "M30", "H1", "H4", "D1"]
     direction: Literal["BUY", "SELL"]
+    order_type: Literal["MARKET", "BUY_LIMIT", "SELL_LIMIT"] = Field(default="MARKET")
     entry: float = Field(gt=0)
     sl: float = Field(gt=0)
     tp: float = Field(default=0, ge=0)
@@ -203,6 +207,25 @@ class SignalIn(BaseModel):
     @classmethod
     def normalize_symbol(cls, value: str) -> str:
         return value.strip().upper()
+
+    @model_validator(mode="after")
+    def validate_limit_order(self) -> "SignalIn":
+        if self.order_type == "BUY_LIMIT":
+            if self.direction != "BUY":
+                raise ValueError("BUY_LIMIT chỉ áp dụng cho hướng BUY")
+            if self.sl >= self.entry:
+                raise ValueError("BUY_LIMIT yêu cầu SL < Entry")
+        elif self.order_type == "SELL_LIMIT":
+            if self.direction != "SELL":
+                raise ValueError("SELL_LIMIT chỉ áp dụng cho hướng SELL")
+            if self.sl <= self.entry:
+                raise ValueError("SELL_LIMIT yêu cầu SL > Entry")
+        else:
+            if (self.direction == "BUY" and self.sl >= self.entry) or (
+                self.direction == "SELL" and self.sl <= self.entry
+            ):
+                raise ValueError("SL phải nằm đúng phía so với entry")
+        return self
 
 
 class PaperPositionIn(BaseModel):
@@ -397,14 +420,27 @@ def health():
         raise HTTPException(status_code=503, detail=f"database_error: {type(exc).__name__}")
 
 
+def _validate_limit_against_market(conn: sqlite3.Connection, payload: SignalIn) -> None:
+    if payload.order_type not in ("BUY_LIMIT", "SELL_LIMIT"):
+        return
+    row = conn.execute(
+        "SELECT close FROM candles WHERE symbol=? AND timeframe=? ORDER BY candle_time DESC LIMIT 1",
+        (payload.symbol, payload.timeframe),
+    ).fetchone()
+    if row is None:
+        return
+    market_price = float(row["close"])
+    if payload.order_type == "BUY_LIMIT" and payload.entry >= market_price:
+        raise HTTPException(status_code=422, detail="BUY_LIMIT yêu cầu Entry thấp hơn giá hiện tại")
+    if payload.order_type == "SELL_LIMIT" and payload.entry <= market_price:
+        raise HTTPException(status_code=422, detail="SELL_LIMIT yêu cầu Entry cao hơn giá hiện tại")
+
+
 @app.post("/api/signals", dependencies=[Depends(require_key)])
 def create_signal(payload: SignalIn):
-    if (payload.direction == "BUY" and payload.sl >= payload.entry) or (
-        payload.direction == "SELL" and payload.sl <= payload.entry
-    ):
-        raise HTTPException(status_code=422, detail="SL phải nằm đúng phía so với entry")
     created = utc_now()
     with db() as conn:
+        _validate_limit_against_market(conn, payload)
         if payload.source.startswith("div-"):
             existing = conn.execute(
                 "SELECT id,status,created_at FROM signals WHERE source=?",
@@ -415,15 +451,15 @@ def create_signal(payload: SignalIn):
                         "status": existing["status"], "created_at": existing["created_at"]}
         signal_id = secrets.token_hex(12)
         conn.execute(
-            "INSERT INTO signals(id,symbol,timeframe,direction,entry,sl,tp,score,risk_money,requested_lot,source,status,created_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (signal_id, payload.symbol, payload.timeframe, payload.direction,
+            "INSERT INTO signals(id,symbol,timeframe,direction,order_type,entry,sl,tp,score,risk_money,requested_lot,source,status,created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (signal_id, payload.symbol, payload.timeframe, payload.direction, payload.order_type,
              payload.entry, payload.sl, payload.tp, payload.score, payload.risk_money, payload.requested_lot,
              payload.source, "pending", created),
         )
         conn.execute("INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
-                     ("signal_created", f"{payload.symbol} {payload.timeframe} {payload.direction} {signal_id}", created))
-    return {"ok": True, "signal_id": signal_id, "status": "pending", "created_at": created}
+                     ("signal_created", f"{payload.symbol} {payload.timeframe} {payload.order_type} {signal_id}", created))
+    return {"ok": True, "signal_id": signal_id, "order_type": payload.order_type, "status": "pending", "created_at": created}
 
 
 @app.post("/api/chart/request")
@@ -798,7 +834,7 @@ def chart_data(
 def dashboard_data():
     with db() as conn:
         signals = [dict(r) for r in conn.execute(
-            "SELECT id,symbol,timeframe,direction,entry,sl,tp,score,source,status,created_at,ack_status,ack_message "
+            "SELECT id,symbol,timeframe,direction,order_type,entry,sl,tp,score,source,status,created_at,ack_status,ack_message "
             "FROM signals ORDER BY created_at DESC LIMIT 100").fetchall()]
         paper_positions = [dict(r) for r in conn.execute(
             "SELECT id,ticket,symbol,timeframe,direction,entry,sl,tp,volume,risk,profit,opened_at,updated_at "
