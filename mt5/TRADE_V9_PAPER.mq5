@@ -176,7 +176,7 @@ bool AddPaperTrade(string id,string symbol,string tf,string direction,double ent
 
 void SendPaperClosed(int i,string outcome,double realized)
 {
-   string body=StringFormat("{\\"id\\":\\"%s\\",\\"symbol\\":\\"%s\\",\\"timeframe\\":\\"%s\\",\\"direction\\":\\"%s\\",\\"entry\\":%.10f,\\"sl\\":%.10f,\\"tp\\":%.10f,\\"volume\\":%.8f,\\"risk\\":%.2f,\\"profit\\":%.2f,\\"opened_at\\":%.0f,\\"outcome\\":\\"%s\\",\\"closed_at\\":%.0f}",
+   string body=StringFormat("{\"id\":\"%s\",\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\",\"entry\":%.10f,\"sl\":%.10f,\"tp\":%.10f,\"volume\":%.8f,\"risk\":%.2f,\"profit\":%.2f,\"opened_at\":%.0f,\"outcome\":\"%s\",\"closed_at\":%.0f}",
       trades[i].id,trades[i].symbol,trades[i].timeframe,trades[i].direction,
       trades[i].entry,trades[i].sl,trades[i].tp,trades[i].volume,trades[i].riskMoney,
       realized,(double)trades[i].opened,outcome,(double)TimeCurrent());
