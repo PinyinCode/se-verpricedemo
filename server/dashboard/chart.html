@@ -274,6 +274,62 @@ body.trade-fullscreen .chart-workspace{min-height:0}
 .stats-section td,.stats-section th{font-size:11px;padding:8px}
 .stats-updated{padding-top:10px;text-align:right}
 @media(max-width:650px){.stats-body{padding:10px}.stats-kpis{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}.stats-kpi{padding:9px}.stats-kpi strong{font-size:18px}.stats-section .positions-table-wrap{max-height:230px}}
+
+/* Chart controls are overlays inside the plotting area */
+body.trade-fullscreen .chart-workspace{height:100%;min-height:0;display:flex;flex-direction:column;overflow:hidden}
+body.trade-fullscreen .chart-stage{position:relative;flex:1 1 auto;min-height:180px;overflow:hidden;background:#101b2c}
+body.trade-fullscreen .chart-stage #priceChart{position:absolute!important;inset:0;width:100%!important;height:100%!important;min-height:0!important;flex:none!important}
+body.trade-fullscreen .chart-overlay-top{position:absolute;z-index:20;top:7px;left:8px;right:8px;display:flex;flex-direction:column;gap:4px;pointer-events:none}
+body.trade-fullscreen .chart-overlay-top>*{pointer-events:auto;width:max-content;max-width:100%;border:1px solid rgba(75,98,128,.72);border-radius:8px;background:rgba(9,18,31,.88);backdrop-filter:blur(10px);box-shadow:0 4px 16px rgba(0,0,0,.2)}
+body.trade-fullscreen .chart-overlay-top .chart-head{width:100%;min-height:0;padding:5px 7px;gap:6px}
+body.trade-fullscreen .chart-overlay-top .chart-pickers,body.trade-fullscreen .chart-overlay-top .chart-actions{gap:5px}
+body.trade-fullscreen .chart-overlay-top .chart-pickers strong{font-size:12px}
+body.trade-fullscreen .chart-overlay-top select,body.trade-fullscreen .chart-overlay-top button{padding:4px 7px;font-size:11px}
+body.trade-fullscreen .chart-overlay-top .chart-actions #feedState{max-width:140px;font-size:9px}
+body.trade-fullscreen .chart-overlay-top .chart-tools{padding:3px 6px;gap:5px}
+body.trade-fullscreen .chart-overlay-top .ohlc-strip{padding:3px 7px;gap:8px;font-size:9px}
+body.trade-fullscreen .chart-overlay-bottom{position:absolute;z-index:20;left:8px;right:8px;bottom:7px;display:flex;flex-direction:column;gap:4px;pointer-events:none}
+body.trade-fullscreen .chart-overlay-bottom>*{pointer-events:auto;border:1px solid rgba(75,98,128,.72);border-radius:8px;background:rgba(9,18,31,.91);backdrop-filter:blur(10px);box-shadow:0 4px 16px rgba(0,0,0,.2)}
+body.trade-fullscreen .chart-overlay-bottom .trade-strip{padding:5px 7px}
+body.trade-fullscreen .chart-overlay-bottom .trade-fields{gap:5px}
+body.trade-fullscreen .chart-overlay-bottom .trade-fields label{font-size:9px}
+body.trade-fullscreen .chart-overlay-bottom .trade-fields input,body.trade-fullscreen .chart-overlay-bottom .trade-fields select{width:88px;padding:4px 5px;font-size:11px}
+body.trade-fullscreen .chart-overlay-bottom .trade-options{margin-top:4px}
+body.trade-fullscreen .chart-overlay-bottom .trade-options .level-toggles{gap:8px}
+body.trade-fullscreen .chart-overlay-bottom .trade-options label{font-size:9px}
+body.trade-fullscreen .chart-overlay-bottom .trade-footer{padding:5px 7px;grid-template-columns:minmax(0,1fr) auto minmax(100px,.7fr);gap:7px}
+body.trade-fullscreen .chart-overlay-bottom .lot-value{font-size:16px}
+body.trade-fullscreen .chart-overlay-bottom .trade-submit button{min-width:76px;padding:5px 8px;font-size:11px}
+body.trade-fullscreen .chart-overlay-bottom #contractMeta{display:none}
+body.trade-fullscreen .chart-workspace #rsiChart{height:58px;flex:0 0 58px}
+body.trade-fullscreen .chart-workspace .statusline{display:none}
+@media(max-width:600px){
+ body.trade-fullscreen .chart-overlay-top{top:4px;left:4px;right:4px;gap:3px}
+ body.trade-fullscreen .chart-overlay-top .chart-head{align-items:center;flex-wrap:nowrap}
+ body.trade-fullscreen .chart-overlay-top .chart-pickers{width:auto;flex:1;flex-wrap:nowrap;min-width:0}
+ body.trade-fullscreen .chart-overlay-top .chart-pickers strong{display:none}
+ body.trade-fullscreen .chart-overlay-top .chart-pickers select{max-width:90px;min-width:0}
+ body.trade-fullscreen .chart-overlay-top .chart-actions{width:auto;margin-left:auto;flex-wrap:nowrap;gap:3px}
+ body.trade-fullscreen .chart-overlay-top .chart-actions #feedState{display:none}
+ body.trade-fullscreen .chart-overlay-top .chart-actions button{padding:4px 5px;font-size:10px}
+ body.trade-fullscreen .chart-overlay-top .chart-tools{padding:2px 4px}
+ body.trade-fullscreen .chart-overlay-top .quick-tf button,body.trade-fullscreen .chart-overlay-top .chart-style button{padding:3px 5px;min-width:25px;font-size:9px}
+ body.trade-fullscreen .chart-overlay-top .ohlc-strip{padding:2px 5px;gap:5px;font-size:8px}
+ body.trade-fullscreen .chart-overlay-bottom{left:4px;right:4px;bottom:4px;gap:3px}
+ body.trade-fullscreen .chart-overlay-bottom .trade-fields{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px}
+ body.trade-fullscreen .chart-overlay-bottom .trade-fields input,body.trade-fullscreen .chart-overlay-bottom .trade-fields select{width:100%;font-size:10px;padding:4px 3px}
+ body.trade-fullscreen .chart-overlay-bottom .trade-fields label{font-size:8px}
+ body.trade-fullscreen .chart-overlay-bottom .trade-options{align-items:center}
+ body.trade-fullscreen .chart-overlay-bottom .trade-options .level-toggles{gap:5px;flex-wrap:wrap}
+ body.trade-fullscreen .chart-overlay-bottom .trade-options label{font-size:8px}
+ body.trade-fullscreen .chart-overlay-bottom .trade-footer{grid-template-columns:minmax(0,1fr) auto;gap:4px}
+ body.trade-fullscreen .chart-overlay-bottom .lot-block .small{font-size:8px}
+ body.trade-fullscreen .chart-overlay-bottom .lot-value{font-size:14px}
+ body.trade-fullscreen .chart-overlay-bottom .trade-submit{gap:3px}
+ body.trade-fullscreen .chart-overlay-bottom .trade-submit button{min-width:58px;padding:5px 6px;font-size:10px}
+ body.trade-fullscreen .chart-overlay-bottom .request-state{display:none}
+ body.trade-fullscreen .chart-workspace #rsiChart{height:50px;flex-basis:50px}
+}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.2/dist/lightweight-charts.standalone.production.js"></script>
 </head>
@@ -283,12 +339,15 @@ body.trade-fullscreen .chart-workspace{min-height:0}
 <div class="layout">
 <div>
 <section class="panel chart-workspace">
-<div class="panel-head chart-head">
+<div class="chart-stage">
+<div id="priceChart"></div>
+<div class="chart-overlay-top"><div class="panel-head chart-head">
 <div class="chart-pickers"><strong id="chartTitle">EURUSD · M15</strong><select id="symbol"><option>EURUSD</option><option>GBPUSD</option><option>USDJPY</option><option>XAUUSD</option><option>BTCUSD</option><option>USDCAD</option><option>NZDUSD</option><option>USDCHF</option></select><select id="tf"><option>M15</option><option>H1</option><option>H4</option><option>D1</option><option>M5</option><option>M30</option><option>M1</option></select></div>
 <div class="chart-actions"><span class="small" id="feedState">Đang kết nối dữ liệu...</span><button id="positionsButton" type="button" title="Xem các vị thế đang mở">Vị thế <span id="positionCount">0</span></button><button id="statsButton" type="button" title="Thống kê tín hiệu và lịch sử PAPER">Thống kê</button><button id="fitChart" title="Vừa khung biểu đồ">Fit</button><button id="refresh" title="Làm mới dữ liệu">↻</button><button id="fullscreenToggle" type="button">Thoát toàn màn hình</button></div>
 </div>
 <div class="chart-tools"><div class="quick-tf" aria-label="Khung thời gian"><button data-tf="M1">1m</button><button data-tf="M5">5m</button><button data-tf="M15" class="selected">15m</button><button data-tf="M30">30m</button><button data-tf="H1">1H</button><button data-tf="H4">4H</button><button data-tf="D1">1D</button></div><div class="chart-style"><button id="candleMode" class="selected">Nến</button><button id="lineMode">Đường</button></div></div><div class="ohlc-strip" id="ohlcLegend"><b>O —</b><span>H —</span><span>L —</span><span>C —</span><span class="ohlc-change">—</span></div>
-<div class="trade-strip">
+</div>
+<div class="chart-overlay-bottom"><div class="trade-strip">
 <div class="trade-fields">
 <label>Chế độ<select id="orderMode"><option value="MARKET" selected>Market</option><option value="PENDING">Pending</option></select></label>
 <label>Risk ($)<input id="riskMoney" type="number" min="0.01" step="1" value="25"></label>
@@ -298,10 +357,13 @@ body.trade-fullscreen .chart-workspace{min-height:0}
 </div>
 <div class="trade-options"><div class="level-toggles"><label><input id="showEntry" type="checkbox"> Entry line</label><label><input id="showSL" type="checkbox" checked> SL line</label><label><input id="showTP" type="checkbox" checked> TP line</label></div><button id="calcLot">Cập nhật</button></div>
 </div>
-<div id="priceChart"></div><div id="rsiChart"></div>
 <div class="trade-footer"><div class="lot-block"><span class="small">KHỐI LƯỢNG TÍNH TOÁN</span><div id="lotResult" class="small">Đang chờ dữ liệu MT5 để tính lot.</div><div id="contractMeta" class="small">Đang chờ thông số hợp đồng từ MT5...</div></div>
 <div class="trade-submit"><button id="sendBuy" class="active">BUY · PAPER</button><button id="sendSell">SELL · PAPER</button></div>
 <div id="requestState" class="small request-state">Chỉ gửi yêu cầu vào hàng đợi PAPER · không đặt lệnh broker.</div></div>
+</div>
+</div>
+<div id="rsiChart"></div>
+
 <div class="statusline">Nến và tín hiệu lấy từ MT5 / AI OOP V8. RSI 14 chỉ để quan sát, không tạo tín hiệu.</div>
 </section>
 <section class="panel signal-panel" style="margin-top:10px"><div class="panel-head"><strong>Tín hiệu AI OOP V8</strong><span class="small" id="signalCount">0 tín hiệu</span></div><div id="signalTable"><div class="empty">Chưa có tín hiệu cho mã và khung đang chọn</div></div></section>
