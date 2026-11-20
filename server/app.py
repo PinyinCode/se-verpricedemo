@@ -6,8 +6,9 @@ import json
 import os
 import secrets
 import sqlite3
+import threading
 import time
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Literal
@@ -22,27 +23,37 @@ DB_PATH = Path(os.getenv("FOREX_DB_PATH", str(BASE_DIR / "forex_demo.db")))
 API_KEY = os.getenv("FOREX_API_KEY", "").strip()
 STALE_SECONDS = int(os.getenv("SIGNAL_STALE_SECONDS", "300"))
 
-app = FastAPI(title="Forex AI Demo Server", version="0.1.0",
-              description="Signal analysis and MT5 demo bridge. No live order execution.")
-app.mount("/static", StaticFiles(directory=str(BASE_DIR / "dashboard")), name="static")
+_db_lock = threading.Lock()
+_conn: sqlite3.Connection | None = None
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-@contextmanager
-def db():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH, timeout=15)
-    conn.row_factory = sqlite3.Row
-    try:
+def _get_conn() -> sqlite3.Connection:
+    global _conn
+    if _conn is None:
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(DB_PATH, timeout=15, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=15000")
-        yield conn
-        conn.commit()
-    finally:
-        conn.close()
+        conn.execute("PRAGMA synchronous=NORMAL")
+        _conn = conn
+    return _conn
+
+
+@contextmanager
+def db():
+    with _db_lock:
+        conn = _get_conn()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
 
 
 def init_db() -> None:
@@ -79,16 +90,27 @@ def init_db() -> None:
           PRIMARY KEY(symbol,timeframe,candle_time)
         )""")
         cols = {row[1] for row in conn.execute("PRAGMA table_info(candles)")}
-        if "digits" not in cols: conn.execute("ALTER TABLE candles ADD COLUMN digits INTEGER NOT NULL DEFAULT 5")
-        if "tick_size" not in cols: conn.execute("ALTER TABLE candles ADD COLUMN tick_size REAL NOT NULL DEFAULT 0.00001")
-        if "tick_value" not in cols: conn.execute("ALTER TABLE candles ADD COLUMN tick_value REAL NOT NULL DEFAULT 0")
-        if "volume_min" not in cols: conn.execute("ALTER TABLE candles ADD COLUMN volume_min REAL NOT NULL DEFAULT 0")
-        if "volume_max" not in cols: conn.execute("ALTER TABLE candles ADD COLUMN volume_max REAL NOT NULL DEFAULT 0")
-        if "volume_step" not in cols: conn.execute("ALTER TABLE candles ADD COLUMN volume_step REAL NOT NULL DEFAULT 0")
+        if "digits" not in cols:
+            conn.execute("ALTER TABLE candles ADD COLUMN digits INTEGER NOT NULL DEFAULT 5")
+        if "tick_size" not in cols:
+            conn.execute("ALTER TABLE candles ADD COLUMN tick_size REAL NOT NULL DEFAULT 0.00001")
+        if "tick_value" not in cols:
+            conn.execute("ALTER TABLE candles ADD COLUMN tick_value REAL NOT NULL DEFAULT 0")
+        if "volume_min" not in cols:
+            conn.execute("ALTER TABLE candles ADD COLUMN volume_min REAL NOT NULL DEFAULT 0")
+        if "volume_max" not in cols:
+            conn.execute("ALTER TABLE candles ADD COLUMN volume_max REAL NOT NULL DEFAULT 0")
+        if "volume_step" not in cols:
+            conn.execute("ALTER TABLE candles ADD COLUMN volume_step REAL NOT NULL DEFAULT 0")
+
         signal_cols = {row[1] for row in conn.execute("PRAGMA table_info(signals)")}
-        if "risk_money" not in signal_cols: conn.execute("ALTER TABLE signals ADD COLUMN risk_money REAL NOT NULL DEFAULT 25")
-        if "requested_lot" not in signal_cols: conn.execute("ALTER TABLE signals ADD COLUMN requested_lot REAL NOT NULL DEFAULT 0")
-        if "tp" not in signal_cols: conn.execute("ALTER TABLE signals ADD COLUMN tp REAL NOT NULL DEFAULT 0")
+        if "risk_money" not in signal_cols:
+            conn.execute("ALTER TABLE signals ADD COLUMN risk_money REAL NOT NULL DEFAULT 25")
+        if "requested_lot" not in signal_cols:
+            conn.execute("ALTER TABLE signals ADD COLUMN requested_lot REAL NOT NULL DEFAULT 0")
+        if "tp" not in signal_cols:
+            conn.execute("ALTER TABLE signals ADD COLUMN tp REAL NOT NULL DEFAULT 0")
+
         conn.execute("""
         CREATE TABLE IF NOT EXISTS paper_positions (
           id TEXT PRIMARY KEY, ticket TEXT, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
@@ -99,6 +121,7 @@ def init_db() -> None:
         pos_cols = {row[1] for row in conn.execute("PRAGMA table_info(paper_positions)")}
         if "ticket" not in pos_cols:
             conn.execute("ALTER TABLE paper_positions ADD COLUMN ticket TEXT")
+
         conn.execute("""
         CREATE TABLE IF NOT EXISTS paper_history (
           id TEXT PRIMARY KEY, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
@@ -129,13 +152,32 @@ def init_db() -> None:
           updated_at TEXT NOT NULL
         )""")
         today_cols = {row[1] for row in conn.execute("PRAGMA table_info(today_signals)")}
-        if "time1" not in today_cols: conn.execute("ALTER TABLE today_signals ADD COLUMN time1 INTEGER NOT NULL DEFAULT 0")
-        if "time2" not in today_cols: conn.execute("ALTER TABLE today_signals ADD COLUMN time2 INTEGER NOT NULL DEFAULT 0")
+        if "time1" not in today_cols:
+            conn.execute("ALTER TABLE today_signals ADD COLUMN time1 INTEGER NOT NULL DEFAULT 0")
+        if "time2" not in today_cols:
+            conn.execute("ALTER TABLE today_signals ADD COLUMN time2 INTEGER NOT NULL DEFAULT 0")
 
 
-@app.on_event("startup")
-def startup() -> None:
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
     init_db()
+    try:
+        yield
+    finally:
+        global _conn
+        with _db_lock:
+            if _conn is not None:
+                _conn.close()
+                _conn = None
+
+
+app = FastAPI(
+    title="Forex AI Demo Server",
+    version="0.1.1",
+    description="Signal analysis and MT5 demo bridge. No live order execution.",
+    lifespan=lifespan,
+)
+app.mount("/static", StaticFiles(directory=str(BASE_DIR / "dashboard")), name="static")
 
 
 def require_key(x_api_key: str | None = Header(default=None)) -> None:
@@ -170,7 +212,7 @@ class PaperPositionIn(BaseModel):
     timeframe: str = Field(default="—", min_length=1, max_length=16)
     direction: Literal["BUY", "SELL"]
     entry: float = Field(gt=0)
-    sl: float = Field(ge=0)  # 0 = position has no Stop Loss
+    sl: float = Field(ge=0)
     tp: float = Field(ge=0)
     volume: float = Field(gt=0)
     risk: float = Field(default=0, ge=0)
@@ -338,11 +380,19 @@ def chart_page():
 
 @app.get("/api/health")
 def health():
+    t0 = time.perf_counter()
     try:
         with db() as conn:
             conn.execute("SELECT 1").fetchone()
-        return {"status": "ok", "service": "forex-ai-demo", "database": "ok",
-                "mode": "DEMO_ONLY", "time": utc_now()}
+        elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
+        return {
+            "status": "ok",
+            "service": "forex-ai-demo",
+            "database": "ok",
+            "mode": "DEMO_ONLY",
+            "latency_ms": elapsed_ms,
+            "time": utc_now(),
+        }
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"database_error: {type(exc).__name__}")
 
@@ -722,9 +772,26 @@ def chart_data(
             "FROM today_signals WHERE symbol=? AND timeframe=? ORDER BY signal_time DESC LIMIT 200",
             (symbol, timeframe),
         ).fetchall()]
-    meta = {"digits": candles[-1]["digits"], "tick_size": candles[-1]["tick_size"], "tick_value": candles[-1]["tick_value"], "volume_min": candles[-1]["volume_min"], "volume_max": candles[-1]["volume_max"], "volume_step": candles[-1]["volume_step"]} if candles else {"digits": 5, "tick_size": 0.00001, "tick_value": 0, "volume_min": 0, "volume_max": 0, "volume_step": 0}
-    return {"mode": "DEMO_ONLY", "symbol": symbol, "timeframe": timeframe,
-            **meta, "candles": candles, "signals": signals, "server_time": utc_now()}
+    meta = {
+        "digits": candles[-1]["digits"],
+        "tick_size": candles[-1]["tick_size"],
+        "tick_value": candles[-1]["tick_value"],
+        "volume_min": candles[-1]["volume_min"],
+        "volume_max": candles[-1]["volume_max"],
+        "volume_step": candles[-1]["volume_step"],
+    } if candles else {
+        "digits": 5, "tick_size": 0.00001, "tick_value": 0,
+        "volume_min": 0, "volume_max": 0, "volume_step": 0,
+    }
+    return {
+        "mode": "DEMO_ONLY",
+        "symbol": symbol,
+        "timeframe": timeframe,
+        **meta,
+        "candles": candles,
+        "signals": signals,
+        "server_time": utc_now(),
+    }
 
 
 @app.get("/api/dashboard")
@@ -774,8 +841,18 @@ def dashboard_data():
         today_signals = [dict(r) for r in conn.execute(
             "SELECT symbol,timeframe,direction,divergence,signal_type,signal_time,price1,price2,rsi1,rsi2,time1,time2 "
             "FROM today_signals ORDER BY signal_time DESC LIMIT 200").fetchall()]
-    return {"mode": "DEMO_ONLY", "signals": signals, "today_signals": today_signals,
-            "paper_positions": paper_positions, "open_positions": paper_positions,
-            "paper_history": paper_history, "real_history": real_history, "mt5_history": real_history,
-            "heartbeats": heartbeats, "scan_status": scans, "counts": counts,
-            "events": events, "server_time": utc_now()}
+    return {
+        "mode": "DEMO_ONLY",
+        "signals": signals,
+        "today_signals": today_signals,
+        "paper_positions": paper_positions,
+        "open_positions": paper_positions,
+        "paper_history": paper_history,
+        "real_history": real_history,
+        "mt5_history": real_history,
+        "heartbeats": heartbeats,
+        "scan_status": scans,
+        "counts": counts,
+        "events": events,
+        "server_time": utc_now(),
+    }
