@@ -114,8 +114,13 @@ def init_db() -> None:
           signal_key TEXT PRIMARY KEY, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
           direction TEXT NOT NULL, divergence TEXT NOT NULL, signal_type TEXT NOT NULL,
           signal_time INTEGER NOT NULL, price1 REAL NOT NULL, price2 REAL NOT NULL,
-          rsi1 REAL NOT NULL, rsi2 REAL NOT NULL, updated_at TEXT NOT NULL
+          rsi1 REAL NOT NULL, rsi2 REAL NOT NULL,
+          time1 INTEGER NOT NULL DEFAULT 0, time2 INTEGER NOT NULL DEFAULT 0,
+          updated_at TEXT NOT NULL
         )""")
+        today_cols = {row[1] for row in conn.execute("PRAGMA table_info(today_signals)")}
+        if "time1" not in today_cols: conn.execute("ALTER TABLE today_signals ADD COLUMN time1 INTEGER NOT NULL DEFAULT 0")
+        if "time2" not in today_cols: conn.execute("ALTER TABLE today_signals ADD COLUMN time2 INTEGER NOT NULL DEFAULT 0")
 
 
 @app.on_event("startup")
@@ -233,6 +238,8 @@ class TodaySignalItem(BaseModel):
     price2: float = Field(ge=0)
     rsi1: float = Field(ge=0, le=100)
     rsi2: float = Field(ge=0, le=100)
+    time1: int = Field(default=0, ge=0)
+    time2: int = Field(default=0, ge=0)
 
     @field_validator("symbol")
     @classmethod
@@ -582,10 +589,10 @@ def update_today_signals(payload: TodaySignalsIn):
                             item.divergence, item.signal_type, str(item.signal_time)))
             conn.execute(
                 "INSERT INTO today_signals(signal_key,symbol,timeframe,direction,divergence,signal_type,"
-                "signal_time,price1,price2,rsi1,rsi2,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                "signal_time,price1,price2,rsi1,rsi2,time1,time2,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (key, item.symbol, item.timeframe, item.direction, item.divergence,
                  item.signal_type, item.signal_time, item.price1, item.price2,
-                 item.rsi1, item.rsi2, now),
+                 item.rsi1, item.rsi2, item.time1, item.time2, now),
             )
     return {"ok": True, "count": len(payload.signals), "updated_at": now}
 
@@ -634,7 +641,7 @@ def chart_data(
         ).fetchall()]
         candles.reverse()
         signals = [dict(r) for r in conn.execute(
-            "SELECT symbol,timeframe,direction,divergence,signal_type,signal_time,price1,price2,rsi1,rsi2 "
+            "SELECT symbol,timeframe,direction,divergence,signal_type,signal_time,price1,price2,rsi1,rsi2,time1,time2 "
             "FROM today_signals WHERE symbol=? AND timeframe=? ORDER BY signal_time DESC LIMIT 200",
             (symbol, timeframe),
         ).fetchall()]
@@ -685,7 +692,7 @@ def dashboard_data():
         events = [dict(r) for r in conn.execute(
             "SELECT event_type,message,created_at FROM events ORDER BY id DESC LIMIT 30").fetchall()]
         today_signals = [dict(r) for r in conn.execute(
-            "SELECT symbol,timeframe,direction,divergence,signal_type,signal_time,price1,price2,rsi1,rsi2 "
+            "SELECT symbol,timeframe,direction,divergence,signal_type,signal_time,price1,price2,rsi1,rsi2,time1,time2 "
             "FROM today_signals ORDER BY signal_time DESC LIMIT 200").fetchall()]
     return {"mode": "DEMO_ONLY", "signals": signals, "today_signals": today_signals,
             "paper_positions": paper_positions, "paper_history": paper_history,
