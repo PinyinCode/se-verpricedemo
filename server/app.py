@@ -70,6 +70,13 @@ def init_db() -> None:
           component TEXT PRIMARY KEY, symbols_json TEXT NOT NULL,
           updated_at TEXT NOT NULL
         )""")
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS today_signals (
+          signal_key TEXT PRIMARY KEY, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
+          direction TEXT NOT NULL, divergence TEXT NOT NULL, signal_type TEXT NOT NULL,
+          signal_time INTEGER NOT NULL, price1 REAL NOT NULL, price2 REAL NOT NULL,
+          rsi1 REAL NOT NULL, rsi2 REAL NOT NULL, updated_at TEXT NOT NULL
+        )""")
 
 
 @app.on_event("startup")
@@ -125,6 +132,27 @@ class ScanUpdateIn(BaseModel):
                 cleaned.append(item)
         return cleaned
 
+
+class TodaySignalItem(BaseModel):
+    symbol: str = Field(min_length=3, max_length=32)
+    timeframe: Literal["M1", "M5", "M15", "M30", "H1", "H4", "D1"]
+    direction: Literal["BUY", "SELL"]
+    divergence: Literal["Reg", "Hid", "REG", "HID", "Regular", "Hidden"]
+    signal_type: Literal["RT", "HIST"]
+    signal_time: int = Field(gt=0)
+    price1: float = Field(ge=0)
+    price2: float = Field(ge=0)
+    rsi1: float = Field(ge=0, le=100)
+    rsi2: float = Field(ge=0, le=100)
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_today_symbol(cls, value: str) -> str:
+        return value.strip().upper()
+
+
+class TodaySignalsIn(BaseModel):
+    signals: list[TodaySignalItem] = Field(default_factory=list, max_length=200)
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
@@ -240,6 +268,23 @@ def update_scans(payload: ScanUpdateIn):
             "updated_at": now}
 
 
+@app.post("/api/today-signals", dependencies=[Depends(require_key)])
+def update_today_signals(payload: TodaySignalsIn):
+    now = utc_now()
+    with db() as conn:
+        conn.execute("DELETE FROM today_signals")
+        for item in payload.signals:
+            key = "|".join((item.symbol, item.timeframe, item.direction,
+                            item.divergence, item.signal_type, str(item.signal_time)))
+            conn.execute(
+                "INSERT INTO today_signals(signal_key,symbol,timeframe,direction,divergence,signal_type,"
+                "signal_time,price1,price2,rsi1,rsi2,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+                (key, item.symbol, item.timeframe, item.direction, item.divergence,
+                 item.signal_type, item.signal_time, item.price1, item.price2,
+                 item.rsi1, item.rsi2, now),
+            )
+    return {"ok": True, "count": len(payload.signals), "updated_at": now}
+
 @app.get("/api/dashboard")
 def dashboard_data():
     with db() as conn:
@@ -275,5 +320,9 @@ def dashboard_data():
                 item["symbols"] = []
         events = [dict(r) for r in conn.execute(
             "SELECT event_type,message,created_at FROM events ORDER BY id DESC LIMIT 30").fetchall()]
-    return {"mode": "DEMO_ONLY", "signals": signals, "heartbeats": heartbeats,
-            "scan_status": scans, "counts": counts, "events": events, "server_time": utc_now()}
+        today_signals = [dict(r) for r in conn.execute(
+            "SELECT symbol,timeframe,direction,divergence,signal_type,signal_time,price1,price2,rsi1,rsi2 "
+            "FROM today_signals ORDER BY signal_time DESC LIMIT 200").fetchall()]
+    return {"mode": "DEMO_ONLY", "signals": signals, "today_signals": today_signals,
+            "heartbeats": heartbeats, "scan_status": scans, "counts": counts,
+            "events": events, "server_time": utc_now()}
