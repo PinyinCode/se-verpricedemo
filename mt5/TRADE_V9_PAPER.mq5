@@ -14,8 +14,6 @@ input int HeartbeatSeconds = 15;
 // Chart requests supply their own cash risk and calculated lot.
 input double RewardRiskRatio = 2.0;
 input int MaxOpenPaperTrades = 3;
-input int MaxPerSymbol = 1;
-input int CooldownMinutes = 15;
 input int MaxSignalAgeSeconds = 300;
 
 struct PaperTrade
@@ -32,9 +30,8 @@ struct PaperTrade
    datetime opened;
 };
 PaperTrade trades[];
-string lastSource[];
-datetime lastTradeTime[];
 uint lastPollMs=0;
+uint lastPositionsSyncMs=0;
 uint lastHeartbeatMs=0;
 
 string JsonValue(string json,string key)
@@ -140,7 +137,7 @@ double NormalizeVolume(string symbol,double raw)
    return NormalizeDouble(v,8);
 }
 
-bool AddPaperTrade(string id,string symbol,string tf,string direction,double entry,double sl,double riskMoney,double requestedLot)
+bool AddPaperTrade(string id,string symbol,string tf,string direction,double entry,double sl,double tpRequested,double riskMoney,double requestedLot)
 {
    if(!SymbolSelect(symbol,true)) { Ack(id,"REJECTED","Symbol unavailable in Market Watch"); return false; }
    double bid=SymbolInfoDouble(symbol,SYMBOL_BID);
@@ -158,7 +155,9 @@ bool AddPaperTrade(string id,string symbol,string tf,string direction,double ent
    double actualRisk=(distance/tickSize)*tickValue*volume;
    if(actualRisk>riskMoney+MathMax(0.01,riskMoney*0.005))
    { Ack(id,"REJECTED","Calculated lot exceeds requested cash risk using MT5 contract data"); return false; }
-   double tp=(direction=="BUY") ? entry+distance*RewardRiskRatio : entry-distance*RewardRiskRatio;
+   double tp=tpRequested>0 ? tpRequested : ((direction=="BUY") ? entry+distance*RewardRiskRatio : entry-distance*RewardRiskRatio);
+   if((direction=="BUY" && tp<=entry) || (direction=="SELL" && tp>=entry))
+   { Ack(id,"REJECTED","Invalid TP geometry"); return false; }
 
    int n=ArraySize(trades); ArrayResize(trades,n+1);
    trades[n].id=id; trades[n].symbol=symbol; trades[n].timeframe=tf;
@@ -186,9 +185,13 @@ void ManagePaperTrades()
       if(trades[i].direction=="BUY") { stop=(bid<=trades[i].sl); target=(bid>=trades[i].tp); }
       else { stop=(ask>=trades[i].sl); target=(ask<=trades[i].tp); }
       if(!stop && !target) continue;
+      double realized=0;
+      ENUM_ORDER_TYPE orderType=(trades[i].direction=="BUY") ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+      double closePrice=(trades[i].direction=="BUY") ? bid : ask;
+      OrderCalcProfit(orderType,s,trades[i].volume,trades[i].entry,closePrice,realized);
       string outcome=target ? "PAPER_TP" : "PAPER_SL";
       Print("[PAPER CLOSE] ",outcome," ",s," signal=",trades[i].id,
-            " virtual result=",target ? "+" : "-",DoubleToString(trades[i].riskMoney*(target?RewardRiskRatio:1.0),2));
+            " volume=",DoubleToString(trades[i].volume,4)," realized P/L=",DoubleToString(realized,2));
       int last=ArraySize(trades)-1;
       for(int j=i;j<last;j++) trades[j]=trades[j+1];
       ArrayResize(trades,last);
@@ -208,6 +211,7 @@ void PollServer()
    double entry=StringToDouble(JsonValue(obj,"entry")), sl=StringToDouble(JsonValue(obj,"sl"));
    Print("[PAPER RECEIVE] signal=",id," ",symbol," ",tf," ",direction,
          " entry=",DoubleToString(entry,8)," SL=",DoubleToString(sl,8));
+   double tp=StringToDouble(JsonValue(obj,"tp"));
    double riskMoney=StringToDouble(JsonValue(obj,"risk_money"));
    double requestedLot=StringToDouble(JsonValue(obj,"requested_lot"));
    if(id=="" || symbol=="" || entry<=0 || sl<=0 || riskMoney<=0 || requestedLot<=0 ||
@@ -215,18 +219,36 @@ void PollServer()
    { Print("[PAPER REJECT] Malformed signal id=",id); if(id!="") Ack(id,"REJECTED","Malformed signal"); return; }
    if((direction=="BUY" && sl>=entry) || (direction=="SELL" && sl<=entry))
    { Print("[PAPER REJECT] Invalid entry/SL geometry signal=",id); Ack(id,"REJECTED","Invalid entry/SL geometry"); return; }
+   if(tp>0 && ((direction=="BUY" && tp<=entry) || (direction=="SELL" && tp>=entry)))
+   { Print("[PAPER REJECT] Invalid TP geometry signal=",id); Ack(id,"REJECTED","Invalid TP geometry"); return; }
    if(ArraySize(trades)>=MaxOpenPaperTrades)
    { Print("[PAPER REJECT] Max paper positions reached signal=",id," open=",ArraySize(trades)); Ack(id,"REJECTED","Paper max positions reached"); return; }
-   if(CountSymbol(symbol)>=MaxPerSymbol)
-   { Print("[PAPER REJECT] Per-symbol limit reached signal=",id," symbol=",symbol," open=",CountSymbol(symbol)); Ack(id,"REJECTED","Paper per-symbol limit reached"); return; }
-   for(int i=0;i<ArraySize(lastTradeTime);i++)
-      if(lastSource[i]==symbol && TimeCurrent()-lastTradeTime[i]<CooldownMinutes*60)
-      { Print("[PAPER REJECT] Cooldown active signal=",id," symbol=",symbol," remaining_sec=",CooldownMinutes*60-(int)(TimeCurrent()-lastTradeTime[i])); Ack(id,"REJECTED","Paper cooldown active"); return; }
-   if(!AddPaperTrade(id,symbol,tf,direction,entry,sl,riskMoney,requestedLot)) return;
-   int n=ArraySize(lastSource);
-   if(n==0) { ArrayResize(lastSource,1); ArrayResize(lastTradeTime,1); }
-   else { ArrayResize(lastSource,n+1); ArrayResize(lastTradeTime,n+1); }
-   lastSource[n]=symbol; lastTradeTime[n]=TimeCurrent();
+   if(!AddPaperTrade(id,symbol,tf,direction,entry,sl,tp,riskMoney,requestedLot)) return;
+}
+
+void SendPaperPositions()
+{
+   string body="{\"positions\":[";
+   for(int i=0;i<ArraySize(trades);i++)
+   {
+      string symbol=trades[i].symbol;
+      double bid=SymbolInfoDouble(symbol,SYMBOL_BID), ask=SymbolInfoDouble(symbol,SYMBOL_ASK);
+      double profit=0;
+      if(bid>0 && ask>0)
+      {
+         ENUM_ORDER_TYPE ot=(trades[i].direction=="BUY") ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+         double closePrice=(trades[i].direction=="BUY") ? bid : ask;
+         OrderCalcProfit(ot,symbol,trades[i].volume,trades[i].entry,closePrice,profit);
+      }
+      if(i>0) body+=",";
+      body+=StringFormat("{\"id\":\"%s\",\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\",\"entry\":%.10f,\"sl\":%.10f,\"tp\":%.10f,\"volume\":%.8f,\"risk\":%.2f,\"profit\":%.2f,\"opened_at\":%.0f}",
+         trades[i].id,symbol,trades[i].timeframe,trades[i].direction,trades[i].entry,
+         trades[i].sl,trades[i].tp,trades[i].volume,trades[i].riskMoney,profit,(double)trades[i].opened);
+   }
+   body+="]}";
+   string response; int status;
+   if(!Request("POST","/api/paper/positions",body,response,status))
+      Print("[PAPER V9] Position sync failed HTTP=",status," response=",response);
 }
 
 int OnInit()
@@ -251,5 +273,10 @@ void OnTimer()
    {
       lastPollMs=nowMs;
       PollServer();
+   }
+   if(lastPositionsSyncMs==0 || (uint)(nowMs-lastPositionsSyncMs)>=3000)
+   {
+      lastPositionsSyncMs=nowMs;
+      SendPaperPositions();
    }
 }
