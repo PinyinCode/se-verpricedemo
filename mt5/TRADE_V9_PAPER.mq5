@@ -103,7 +103,7 @@ bool Request(string method,string path,string body,string &response,int &status)
 
 void SendPaperHeartbeat()
 {
-   string body=StringFormat("{\\\"component\\\":\\\"TRADE-V9-PAPER\\\",\\\"status\\\":\\\"online\\\",\\\"details\\\":\\\"Paper consumer active; virtual_positions=%d; no broker orders\\\"}",ArraySize(trades));
+   string body=StringFormat("{\"component\":\"TRADE-V9-PAPER\",\"status\":\"online\",\"details\":\"Paper consumer active; virtual_positions=%d; no broker orders\"}",ArraySize(trades));
    string response; int status;
    if(Request("POST","/api/heartbeat",body,response,status))
       lastHeartbeatMs=GetTickCount();
