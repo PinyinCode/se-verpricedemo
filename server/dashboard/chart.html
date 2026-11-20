@@ -458,6 +458,40 @@ body.trade-fullscreen .chart-stage #priceChart{min-height:0!important}
 body.trade-fullscreen .chart-stage #rsiChart{min-height:0!important;max-height:none!important}
 
 
+
+/* Final compact controls + independently resizable RSI and lot panel */
+body.trade-fullscreen .chart-overlay-top{gap:3px}
+body.trade-fullscreen .chart-overlay-top .chart-head{display:flex!important;flex-wrap:nowrap!important;align-items:center!important;justify-content:space-between!important;gap:5px!important}
+body.trade-fullscreen .chart-overlay-top .chart-pickers{display:flex!important;flex:0 1 auto!important;flex-wrap:nowrap!important;min-width:0!important;width:auto!important;gap:4px!important}
+body.trade-fullscreen .chart-overlay-top .chart-pickers strong{white-space:nowrap!important;font-size:11px!important;margin-right:2px!important}
+body.trade-fullscreen .chart-overlay-top .chart-pickers select{min-width:0!important;max-width:88px!important;padding:4px 5px!important}
+body.trade-fullscreen .chart-overlay-top .chart-actions{display:flex!important;flex:0 0 auto!important;flex-wrap:nowrap!important;width:auto!important;margin:0 0 0 auto!important;justify-content:flex-end!important;gap:3px!important}
+body.trade-fullscreen .chart-overlay-top .chart-actions #feedState{display:none!important}
+body.trade-fullscreen .chart-overlay-top .chart-actions button{min-width:30px!important;padding:4px 6px!important;white-space:nowrap!important}
+body.trade-fullscreen .chart-overlay-top .chart-actions #fullscreenToggle{width:30px!important;min-width:30px!important;font-size:18px!important;line-height:1!important;padding:3px!important}
+body.trade-fullscreen .chart-overlay-top .chart-tools{display:flex!important;flex-wrap:nowrap!important;justify-content:space-between!important;align-items:center!important;gap:5px!important;width:100%!important}
+body.trade-fullscreen .chart-overlay-top .quick-tf{flex-wrap:nowrap!important;gap:1px!important}
+body.trade-fullscreen .chart-overlay-top .quick-tf button,
+body.trade-fullscreen .chart-overlay-top .chart-style button{padding:3px 6px!important;min-width:27px!important;font-size:10px!important}
+body.trade-fullscreen .chart-overlay-top .ohlc-strip{display:none!important}
+#lotResizeHandle{height:9px;flex:0 0 9px;position:relative;z-index:22;cursor:row-resize;touch-action:none;background:#0d192a;border-top:1px solid #34445c;border-bottom:1px solid #34445c}
+#lotResizeHandle:after{content:'';position:absolute;width:42px;height:3px;border-radius:3px;background:#71839c;left:50%;top:2px;transform:translateX(-50%)}
+#lotResizeHandle:active:after{background:#27c995}
+body.trade-fullscreen .chart-stage{min-height:0!important}
+body.trade-fullscreen .chart-stage #priceChart{min-height:80px!important;flex:1 1 0!important}
+body.trade-fullscreen .chart-stage #rsiChart{min-height:0!important;max-height:none!important;flex:0 0 auto!important}
+body.trade-fullscreen #rsiResizeHandle{flex:0 0 9px!important;height:9px!important}
+body.trade-fullscreen .chart-overlay-bottom .trade-footer{min-height:56px!important;max-height:45dvh;overflow:auto;flex:0 0 auto!important}
+@media(max-width:600px){
+ body.trade-fullscreen .chart-overlay-top .chart-pickers strong{display:none!important}
+ body.trade-fullscreen .chart-overlay-top .chart-pickers select{max-width:78px!important}
+ body.trade-fullscreen .chart-overlay-top .chart-actions button{min-width:27px!important;padding:4px!important;font-size:10px!important}
+ body.trade-fullscreen .chart-overlay-top .chart-actions #fullscreenToggle{min-width:29px!important;width:29px!important;font-size:18px!important}
+ body.trade-fullscreen .chart-overlay-top .quick-tf button,
+ body.trade-fullscreen .chart-overlay-top .chart-style button{padding:3px 5px!important;min-width:24px!important;font-size:9px!important}
+ body.trade-fullscreen .chart-overlay-bottom .trade-footer{min-height:56px!important}
+}
+
 </style>
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.2/dist/lightweight-charts.standalone.production.js"></script>
 </head>
@@ -473,7 +507,7 @@ body.trade-fullscreen .chart-stage #rsiChart{min-height:0!important;max-height:n
 <div id="rsiChart"></div>
 <div class="chart-overlay-top"><div class="panel-head chart-head">
 <div class="chart-pickers"><strong id="chartTitle">EURUSD · M15</strong><select id="symbol"><option>EURUSD</option><option>GBPUSD</option><option>USDJPY</option><option>XAUUSD</option><option>BTCUSD</option><option>USDCAD</option><option>NZDUSD</option><option>USDCHF</option></select><select id="tf"><option>M15</option><option>H1</option><option>H4</option><option>D1</option><option>M5</option><option>M30</option><option>M1</option></select></div>
-<div class="chart-actions"><span class="small" id="feedState">Đang kết nối dữ liệu...</span><button id="settingsButton" type="button" title="Cài đặt chế độ, Risk và Entry">⚙ Cài đặt</button><button id="positionsButton" type="button" title="Xem các vị thế đang mở">Vị thế <span id="positionCount">0</span></button><button id="statsButton" type="button" title="Thống kê tín hiệu và lịch sử PAPER">Thống kê</button><button id="fitChart" title="Vừa khung biểu đồ">Fit</button><button id="refresh" title="Làm mới dữ liệu">↻</button><button id="fullscreenToggle" type="button">Thoát toàn màn hình</button></div>
+<div class="chart-actions"><span class="small" id="feedState">Đang kết nối dữ liệu...</span><button id="settingsButton" type="button" title="Cài đặt chế độ, Risk và Entry">⚙ Cài đặt</button><button id="positionsButton" type="button" title="Xem các vị thế đang mở">Vị thế <span id="positionCount">0</span></button><button id="statsButton" type="button" title="Thống kê tín hiệu và lịch sử PAPER">Thống kê</button><button id="fitChart" title="Vừa khung biểu đồ">Fit</button><button id="refresh" title="Làm mới dữ liệu">↻</button><button id="fullscreenToggle" type="button" aria-label="Toàn màn hình" title="Bật/tắt toàn màn hình">⛶</button></div>
 </div>
 <div class="chart-tools"><div class="quick-tf" aria-label="Khung thời gian"><button data-tf="M1">1m</button><button data-tf="M5">5m</button><button data-tf="M15" class="selected">15m</button><button data-tf="M30">30m</button><button data-tf="H1">1H</button><button data-tf="H4">4H</button><button data-tf="D1">1D</button></div><div class="chart-style"><button id="candleMode" class="selected">Nến</button><button id="lineMode">Đường</button></div></div><div class="ohlc-strip" id="ohlcLegend"><b>O —</b><span>H —</span><span>L —</span><span>C —</span><span class="ohlc-change">—</span></div>
 </div>
@@ -484,7 +518,7 @@ body.trade-fullscreen .chart-stage #rsiChart{min-height:0!important;max-height:n
 </div>
 <div class="trade-options"><div class="level-toggles"><label><input id="showEntry" type="checkbox"> Entry line</label><label><input id="showSL" type="checkbox" checked> SL line</label><label><input id="showTP" type="checkbox" checked> TP line</label></div><button id="calcLot">Cập nhật</button></div>
 </div>
-<div class="trade-footer"><div class="lot-block"><span class="small">KHỐI LƯỢNG TÍNH TOÁN</span><div id="lotResult" class="small">Đang chờ dữ liệu MT5 để tính lot.</div><div id="contractMeta" class="small">Đang chờ thông số hợp đồng từ MT5...</div></div>
+<div id="lotResizeHandle" role="separator" aria-label="Kéo để thay đổi chiều cao ô khối lượng" title="Kéo để thay đổi chiều cao ô khối lượng"></div><div class="trade-footer"><div class="lot-block"><span class="small">KHỐI LƯỢNG TÍNH TOÁN</span><div id="lotResult" class="small">Đang chờ dữ liệu MT5 để tính lot.</div><div id="contractMeta" class="small">Đang chờ thông số hợp đồng từ MT5...</div></div>
 <div class="trade-submit"><button id="sendBuy" class="active">BUY</button><button id="sendSell">SELL</button></div>
 <div id="requestState" class="small request-state">Chỉ gửi yêu cầu vào hàng đợi PAPER · không đặt lệnh broker.</div></div>
 </div>
@@ -703,9 +737,9 @@ $('fitChart').addEventListener('click',()=>{
 });
 $('tf').addEventListener('change',()=>document.querySelectorAll('[data-tf]').forEach(x=>x.classList.toggle('selected',x.dataset.tf===$('tf').value)));
 $('calcLot').addEventListener('click',calcLot);['showEntry','showSL','showTP'].forEach(id=>$(id).addEventListener('change',setLevelLines));$('orderMode').addEventListener('change',()=>{const pending=$('orderMode').value==='PENDING';$('entryWrap').style.opacity=pending?'1':'.65';$('entryPrice').readOnly=!pending;$('showEntry').disabled=!pending;$('showEntry').checked=pending;if(!pending&&latestMarketPrice>0)$('entryPrice').value=latestMarketPrice.toFixed(mt5Digits);setLevelLines();calcLot()});$('entryPrice').readOnly=true;$('showEntry').checked=false;$('showEntry').disabled=true;['entryPrice','slPrice','tpPrice','riskMoney'].forEach(id=>$(id).addEventListener('input',calcLot));new ResizeObserver(()=>{setLevelLines();const w=$('priceChart').clientWidth;priceChart.applyOptions({width:w});rsiChart.applyOptions({width:w})}).observe($('priceChart'));
-async function toggleTradeFullscreen(){const on=!document.body.classList.contains('trade-fullscreen');document.body.classList.toggle('trade-fullscreen',on);$('fullscreenToggle').textContent=on?'Thoát toàn màn hình':'Toàn màn hình trade';if(on&&document.fullscreenEnabled&&!document.fullscreenElement){try{await document.documentElement.requestFullscreen()}catch(e){}}else if(!on&&document.fullscreenElement){try{await document.exitFullscreen()}catch(e){}}requestAnimationFrame(()=>{const w=$('priceChart').clientWidth;priceChart.applyOptions({width:w,height:$('priceChart').clientHeight});rsiChart.applyOptions({width:$('rsiChart').clientWidth,height:$('rsiChart').clientHeight});setLevelLines()})}
+async function toggleTradeFullscreen(){const on=!document.body.classList.contains('trade-fullscreen');document.body.classList.toggle('trade-fullscreen',on);$('fullscreenToggle').textContent='⛶';if(on&&document.fullscreenEnabled&&!document.fullscreenElement){try{await document.documentElement.requestFullscreen()}catch(e){}}else if(!on&&document.fullscreenElement){try{await document.exitFullscreen()}catch(e){}}requestAnimationFrame(()=>{const w=$('priceChart').clientWidth;priceChart.applyOptions({width:w,height:$('priceChart').clientHeight});rsiChart.applyOptions({width:$('rsiChart').clientWidth,height:$('rsiChart').clientHeight});setLevelLines()})}
 $('fullscreenToggle').addEventListener('click',toggleTradeFullscreen);
-document.addEventListener('fullscreenchange',()=>{if(!document.fullscreenElement&&document.body.classList.contains('trade-fullscreen')){document.body.classList.remove('trade-fullscreen');$('fullscreenToggle').textContent='Toàn màn hình';requestAnimationFrame(()=>{priceChart.applyOptions({width:$('priceChart').clientWidth,height:$('priceChart').clientHeight});rsiChart.applyOptions({width:$('rsiChart').clientWidth,height:$('rsiChart').clientHeight});setLevelLines()})}});document.addEventListener('keydown',e=>{
+document.addEventListener('fullscreenchange',()=>{if(!document.fullscreenElement&&document.body.classList.contains('trade-fullscreen')){document.body.classList.remove('trade-fullscreen');$('fullscreenToggle').textContent='⛶';requestAnimationFrame(()=>{priceChart.applyOptions({width:$('priceChart').clientWidth,height:$('priceChart').clientHeight});rsiChart.applyOptions({width:$('rsiChart').clientWidth,height:$('rsiChart').clientHeight});setLevelLines()})}});document.addEventListener('keydown',e=>{
  const tag=(e.target&&e.target.tagName||'').toLowerCase();
  if(['input','textarea','select'].includes(tag)||e.target.isContentEditable)return;
  if(e.key==='Escape'&&document.body.classList.contains('trade-fullscreen')){toggleTradeFullscreen();return}
@@ -733,6 +767,38 @@ rsiResizeHandle.addEventListener('pointerdown',e=>{e.preventDefault();rsiDragSta
 rsiResizeHandle.addEventListener('pointermove',e=>{if(rsiResizeHandle.dataset.dragging!=='1')return;const stage=$('.chart-stage');const max=Math.max(0,stage.clientHeight-rsiResizeHandle.offsetHeight);const next=Math.max(0,Math.min(max,rsiDragStartHeight+rsiDragStartY-e.clientY));$('rsiChart').style.setProperty('height',next+'px','important');$('rsiChart').style.setProperty('flex-basis',next+'px','important');rsiChart.applyOptions({width:$('rsiChart').clientWidth,height:next});try{localStorage.setItem('chartRsiHeight',String(Math.round(next)))}catch(_){}});
 const stopRsiResize=()=>{rsiResizeHandle.dataset.dragging='0';requestAnimationFrame(()=>{rsiChart.applyOptions({width:$('rsiChart').clientWidth,height:$('rsiChart').clientHeight});priceChart.applyOptions({width:$('priceChart').clientWidth,height:$('priceChart').clientHeight})})};
 rsiResizeHandle.addEventListener('pointerup',stopRsiResize);rsiResizeHandle.addEventListener('pointercancel',stopRsiResize);
+
+/* Drag-resize the lot information area independently from RSI. */
+const lotResizeHandle=$('lotResizeHandle');
+let lotDragStartY=0,lotDragStartHeight=0;
+try{
+ const savedLot=Number(localStorage.getItem('chartLotPanelHeight'));
+ if(Number.isFinite(savedLot)&&savedLot>=56){
+  const maxLot=Math.floor($('.chart-workspace').clientHeight*.45);
+  const h=Math.min(savedLot,maxLot||savedLot);
+  $('lotResizeHandle').nextElementSibling.style.setProperty('height',h+'px','important');
+  $('lotResizeHandle').nextElementSibling.style.setProperty('flex-basis',h+'px','important');
+ }
+}catch(_){}
+lotResizeHandle.addEventListener('pointerdown',e=>{
+ e.preventDefault();lotDragStartY=e.clientY;
+ lotDragStartHeight=lotResizeHandle.nextElementSibling.getBoundingClientRect().height;
+ lotResizeHandle.setPointerCapture(e.pointerId);lotResizeHandle.dataset.dragging='1';
+});
+lotResizeHandle.addEventListener('pointermove',e=>{
+ if(lotResizeHandle.dataset.dragging!=='1')return;
+ const workspace=$('.chart-workspace');
+ const max=Math.max(56,Math.floor(workspace.clientHeight*.45));
+ const next=Math.max(56,Math.min(max,lotDragStartHeight+lotDragStartY-e.clientY));
+ const footer=lotResizeHandle.nextElementSibling;
+ footer.style.setProperty('height',next+'px','important');
+ footer.style.setProperty('flex-basis',next+'px','important');
+ try{localStorage.setItem('chartLotPanelHeight',String(Math.round(next)))}catch(_){}
+});
+const stopLotResize=()=>{lotResizeHandle.dataset.dragging='0';};
+lotResizeHandle.addEventListener('pointerup',stopLotResize);
+lotResizeHandle.addEventListener('pointercancel',stopLotResize);
+
 load();setInterval(load,5000);refreshChartPositions();setInterval(refreshChartPositions,3000);
 </script>
 </body></html>
