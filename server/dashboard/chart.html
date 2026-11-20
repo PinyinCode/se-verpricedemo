@@ -259,6 +259,21 @@ body.trade-fullscreen .chart-workspace{min-height:0}
 .positions-dialog td,.positions-dialog th{padding:9px 8px;font-size:12px}
 #positionsButton{white-space:nowrap}
 #positionCount{display:inline-grid;place-items:center;min-width:18px;height:18px;margin-left:3px;padding:0 4px;border-radius:10px;background:#263d59;color:#e8eef7;font-size:10px}
+
+.stats-dialog{width:min(1120px,calc(100vw - 20px));max-height:88dvh}
+.stats-body{padding:12px 16px 16px;overflow:auto;max-height:calc(88dvh - 58px)}
+.stats-kpis{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:9px;margin-bottom:14px}
+.stats-kpi{min-width:0;padding:11px 12px;border:1px solid #2b3e58;border-radius:10px;background:#142239}
+.stats-kpi span{display:block;color:#9eafc5;font-size:11px}
+.stats-kpi strong{display:block;margin-top:5px;font-size:20px;font-variant-numeric:tabular-nums}
+.stats-section{margin-top:14px;border:1px solid #293a52;border-radius:10px;overflow:hidden}
+.stats-section-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 12px;background:#142239;border-bottom:1px solid #293a52}
+.stats-section-head strong{font-size:11px;letter-spacing:.35px}
+.stats-section .positions-table-wrap{max-height:260px;margin:0}
+.stats-section table{min-width:720px}
+.stats-section td,.stats-section th{font-size:11px;padding:8px}
+.stats-updated{padding-top:10px;text-align:right}
+@media(max-width:650px){.stats-body{padding:10px}.stats-kpis{grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}.stats-kpi{padding:9px}.stats-kpi strong{font-size:18px}.stats-section .positions-table-wrap{max-height:230px}}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.2/dist/lightweight-charts.standalone.production.js"></script>
 </head>
@@ -270,7 +285,7 @@ body.trade-fullscreen .chart-workspace{min-height:0}
 <section class="panel chart-workspace">
 <div class="panel-head chart-head">
 <div class="chart-pickers"><strong id="chartTitle">EURUSD · M15</strong><select id="symbol"><option>EURUSD</option><option>GBPUSD</option><option>USDJPY</option><option>XAUUSD</option><option>BTCUSD</option><option>USDCAD</option><option>NZDUSD</option><option>USDCHF</option></select><select id="tf"><option>M15</option><option>H1</option><option>H4</option><option>D1</option><option>M5</option><option>M30</option><option>M1</option></select></div>
-<div class="chart-actions"><span class="small" id="feedState">Đang kết nối dữ liệu...</span><button id="positionsButton" type="button" title="Xem các vị thế đang mở">Vị thế <span id="positionCount">0</span></button><button id="fitChart" title="Vừa khung biểu đồ">Fit</button><button id="refresh" title="Làm mới dữ liệu">↻</button><button id="fullscreenToggle" type="button">Thoát toàn màn hình</button></div>
+<div class="chart-actions"><span class="small" id="feedState">Đang kết nối dữ liệu...</span><button id="positionsButton" type="button" title="Xem các vị thế đang mở">Vị thế <span id="positionCount">0</span></button><button id="statsButton" type="button" title="Thống kê tín hiệu và lịch sử PAPER">Thống kê</button><button id="fitChart" title="Vừa khung biểu đồ">Fit</button><button id="refresh" title="Làm mới dữ liệu">↻</button><button id="fullscreenToggle" type="button">Thoát toàn màn hình</button></div>
 </div>
 <div class="chart-tools"><div class="quick-tf" aria-label="Khung thời gian"><button data-tf="M1">1m</button><button data-tf="M5">5m</button><button data-tf="M15" class="selected">15m</button><button data-tf="M30">30m</button><button data-tf="H1">1H</button><button data-tf="H4">4H</button><button data-tf="D1">1D</button></div><div class="chart-style"><button id="candleMode" class="selected">Nến</button><button id="lineMode">Đường</button></div></div><div class="ohlc-strip" id="ohlcLegend"><b>O —</b><span>H —</span><span>L —</span><span>C —</span><span class="ohlc-change">—</span></div>
 <div class="trade-strip">
@@ -303,6 +318,21 @@ body.trade-fullscreen .chart-workspace{min-height:0}
 <dialog id="positionsDialog" class="positions-dialog">
  <div class="positions-dialog-head"><div><strong>VỊ THẾ ĐANG MỞ</strong><div class="small">Đồng bộ từ MT5 / Trade V9 · chỉ xem</div></div><button type="button" id="closePositionsDialog" aria-label="Đóng">✕</button></div>
  <div class="positions-dialog-body"><div id="positionsUpdated" class="small">Đang đồng bộ...</div><div class="positions-table-wrap"><table><thead><tr><th>Mã</th><th>TF</th><th>Hướng</th><th>Entry</th><th>SL</th><th>TP</th><th>Lot</th><th>P/L</th></tr></thead><tbody id="chartPositions"><tr><td colspan="8" class="empty">Đang tải vị thế...</td></tr></tbody></table></div></div>
+</dialog>
+
+<dialog id="statsDialog" class="positions-dialog stats-dialog">
+ <div class="positions-dialog-head"><div><strong>THỐNG KÊ & LỊCH SỬ</strong><div class="small">Tín hiệu hôm nay · Giao dịch PAPER đã đóng</div></div><button type="button" id="closeStatsDialog" aria-label="Đóng">✕</button></div>
+ <div class="stats-body">
+  <div class="stats-kpis">
+   <div class="stats-kpi"><span>Tín hiệu hôm nay</span><strong id="statsSignalCount">—</strong></div>
+   <div class="stats-kpi"><span>Giao dịch đóng hôm nay</span><strong id="statsClosedCount">—</strong></div>
+   <div class="stats-kpi"><span>Thắng / Thua</span><strong id="statsWinLoss">—</strong></div>
+   <div class="stats-kpi"><span>P/L hôm nay</span><strong id="statsTodayPL">—</strong></div>
+  </div>
+  <section class="stats-section"><div class="stats-section-head"><strong>TÍN HIỆU HÔM NAY</strong><span id="statsSignalMeta" class="small">—</span></div><div class="positions-table-wrap"><table><thead><tr><th>Thời gian</th><th>Mã</th><th>TF</th><th>Hướng</th><th>Phân kỳ</th><th>Loại</th><th>Giá</th></tr></thead><tbody id="statsTodaySignals"><tr><td colspan="7" class="empty">Đang tải...</td></tr></tbody></table></div></section>
+  <section class="stats-section"><div class="stats-section-head"><strong>LỊCH SỬ GIAO DỊCH PAPER</strong><span id="statsHistoryMeta" class="small">—</span></div><div class="positions-table-wrap"><table><thead><tr><th>Đóng lúc</th><th>Mã</th><th>Hướng</th><th>Lot</th><th>Entry</th><th>SL</th><th>TP</th><th>Kết quả</th><th>P/L</th></tr></thead><tbody id="statsPaperHistory"><tr><td colspan="9" class="empty">Đang tải...</td></tr></tbody></table></div></section>
+  <div id="statsUpdated" class="small stats-updated">Đang đồng bộ...</div>
+ </div>
 </dialog>
 <script>
 const $=id=>document.getElementById(id);
@@ -378,6 +408,33 @@ async function refreshChartPositions(){
 $('positionsButton').addEventListener('click',()=>{refreshChartPositions();$('positionsDialog').showModal()});
 $('closePositionsDialog').addEventListener('click',()=>$('positionsDialog').close());
 $('positionsDialog').addEventListener('click',e=>{if(e.target===$('positionsDialog'))$('positionsDialog').close()});
+
+
+function localDayKey(seconds){return new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Ho_Chi_Minh',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(Number(seconds)*1000))}
+function localDateTime(seconds){return new Date(Number(seconds)*1000).toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',hour12:false})}
+function renderStats(data){
+ const todaySignals=Array.isArray(data.today_signals)?data.today_signals:[];
+ const history=Array.isArray(data.paper_history)?data.paper_history:[];
+ const todayKey=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Ho_Chi_Minh',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+ const closedToday=history.filter(p=>localDayKey(p.closed_at)===todayKey);
+ const wins=closedToday.filter(p=>Number(p.profit)>0).length;
+ const losses=closedToday.filter(p=>Number(p.profit)<0).length;
+ const net=closedToday.reduce((sum,p)=>sum+(Number(p.profit)||0),0);
+ $('statsSignalCount').textContent=String(todaySignals.length);
+ $('statsClosedCount').textContent=String(closedToday.length);
+ $('statsWinLoss').textContent=wins+' / '+losses;
+ $('statsTodayPL').textContent=(net>0?'+':'')+net.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+ $('statsTodayPL').style.color=net>=0?'#27c995':'#f06b7e';
+ $('statsSignalMeta').textContent=todaySignals.length+' tín hiệu nhận được';
+ $('statsTodaySignals').innerHTML=todaySignals.length?todaySignals.map(x=>'<tr><td>'+esc(localDateTime(x.signal_time))+'</td><td>'+esc(x.symbol)+'</td><td>'+esc(x.timeframe)+'</td><td class="'+(String(x.direction).toUpperCase()==='BUY'?'buy':'sell')+'">'+esc(x.direction)+'</td><td>'+esc(x.divergence)+'</td><td>'+esc(x.signal_type)+'</td><td>'+fmt(x.price2)+'</td></tr>').join(''):'<tr><td colspan="7" class="empty">Hôm nay chưa có tín hiệu</td></tr>';
+ $('statsHistoryMeta').textContent=history.length+' giao dịch gần nhất · thống kê hôm nay tính theo ngày Việt Nam';
+ $('statsPaperHistory').innerHTML=history.length?history.map(p=>'<tr><td>'+esc(localDateTime(p.closed_at))+'</td><td>'+esc(p.symbol)+'</td><td class="'+(String(p.direction).toUpperCase()==='BUY'?'buy':'sell')+'">'+esc(p.direction)+'</td><td>'+fmt(p.volume)+'</td><td>'+fmt(p.entry)+'</td><td>'+(Number(p.sl)>0?fmt(p.sl):'—')+'</td><td>'+(Number(p.tp)>0?fmt(p.tp):'—')+'</td><td>'+esc(p.outcome)+'</td><td style="font-weight:700;color:'+(Number(p.profit)>=0?'#27c995':'#f06b7e')+'">'+(Number(p.profit)>0?'+':'')+fmt(p.profit)+'</td></tr>').join(''):'<tr><td colspan="9" class="empty">Chưa có giao dịch PAPER đã đóng</td></tr>';
+ $('statsUpdated').textContent='Cập nhật '+new Date().toLocaleTimeString('vi-VN');
+}
+async function refreshStats(){try{const r=await fetch('/api/dashboard',{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);renderStats(await r.json())}catch(e){$('statsUpdated').textContent='Không thể tải thống kê: '+e.message}}
+$('statsButton').addEventListener('click',()=>{$('statsDialog').showModal();refreshStats()});
+$('closeStatsDialog').addEventListener('click',()=>$('statsDialog').close());
+$('statsDialog').addEventListener('click',e=>{if(e.target===$('statsDialog'))$('statsDialog').close()});
 
 function setLevelLines(){
  for(const key of ['entry','sl','tp']){
