@@ -104,6 +104,48 @@ body.trade-fullscreen .signal-panel{display:none}
  body.trade-fullscreen .chart-workspace .statusline{display:none}
 }
 
+
+/* Visual polish: compact, consistent chart workspace */
+:root{--bg:#080f1b;--panel:#101b2c;--line:#26364c;--muted:#91a2b8;--text:#e8eef7;--green:#27c995;--red:#f06b7e}
+body{background:radial-gradient(ellipse at 50% -20%,#172944 0%,#080f1b 58%);letter-spacing:.05px}
+header{background:rgba(10,19,33,.94);backdrop-filter:blur(12px)}
+main{max-width:1680px;padding:12px}
+.layout{gap:10px;grid-template-columns:minmax(0,1fr) 270px}
+.panel{border-color:#2a3b53;border-radius:12px;box-shadow:0 8px 28px rgba(0,0,0,.14)}
+.chart-head{background:linear-gradient(180deg,#142239,#101b2c);min-height:50px}
+.chart-pickers strong{letter-spacing:.2px}
+select,button,.trade-fields input{transition:border-color .15s,background .15s,box-shadow .15s}
+select:focus,button:focus-visible,.trade-fields input:focus{outline:none;border-color:#4b9be8;box-shadow:0 0 0 2px rgba(75,155,232,.16)}
+button{background:#192941;border-color:#354963}
+button:hover{background:#213651;border-color:#4b6585}
+button.active{background:rgba(39,201,149,.11);border-color:#27c995;color:#70e4bd}
+.trade-strip{background:#0d192a;padding:9px 11px}
+.trade-fields label{color:#aab9cc;font-size:10px;letter-spacing:.35px;text-transform:uppercase}
+.trade-fields input,.trade-fields select{background:#111f33;border-color:#31445f;border-radius:7px}
+.trade-options{margin-top:8px}
+.trade-options .level-toggles label{color:#aebdd0}
+.trade-footer{background:linear-gradient(180deg,#101e31,#0d1929);border-top-color:#2a3b53;padding:9px 11px}
+.trade-submit button{min-width:112px;border-radius:8px}
+#sendBuy{background:rgba(39,201,149,.12);border-color:#217c62;color:#6de3b8}
+#sendSell{background:rgba(240,107,126,.1);border-color:#8c4050;color:#ff9aaa}
+#requestState{max-width:260px}
+.signal-panel{background:#101b2c}
+.signal-panel .panel-head{background:#142239}
+.side{background:linear-gradient(180deg,#111e31,#0e1929)}
+.drag-line span{box-shadow:0 2px 8px rgba(0,0,0,.3);border:1px solid #3a4e68}
+.chart-workspace #priceChart{background:#101b2c}
+.statusline{background:#0d1929;color:#8195ad}
+@media(max-width:720px){
+ main{padding:6px}
+ .layout{gap:7px}
+ .panel{border-radius:9px}
+ .chart-workspace .trade-strip{padding:7px}
+ .trade-fields label{font-size:9px}
+ .trade-fields input,.trade-fields select{border-radius:6px}
+ .trade-footer{padding:7px;gap:6px}
+ .trade-submit button{min-width:76px;font-size:11px}
+ #requestState{max-width:none}
+}
 </style>
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.2/dist/lightweight-charts.standalone.production.js"></script>
 </head>
