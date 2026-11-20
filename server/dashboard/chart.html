@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Forex AI · Chart</title>
+<style>
+:root{color-scheme:dark;--bg:#0b1220;--panel:#111c2e;--line:#26364d;--muted:#91a2b8;--text:#e7edf6;--green:#22c58b;--red:#f06478}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:13px/1.5 system-ui,Arial,sans-serif}
+header{height:58px;display:flex;align-items:center;justify-content:space-between;padding:0 18px;border-bottom:1px solid var(--line);background:#0e1828;gap:12px;flex-wrap:wrap}
+.brand{font-weight:750;font-size:16px}.muted{color:var(--muted)}.tag{font-size:11px;border:1px solid #166548;color:#45d6a1;border-radius:20px;padding:3px 9px}
+main{padding:14px;max-width:1600px;margin:auto}.toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px}
+select,button{background:#17253a;color:var(--text);border:1px solid #34445c;border-radius:7px;padding:8px 10px;font:inherit}
+button{cursor:pointer}button.active{border-color:#36bd91;color:#62dfb3}
+.layout{display:grid;grid-template-columns:minmax(0,1fr) 300px;gap:12px}.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden;min-width:0}
+.panel-head{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-bottom:1px solid var(--line);gap:8px;flex-wrap:wrap}
+#priceChart{height:490px;width:100%}#rsiChart{height:150px;width:100%;border-top:1px solid var(--line)}
+.side{padding:12px}.side h3{font-size:13px;margin:0 0 10px}.signal{padding:10px 0;border-bottom:1px solid var(--line)}.signal:last-child{border:0}
+.buy{color:var(--green)}.sell{color:var(--red)}.small{font-size:11px;color:var(--muted)}.empty{padding:24px;text-align:center;color:var(--muted)}
+table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:8px;border-bottom:1px solid var(--line);font-size:11px}th{color:var(--muted);font-weight:600}
+#signalTable{max-height:240px;overflow:auto}.statusline{padding:9px 12px;color:var(--muted);font-size:11px;border-top:1px solid var(--line)}
+@media(max-width:900px){.layout{grid-template-columns:1fr}#priceChart{height:390px}}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.2/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+<header><div><span class="brand">Forex AI · Chart</span> <span class="muted">/ AI OOP V8 MT5 feed</span></div><span class="tag">DEMO / PAPER ONLY</span></header>
+<main>
+<div class="toolbar">
+<select id="symbol"><option>EURUSD</option><option>GBPUSD</option><option>USDJPY</option><option>XAUUSD</option><option>BTCUSD</option><option>USDCAD</option><option>NZDUSD</option><option>USDCHF</option></select>
+<select id="tf"><option>M15</option><option>H1</option><option>H4</option><option>D1</option><option>M5</option><option>M30</option><option>M1</option></select>
+<button id="refresh">Làm mới</button><span class="muted" id="feedState">Đang kết nối dữ liệu...</span>
+</div>
+<div class="layout">
+<div>
+<section class="panel">
+<div class="panel-head"><strong id="chartTitle">EURUSD · M15</strong><span class="small">Nến MT5 · Mũi tên từ AI OOP V8</span></div>
+<div id="priceChart"></div><div id="rsiChart"></div>
+<div class="statusline">RSI 14 được tính từ chuỗi nến nhận từ MT5; RSI không tạo tín hiệu giao dịch. Mũi tên chỉ hiển thị tín hiệu AI OOP V8.</div>
+</section>
+<section class="panel" style="margin-top:12px"><div class="panel-head"><strong>Tín hiệu AI OOP V8</strong><span class="small" id="signalCount">0 tín hiệu</span></div><div id="signalTable"><div class="empty">Chưa có tín hiệu cho mã và khung đang chọn</div></div></section>
+</div>
+<aside class="panel side"><h3>Chi tiết tín hiệu</h3><div id="signalDetails" class="muted">Chọn một tín hiệu trong danh sách để xem chi tiết.</div><h3 style="margin-top:20px">Chú giải</h3>
+<div class="signal"><b class="buy">▲ BUY</b><div class="small">Regular / Hidden Bullish</div></div>
+<div class="signal"><b class="sell">▼ SELL</b><div class="small">Regular / Hidden Bearish</div></div>
+<div class="signal"><b>RT</b><div class="small">Tín hiệu realtime</div></div>
+<div class="signal"><b>HIST</b><div class="small">Tín hiệu lịch sử, chỉ để tham khảo</div></div>
+</aside>
+</div>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const fmt=n=>Number(n).toLocaleString('en-US',{maximumFractionDigits:5});
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const priceChart=LightweightCharts.createChart($('priceChart'),{layout:{background:{color:'#111c2e'},textColor:'#a9b8ca'},grid:{vertLines:{color:'#1c2a3e'},horzLines:{color:'#1c2a3e'}},rightPriceScale:{borderColor:'#34445c'},timeScale:{borderColor:'#34445c',timeVisible:true,secondsVisible:false},crosshair:{mode:LightweightCharts.CrosshairMode.Normal}});
+const candleSeries=priceChart.addCandlestickSeries({upColor:'#22c58b',downColor:'#f06478',borderUpColor:'#22c58b',borderDownColor:'#f06478',wickUpColor:'#22c58b',wickDownColor:'#f06478'});
+const rsiChart=LightweightCharts.createChart($('rsiChart'),{layout:{background:{color:'#111c2e'},textColor:'#a9b8ca'},grid:{vertLines:{color:'#1c2a3e'},horzLines:{color:'#1c2a3e'}},rightPriceScale:{borderColor:'#34445c',scaleMargins:{top:.1,bottom:.1}},timeScale:{visible:false,borderColor:'#34445c'},height:150});
+const rsiSeries=rsiChart.addLineSeries({color:'#a78bfa',lineWidth:2,priceLineVisible:false,lastValueVisible:true});
+function rsi(values,period=14){const out=[];let avgGain=0,avgLoss=0;for(let i=0;i<values.length;i++){if(i===0){out.push({time:values[i].time,value:50});continue}const d=values[i].close-values[i-1].close;const gain=Math.max(d,0),loss=Math.max(-d,0);if(i<=period){avgGain+=(gain/period);avgLoss+=(loss/period)}else{avgGain=(avgGain*(period-1)+gain)/period;avgLoss=(avgLoss*(period-1)+loss)/period}const v=avgLoss===0?100:100-(100/(1+avgGain/avgLoss));out.push({time:values[i].time,value:v})}return out}
+function nearestTime(t,bars){if(!bars.length)return t;let best=bars[0].time,delta=Math.abs(best-t);for(const b of bars){const d=Math.abs(b.time-t);if(d<delta){delta=d;best=b.time}}return best}
+function renderSignals(signals,bars){const list=signals||[];$('signalCount').textContent=list.length+' tín hiệu';const markers=list.map(s=>({time:nearestTime(Number(s.signal_time),bars),position:s.direction==='BUY'?'belowBar':'aboveBar',color:s.direction==='BUY'?'#22c58b':'#f06478',shape:s.direction==='BUY'?'arrowUp':'arrowDown',text:s.direction+' '+s.divergence+' '+s.signal_type}));candleSeries.setMarkers(markers);
+$('signalTable').innerHTML=list.length?'<table><thead><tr><th>Thời gian</th><th>Hướng</th><th>Loại</th><th>Phân kỳ</th><th>Giá</th></tr></thead><tbody>'+list.map((s,i)=>'<tr data-i="'+i+'"><td>'+esc(new Date(Number(s.signal_time)*1000).toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh'}))+'</td><td class="'+(s.direction==='BUY'?'buy':'sell')+'">'+esc(s.direction)+'</td><td>'+esc(s.signal_type)+'</td><td>'+esc(s.divergence)+'</td><td>'+fmt(s.price2)+'</td></tr>').join('')+'</tbody></table>':'<div class="empty">Không có tín hiệu AI OOP V8 cho lựa chọn này.</div>';
+$('signalTable').querySelectorAll('tr[data-i]').forEach(row=>row.addEventListener('click',()=>{const s=list[Number(row.dataset.i)];$('signalDetails').innerHTML='<b class="'+(s.direction==='BUY'?'buy':'sell')+'">'+esc(s.direction)+' · '+esc(s.divergence)+' · '+esc(s.signal_type)+'</b><p>'+esc(s.symbol)+' / '+esc(s.timeframe)+'</p><p>Thời gian: '+esc(new Date(Number(s.signal_time)*1000).toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh'}))+'</p><p>Price 1: '+fmt(s.price1)+'<br>Price 2: '+fmt(s.price2)+'</p><p>RSI 1: '+fmt(s.rsi1)+'<br>RSI 2: '+fmt(s.rsi2)+'</p>'; }));}
+async function load(){const symbol=$('symbol').value,tf=$('tf').value;$('chartTitle').textContent=symbol+' · '+tf;$('feedState').textContent='Đang tải...';try{const res=await fetch('/api/chart/data?symbol='+encodeURIComponent(symbol)+'&timeframe='+encodeURIComponent(tf)+'&limit=1000',{cache:'no-store'});if(!res.ok)throw new Error('HTTP '+res.status);const data=await res.json();const bars=(data.candles||[]).map(c=>({time:Number(c.time),open:Number(c.open),high:Number(c.high),low:Number(c.low),close:Number(c.close)}));candleSeries.setData(bars);rsiSeries.setData(rsi(bars));renderSignals(data.signals||[],bars);if(bars.length){priceChart.timeScale().fitContent();rsiChart.timeScale().fitContent();$('feedState').textContent=bars.length+' nến · cập nhật '+new Date().toLocaleTimeString()}else{$('feedState').textContent='Chưa có nến MT5 được gửi lên server';$('signalDetails').textContent='API đã kết nối, đang chờ MT5 gửi dữ liệu OHLC.'} }catch(e){$('feedState').textContent='Lỗi tải dữ liệu: '+e.message}}
+$('symbol').addEventListener('change',load);$('tf').addEventListener('change',load);$('refresh').addEventListener('click',load);
+new ResizeObserver(entries=>{const w=entries[0].contentRect.width;priceChart.applyOptions({width:w});rsiChart.applyOptions({width:w})}).observe($('priceChart'));
+load();setInterval(load,5000);
+</script>
+</body></html>
