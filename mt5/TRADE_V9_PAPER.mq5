@@ -10,6 +10,7 @@ input string ServerBaseURL = "https://investforex.onrender.com";
 input string ApiKey = "SET_A_LONG_RANDOM_API_KEY";
 input string ConsumerId = "trade-v9-paper";
 input int PollSeconds = 3;
+input int HeartbeatSeconds = 15;
 input double VirtualRiskMoney = 25.0;
 input double RewardRiskRatio = 2.0;
 input int MaxOpenPaperTrades = 3;
@@ -32,7 +33,8 @@ struct PaperTrade
 PaperTrade trades[];
 string lastSource[];
 datetime lastTradeTime[];
-datetime lastPoll=0;
+uint lastPollMs=0;
+uint lastHeartbeatMs=0;
 
 string JsonValue(string json,string key)
 {
@@ -97,6 +99,16 @@ bool Request(string method,string path,string body,string &response,int &status)
    if(status==-1) { Print("[PAPER V9] WebRequest error=",GetLastError()); response=""; return false; }
    response=CharArrayToString(result,0,-1,CP_UTF8);
    return status>=200 && status<300;
+}
+
+void SendPaperHeartbeat()
+{
+   string body=StringFormat("{\\\"component\\\":\\\"TRADE-V9-PAPER\\\",\\\"status\\\":\\\"online\\\",\\\"details\\\":\\\"Paper consumer active; virtual_positions=%d; no broker orders\\\"}",ArraySize(trades));
+   string response; int status;
+   if(Request("POST","/api/heartbeat",body,response,status))
+      lastHeartbeatMs=GetTickCount();
+   else
+      Print("[PAPER V9] Heartbeat failed HTTP=",status," response=",response);
 }
 
 bool Ack(string id,string state,string message)
@@ -223,5 +235,12 @@ void OnTick() {}
 void OnTimer()
 {
    ManagePaperTrades();
-   if(TimeCurrent()-lastPoll>=PollSeconds) { lastPoll=TimeCurrent(); PollServer(); }
+   uint nowMs=GetTickCount();
+   if(lastHeartbeatMs==0 || (uint)(nowMs-lastHeartbeatMs)>=(uint)(HeartbeatSeconds*1000))
+      SendPaperHeartbeat();
+   if(lastPollMs==0 || (uint)(nowMs-lastPollMs)>=(uint)(PollSeconds*1000))
+   {
+      lastPollMs=nowMs;
+      PollServer();
+   }
 }
