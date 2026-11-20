@@ -18,6 +18,7 @@ datetime g_lastHeartbeat = 0;
 datetime g_lastPoll = 0;
 string g_lastLegacySignature = "";
 datetime g_lastScanPost = 0;
+string g_queueCursorName = "DIVSERVER_QUEUE_CURSOR";
 
 string JsonValue(string json, string key)
 {
@@ -167,6 +168,40 @@ void ImportLegacyDivergenceSignal()
       Print("[SERVER] Legacy signal import failed. HTTP=",status," response=",response);
 }
 
+void ImportDivergenceQueue()
+{
+   int file=FileOpen("DIVSIGNAL_QUEUE.txt",FILE_READ|FILE_TXT|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(file==INVALID_HANDLE) return;
+   long cursor=0;
+   if(GlobalVariableCheck(g_queueCursorName)) cursor=(long)GlobalVariableGet(g_queueCursorName);
+   long lineNo=0;
+   while(!FileIsEnding(file))
+   {
+      string line=FileReadString(file);
+      if(lineNo++<cursor) continue;
+      if(line=="") { GlobalVariableSet(g_queueCursorName,(double)lineNo); continue; }
+      string p[];
+      if(StringSplit(line,'|',p)<8) { GlobalVariableSet(g_queueCursorName,(double)lineNo); continue; }
+      string symbol=p[0], tf=p[1], direction=p[2], divType=p[3];
+      datetime signalTime=(datetime)StringToInteger(p[4]);
+      double entry=StringToDouble(p[5]), sl=StringToDouble(p[6]), score=StringToDouble(p[7]);
+      if(symbol=="" || (direction!="BUY" && direction!="SELL") || signalTime<=0 || entry<=0 || sl<=0)
+      { GlobalVariableSet(g_queueCursorName,(double)lineNo); continue; }
+      string source=StringFormat("div-%s-%s-%s-%s-%d",symbol,tf,direction,divType,(int)signalTime);
+      string body=StringFormat("{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\",\"entry\":%.8f,\"sl\":%.8f,\"score\":%.2f,\"source\":\"%s\"}",symbol,tf,direction,entry,sl,score,source);
+      string response; int status;
+      if(!HttpRequest("POST","/api/signals",body,response,status))
+      {
+         Print("[SERVER] Divergence queue upload failed. HTTP=",status," response=",response);
+         break;
+      }
+      GlobalVariableSet(g_queueCursorName,(double)lineNo);
+      Print("[SERVER] Divergence uploaded: ",symbol," ",tf," ",direction," ",divType,
+            " signal_id=",JsonValue(response,"signal_id"));
+   }
+   FileClose(file);
+}
+
 void PublishScanStatus()
 {
    if(TimeCurrent()-g_lastScanPost<3) return;
@@ -269,6 +304,7 @@ void OnTimer()
    {
       g_lastPoll=TimeCurrent();
       PublishScanStatus();
+      ImportDivergenceQueue();
       ImportLegacyDivergenceSignal();
       PollSignal();
    }
