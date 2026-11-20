@@ -40,26 +40,100 @@ body.trade-fullscreen .layout>aside{overflow:auto;min-height:0}
 body.trade-fullscreen .drag-line{z-index:8}
 @media(max-width:900px){body.trade-fullscreen .layout{grid-template-columns:1fr;grid-template-rows:minmax(0,1fr) auto}body.trade-fullscreen .layout>aside{display:none}body.trade-fullscreen .layout>div{grid-template-rows:minmax(180px,1fr) auto}body.trade-fullscreen #rsiChart{height:76px}body.trade-fullscreen .statusline{display:none}body.trade-fullscreen .layout>div>.panel:nth-child(3){display:none}}
 
+
+/* Compact chart-first trading workspace */
+.chart-workspace{display:flex;flex-direction:column;min-height:0}
+.chart-head{min-height:48px;padding:7px 10px}
+.chart-pickers,.chart-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.chart-pickers strong{font-size:14px;margin-right:5px}
+.chart-pickers select,.chart-actions button{padding:6px 9px}
+.chart-actions{margin-left:auto}
+.chart-actions #feedState{max-width:190px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.trade-strip{padding:8px 10px 6px;border-bottom:1px solid var(--line);background:#0e1929}
+.trade-fields{display:flex;align-items:end;gap:8px;flex-wrap:wrap}
+.trade-fields label{display:flex;flex-direction:column;gap:3px;color:var(--muted);font-size:10px;font-weight:650}
+.trade-fields input,.trade-fields select{width:112px;min-width:0;padding:6px 8px;font-size:12px}
+.trade-fields #entryWrap input{width:125px}
+.trade-options{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:7px}
+.trade-options .level-toggles{gap:13px}
+.trade-options button{padding:5px 12px}
+.trade-footer{display:grid;grid-template-columns:minmax(220px,1fr) auto minmax(170px, .8fr);gap:12px;align-items:center;padding:7px 10px;background:#101d2e;border-top:1px solid var(--line)}
+.lot-block{min-width:0}.lot-block #lotResult{margin-top:1px}.lot-block .lot-value{display:inline-block;font-size:20px;margin:0 8px 0 0}
+.trade-submit{display:flex;gap:7px}.trade-submit button{min-width:100px;font-weight:750;padding:8px 12px}
+.request-state{text-align:right;line-height:1.35}
+.chart-workspace #priceChart{height:clamp(300px,54vh,620px);flex:none}
+.chart-workspace #rsiChart{height:105px;flex:none}
+.chart-workspace .statusline{padding:5px 10px}
+.signal-panel #signalTable{max-height:190px}
+@media(max-width:720px){
+ main{padding:7px}.layout{gap:8px}.chart-head{align-items:flex-start}.chart-pickers{width:100%}.chart-actions{width:100%;margin-left:0;justify-content:space-between}.chart-actions #feedState{flex:1;max-width:none}
+ .trade-fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.trade-fields input,.trade-fields select,.trade-fields #entryWrap input{width:100%;font-size:12px;padding:6px 5px}
+ .trade-options{align-items:flex-start}.trade-options .level-toggles{gap:7px;flex-wrap:wrap}.trade-options .level-toggles label{font-size:10px}
+ .trade-footer{grid-template-columns:1fr auto;gap:6px}.trade-submit{grid-column:2;grid-row:1}.request-state{grid-column:1/-1;text-align:left}.trade-submit button{min-width:70px;padding:7px 9px}
+ .chart-workspace #priceChart{height:43vh;min-height:260px}.chart-workspace #rsiChart{height:82px}
+}
+body.trade-fullscreen main{padding:6px}
+body.trade-fullscreen .layout{height:calc(100dvh - 12px);grid-template-columns:minmax(0,1fr) 250px;gap:7px}
+body.trade-fullscreen .layout>div{grid-template-rows:minmax(0,1fr);display:block;overflow:hidden}
+body.trade-fullscreen .chart-workspace{height:100%;display:flex;overflow:hidden}
+body.trade-fullscreen .chart-workspace #priceChart{height:auto;min-height:120px;flex:1}
+body.trade-fullscreen .chart-workspace #rsiChart{height:75px;flex:none}
+body.trade-fullscreen .chart-workspace .trade-strip{padding:5px 8px}
+body.trade-fullscreen .chart-workspace .trade-fields{gap:6px}
+body.trade-fullscreen .chart-workspace .trade-fields input,.chart-workspace .trade-fields select{width:100px;padding:4px 6px}
+body.trade-fullscreen .chart-workspace .trade-footer{padding:5px 8px;grid-template-columns:minmax(180px,1fr) auto minmax(130px,.7fr)}
+body.trade-fullscreen .chart-workspace .lot-value{font-size:18px}
+body.trade-fullscreen .chart-workspace .trade-submit button{padding:6px 9px;min-width:82px}
+body.trade-fullscreen .chart-workspace .statusline{padding:3px 8px}
+body.trade-fullscreen .signal-panel{display:none}
+@media(max-width:900px){
+ body.trade-fullscreen .layout{grid-template-columns:1fr;grid-template-rows:minmax(0,1fr)}
+ body.trade-fullscreen .layout>aside{display:none}
+ body.trade-fullscreen .chart-workspace .trade-fields{display:grid;grid-template-columns:repeat(5,minmax(0,1fr))}
+ body.trade-fullscreen .chart-workspace .trade-fields input,body.trade-fullscreen .chart-workspace .trade-fields select{width:100%}
+}
+@media(max-width:600px){
+ body.trade-fullscreen .chart-workspace .chart-head{padding:4px 6px}
+ body.trade-fullscreen .chart-workspace .chart-pickers strong{font-size:12px}
+ body.trade-fullscreen .chart-workspace .trade-fields{grid-template-columns:repeat(3,minmax(0,1fr))}
+ body.trade-fullscreen .chart-workspace .trade-options{margin-top:5px}
+ body.trade-fullscreen .chart-workspace #priceChart{min-height:130px}
+ body.trade-fullscreen .chart-workspace #rsiChart{height:62px}
+ body.trade-fullscreen .chart-workspace .trade-footer{grid-template-columns:1fr auto}
+ body.trade-fullscreen .chart-workspace .request-state{font-size:9px}
+ body.trade-fullscreen .chart-workspace .statusline{display:none}
+}
+
 </style>
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.2/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
 <header><div><span class="brand">Forex AI · Chart</span> <span class="muted">/ AI OOP V8 MT5 feed</span></div><span class="tag">DEMO / PAPER ONLY</span></header>
 <main>
-<div class="toolbar">
-<select id="symbol"><option>EURUSD</option><option>GBPUSD</option><option>USDJPY</option><option>XAUUSD</option><option>BTCUSD</option><option>USDCAD</option><option>NZDUSD</option><option>USDCHF</option></select>
-<select id="tf"><option>M15</option><option>H1</option><option>H4</option><option>D1</option><option>M5</option><option>M30</option><option>M1</option></select>
-<button id="refresh">Làm mới</button><button id="fullscreenToggle" type="button">Toàn màn hình trade</button><span class="muted" id="feedState">Đang kết nối dữ liệu...</span>
-</div>
 <div class="layout">
 <div>
-<section class="panel">
-<div class="panel-head"><strong id="chartTitle">EURUSD · M15</strong><span class="small">Nến MT5 · Mũi tên từ AI OOP V8</span></div>
+<section class="panel chart-workspace">
+<div class="panel-head chart-head">
+<div class="chart-pickers"><strong id="chartTitle">EURUSD · M15</strong><select id="symbol"><option>EURUSD</option><option>GBPUSD</option><option>USDJPY</option><option>XAUUSD</option><option>BTCUSD</option><option>USDCAD</option><option>NZDUSD</option><option>USDCHF</option></select><select id="tf"><option>M15</option><option>H1</option><option>H4</option><option>D1</option><option>M5</option><option>M30</option><option>M1</option></select></div>
+<div class="chart-actions"><span class="small" id="feedState">Đang kết nối dữ liệu...</span><button id="refresh">↻</button><button id="fullscreenToggle" type="button">Toàn màn hình</button></div>
+</div>
+<div class="trade-strip">
+<div class="trade-fields">
+<label>Chế độ<select id="orderMode"><option value="MARKET" selected>Market</option><option value="PENDING">Pending</option></select></label>
+<label>Risk ($)<input id="riskMoney" type="number" min="0.01" step="1" value="25"></label>
+<label id="entryWrap">Entry<input id="entryPrice" type="number" step="any"></label>
+<label>SL<input id="slPrice" type="number" step="any"></label>
+<label>TP<input id="tpPrice" type="number" step="any"></label>
+</div>
+<div class="trade-options"><div class="level-toggles"><label><input id="showEntry" type="checkbox"> Entry line</label><label><input id="showSL" type="checkbox" checked> SL line</label><label><input id="showTP" type="checkbox" checked> TP line</label></div><button id="calcLot">Cập nhật</button></div>
+</div>
 <div id="priceChart"></div><div id="rsiChart"></div>
-<div class="statusline">RSI 14 được tính từ chuỗi nến nhận từ MT5; RSI không tạo tín hiệu giao dịch. Mũi tên chỉ hiển thị tín hiệu AI OOP V8.</div>
+<div class="trade-footer"><div class="lot-block"><span class="small">KHỐI LƯỢNG TÍNH TOÁN</span><div id="lotResult" class="small">Đang chờ dữ liệu MT5 để tính lot.</div><div id="contractMeta" class="small">Đang chờ thông số hợp đồng từ MT5...</div></div>
+<div class="trade-submit"><button id="sendBuy" class="active">BUY · PAPER</button><button id="sendSell">SELL · PAPER</button></div>
+<div id="requestState" class="small request-state">Chỉ gửi yêu cầu vào hàng đợi PAPER · không đặt lệnh broker.</div></div>
+<div class="statusline">Nến và tín hiệu lấy từ MT5 / AI OOP V8. RSI 14 chỉ để quan sát, không tạo tín hiệu.</div>
 </section>
-<section class="panel" style="margin-top:12px"><div class="panel-head"><strong>Công cụ tính khối lượng & mức giá</strong><span class="small">Tính tham khảo · không tự đặt lệnh broker</span></div><div class="side"><div class="toolbar"><label class="mode-label">Loại lệnh <select id="orderMode"><option value="MARKET" selected>Market · Giá hiện tại</option><option value="PENDING">Pending · Giá chờ</option></select></label><label>Risk tiền <input id="riskMoney" type="number" min="0.01" step="1" value="25" style="width:90px"></label><label id="entryWrap">Entry <input id="entryPrice" type="number" step="any" style="width:120px"></label><label>Stop Loss <input id="slPrice" type="number" step="any" style="width:120px"></label><span id="contractMeta" class="small">Đang chờ thông số hợp đồng từ MT5...</span><label>Take Profit <input id="tpPrice" type="number" step="any" style="width:120px"></label><div class="level-toggles"><label><input id="showEntry" type="checkbox" checked> Entry</label><label><input id="showSL" type="checkbox" checked> SL</label><label><input id="showTP" type="checkbox" checked> TP</label></div><button id="calcLot">Cập nhật đường giá</button></div><div id="lotResult" class="small">Đang chờ dữ liệu MT5 để tính lot.</div><div class="toolbar" style="margin-top:10px"><button id="sendBuy" class="active">Gửi BUY request</button><button id="sendSell">Gửi SELL request</button><span id="requestState" class="small">Yêu cầu chỉ được đưa vào hàng đợi PAPER.</span></div></div></section>
-<section class="panel" style="margin-top:12px"><div class="panel-head"><strong>Tín hiệu AI OOP V8</strong><span class="small" id="signalCount">0 tín hiệu</span></div><div id="signalTable"><div class="empty">Chưa có tín hiệu cho mã và khung đang chọn</div></div></section>
+<section class="panel signal-panel" style="margin-top:10px"><div class="panel-head"><strong>Tín hiệu AI OOP V8</strong><span class="small" id="signalCount">0 tín hiệu</span></div><div id="signalTable"><div class="empty">Chưa có tín hiệu cho mã và khung đang chọn</div></div></section>
 </div>
 <aside class="panel side"><h3>Chi tiết tín hiệu</h3><div id="signalDetails" class="muted">Chọn một tín hiệu trong danh sách để xem chi tiết.</div><h3 style="margin-top:20px">Chú giải</h3>
 <div class="signal"><b class="buy">▲ BUY</b><div class="small">Regular / Hidden Bullish</div></div>
@@ -87,7 +161,8 @@ for(const key of ['entry','sl','tp']){
  line.addEventListener('pointermove',ev=>{if(line.dataset.drag!=='1')return;const rect=$('priceChart').getBoundingClientRect();const p=candleSeries.coordinateToPrice(ev.clientY-rect.top);if(p==null||!Number.isFinite(p))return;const id=key==='entry'?'entryPrice':key==='sl'?'slPrice':'tpPrice';$(id).value=Number(p).toFixed(mt5Digits);calcLot()});
  const stop=()=>line.dataset.drag='0';line.addEventListener('pointerup',stop);line.addEventListener('pointercancel',stop);
 }
-priceChart.timeScale().subscribeVisibleLogicalRangeChange(range=>{if(syncing||!range)return;syncing=true;rsiChart.timeScale().setVisibleLogicalRange(range);syncing=false});
+priceChart.timeScale().subscribeVisibleLogicalRangeChange(range=>{if(syncing||!range)return;syncing=true;rsiChart.timeScale().setVisibleLogicalRange(range);syncing=false;setLevelLines()});
+priceChart.subscribeCrosshairMove(()=>setLevelLines());
 rsiChart.timeScale().subscribeVisibleLogicalRangeChange(range=>{if(syncing||!range)return;syncing=true;priceChart.timeScale().setVisibleLogicalRange(range);syncing=false});
 function rsi(values,period=14){const out=[];let avgGain=0,avgLoss=0;for(let i=0;i<values.length;i++){if(i===0){out.push({time:values[i].time,value:50});continue}const d=values[i].close-values[i-1].close;const gain=Math.max(d,0),loss=Math.max(-d,0);if(i<=period){avgGain+=(gain/period);avgLoss+=(loss/period)}else{avgGain=(avgGain*(period-1)+gain)/period;avgLoss=(avgLoss*(period-1)+loss)/period}const v=avgLoss===0?100:100-(100/(1+avgGain/avgLoss));out.push({time:values[i].time,value:v})}return out}
 function nearestTime(t,bars){if(!bars.length)return t;let best=bars[0].time,delta=Math.abs(best-t);for(const b of bars){const d=Math.abs(b.time-t);if(d<delta){delta=d;best=b.time}}return best}
