@@ -104,6 +104,12 @@ def init_db() -> None:
           outcome TEXT NOT NULL, opened_at REAL NOT NULL, closed_at REAL NOT NULL
         )""")
         conn.execute("""
+        CREATE TABLE IF NOT EXISTS close_requests (
+          request_id TEXT PRIMARY KEY, position_id TEXT, ticket TEXT,
+          symbol TEXT, direction TEXT, status TEXT NOT NULL DEFAULT 'pending',
+          created_at TEXT NOT NULL, acked_at TEXT, ok INTEGER, message TEXT
+        )""")
+        conn.execute("""
         CREATE TABLE IF NOT EXISTS today_signals (
           signal_key TEXT PRIMARY KEY, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
           direction TEXT NOT NULL, divergence TEXT NOT NULL, signal_type TEXT NOT NULL,
@@ -161,8 +167,32 @@ class PaperPositionsIn(BaseModel):
 
 
 class PaperClosedIn(PaperPositionIn):
-    outcome: Literal["PAPER_TP", "PAPER_SL"]
+    outcome: Literal["PAPER_TP", "PAPER_SL", "MANUAL_CLOSE"]
     closed_at: float = Field(gt=0)
+
+
+class ClosePositionIn(BaseModel):
+    id: str | None = Field(default=None, max_length=64)
+    ticket: str | int | None = None
+    symbol: str | None = Field(default=None, max_length=32)
+    direction: Literal["BUY", "SELL"] | None = None
+    volume: float | None = Field(default=None, ge=0)
+    entry: float | None = Field(default=None, ge=0)
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_close_symbol(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip().upper()
+        return cleaned or None
+
+
+class CloseRequestAckIn(BaseModel):
+    request_id: str = Field(min_length=1, max_length=64)
+    position_id: str = Field(default="", max_length=64)
+    ok: bool
+    message: str = Field(default="", max_length=500)
 
 
 class AckIn(BaseModel):
@@ -408,9 +438,103 @@ def update_paper_positions(payload: PaperPositionsIn):
     return {"ok": True, "open_positions": len(payload.positions), "updated_at": now}
 
 
+@app.post("/api/paper/positions/close")
+def queue_close_position(payload: ClosePositionIn, x_api_key: str | None = Header(default=None)):
+    # Cho phép gọi từ dashboard nội bộ hoặc có X-API-Key hợp lệ nếu server đã cấu hình key
+    if API_KEY and x_api_key and not secrets.compare_digest(x_api_key, API_KEY):
+        raise HTTPException(status_code=401, detail="API key không hợp lệ")
+
+    ticket_str = str(payload.ticket).strip() if payload.ticket is not None else ""
+    pos_id = (payload.id or ticket_str or "").strip()
+    if not pos_id and not payload.symbol:
+        raise HTTPException(status_code=422, detail="Thiếu thông tin vị thế cần đóng")
+
+    now = utc_now()
+    with db() as conn:
+        row = None
+        if pos_id:
+            row = conn.execute("SELECT * FROM paper_positions WHERE id=?", (pos_id,)).fetchone()
+        if row is None and payload.symbol:
+            if payload.direction:
+                row = conn.execute(
+                    "SELECT * FROM paper_positions WHERE symbol=? AND direction=? ORDER BY opened_at ASC LIMIT 1",
+                    (payload.symbol, payload.direction),
+                ).fetchone()
+            else:
+                row = conn.execute(
+                    "SELECT * FROM paper_positions WHERE symbol=? ORDER BY opened_at ASC LIMIT 1",
+                    (payload.symbol,),
+                ).fetchone()
+
+        resolved_id = row["id"] if row else pos_id
+        resolved_sym = row["symbol"] if row else (payload.symbol or "")
+        resolved_dir = row["direction"] if row else (payload.direction or "")
+
+        existing = conn.execute(
+            "SELECT request_id FROM close_requests WHERE status='pending' "
+            "AND ((? != '' AND position_id=?) OR (? != '' AND ticket=?) OR (? != '' AND symbol=? AND (? = '' OR direction=?)))",
+            (resolved_id, resolved_id, ticket_str, ticket_str, resolved_sym, resolved_sym, resolved_dir, resolved_dir),
+        ).fetchone()
+        if existing:
+            return {"ok": True, "request_id": existing["request_id"], "status": "pending",
+                    "message": "Đã xếp hàng lệnh đóng vị thế"}
+
+        request_id = secrets.token_hex(10)
+        conn.execute(
+            "INSERT INTO close_requests(request_id,position_id,ticket,symbol,direction,status,created_at) "
+            "VALUES(?,?,?,?,?,'pending',?)",
+            (request_id, resolved_id, ticket_str or resolved_id, resolved_sym, resolved_dir, now),
+        )
+        conn.execute(
+            "INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
+            ("close_requested", f"Yêu cầu đóng {resolved_sym} {resolved_dir} ({resolved_id or request_id})", now),
+        )
+    return {"ok": True, "request_id": request_id, "status": "pending",
+            "message": f"Đã gửi yêu cầu đóng {resolved_sym} {resolved_dir}".strip()}
+
+
+@app.get("/api/paper/close-requests", dependencies=[Depends(require_key)])
+def get_close_requests():
+    now = time.time()
+    cutoff = datetime.fromtimestamp(now - 45, timezone.utc).isoformat()
+    with db() as conn:
+        conn.execute(
+            "UPDATE close_requests SET status='expired',acked_at=?,message='Hết hạn chờ MT5' "
+            "WHERE status='pending' AND created_at < ?",
+            (utc_now(), cutoff),
+        )
+        rows = [dict(r) for r in conn.execute(
+            "SELECT request_id,position_id,ticket,symbol,direction "
+            "FROM close_requests WHERE status='pending' ORDER BY created_at ASC LIMIT 20"
+        ).fetchall()]
+    return {"ok": True, "close_requests": rows}
+
+
+@app.post("/api/paper/close-requests/ack", dependencies=[Depends(require_key)])
+def ack_close_request(payload: CloseRequestAckIn):
+    now = utc_now()
+    with db() as conn:
+        req_row = conn.execute(
+            "SELECT * FROM close_requests WHERE request_id=?", (payload.request_id,)
+        ).fetchone()
+        conn.execute(
+            "UPDATE close_requests SET status='acked',acked_at=?,ok=?,message=? WHERE request_id=?",
+            (now, 1 if payload.ok else 0, payload.message, payload.request_id),
+        )
+        pos_target = (payload.position_id or (req_row["position_id"] if req_row else "") or "").strip()
+        if payload.ok and pos_target:
+            conn.execute("DELETE FROM paper_positions WHERE id=?", (pos_target,))
+        conn.execute(
+            "INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
+            ("close_ack", f"{payload.request_id} ({pos_target}): ok={payload.ok} {payload.message}".strip(), now),
+        )
+    return {"ok": True}
+
+
 @app.post("/api/paper/closed", dependencies=[Depends(require_key)])
 def record_paper_closed(payload: PaperClosedIn):
     with db() as conn:
+        conn.execute("DELETE FROM paper_positions WHERE id=?", (payload.id,))
         conn.execute(
             "INSERT OR REPLACE INTO paper_history(id,symbol,timeframe,direction,entry,sl,tp,volume,risk,profit,outcome,opened_at,closed_at) "
             "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
