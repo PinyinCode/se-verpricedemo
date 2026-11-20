@@ -4,7 +4,7 @@
 //| optional close requests without opening new live trades.         |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.10"
+#property version "1.11"
 
 #include <Trade\Trade.mqh>
 
@@ -418,7 +418,6 @@ void PublishRealHistory()
       string sym=HistoryDealGetString(dealTicket,DEAL_SYMBOL);
       if(sym=="") continue;
       long dealType=HistoryDealGetInteger(dealTicket,DEAL_TYPE);
-      // For closing a BUY position, closing deal is SELL; for closing SELL, deal is BUY.
       string dir=(dealType==DEAL_TYPE_BUY)?"SELL":"BUY";
       double vol=HistoryDealGetDouble(dealTicket,DEAL_VOLUME);
       double price=HistoryDealGetDouble(dealTicket,DEAL_PRICE);
@@ -452,7 +451,6 @@ void PollCloseRequests()
    if(!HttpRequest("GET","/api/paper/close-requests","",response,status)) return;
    if(StringFind(response,"\"close_requests\":[]")>=0) return;
 
-   // Handle close requests sequentially for each open position matching symbol/ticket.
    int pos=0;
    while(true)
    {
@@ -522,12 +520,20 @@ void PollSignal()
    string symbol=JsonValue(signalJson,"symbol");
    string tf=JsonValue(signalJson,"timeframe");
    string direction=JsonValue(signalJson,"direction");
+   string orderType=JsonValue(signalJson,"order_type");
+   if(orderType=="") orderType="MARKET";
    string entry=JsonValue(signalJson,"entry");
    string sl=JsonValue(signalJson,"sl");
    string created=JsonValue(signalJson,"created_at");
    if(id=="" || symbol=="" || (direction!="BUY" && direction!="SELL") || entry=="" || sl=="")
    {
       Print("[SERVER] Invalid signal payload: ",response);
+      return;
+   }
+   if(StringFind(orderType,"STOP")>=0 ||
+      (orderType!="MARKET" && orderType!="BUY_LIMIT" && orderType!="SELL_LIMIT"))
+   {
+      AckSignal(id,"REJECTED","Unsupported order_type (LIMIT/MARKET only)");
       return;
    }
    double entryPrice=StringToDouble(entry), slPrice=StringToDouble(sl);
@@ -538,7 +544,7 @@ void PollSignal()
       AckSignal(id,"REJECTED","Invalid entry/SL geometry");
       return;
    }
-   Print("[PAPER SIGNAL] ",symbol," ",tf," ",direction,
+   Print("[PAPER SIGNAL] ",symbol," ",tf," ",orderType," ",direction,
          " entry=",DoubleToString(entryPrice,8)," SL=",DoubleToString(slPrice,8),
          " id=",id," created=",created);
    AckSignal(id,"SIMULATED","Signal received and validated; paper mode only");
@@ -552,12 +558,14 @@ int OnInit()
       return INIT_PARAMETERS_INCORRECT;
    }
    EventSetTimer(1);
-   Print("ServerConnector v1.10 initialized. Add ",ServerBaseURL,
+   Print("ServerConnector v1.11 initialized. Add ",ServerBaseURL,
          " to MT5 WebRequest allowlist.");
    return INIT_SUCCEEDED;
 }
 
 void OnDeinit(const int reason){ EventKillTimer(); }
+
+void OnTick() {}
 
 void OnTimer()
 {
