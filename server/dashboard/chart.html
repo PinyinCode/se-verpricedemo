@@ -408,6 +408,10 @@ body.trade-fullscreen .chart-overlay-bottom .trade-submit button{min-width:78px}
 }
 
 
+/* Resizable RSI separator and divergence overlay */
+#rsiResizeHandle{height:10px;flex:0 0 10px;position:relative;z-index:20;cursor:row-resize;touch-action:none;background:#0d192a;border-top:1px solid #34445c;border-bottom:1px solid #34445c}
+#rsiResizeHandle:after{content:'';position:absolute;width:42px;height:3px;border-radius:3px;background:#71839c;left:50%;top:3px;transform:translateX(-50%)}
+#rsiResizeHandle:active:after{background:#a78bfa}
 /* Layout correction: price chart + readable RSI stacked above trade controls */
 body.trade-fullscreen .chart-workspace{
  display:flex!important;flex-direction:column!important;height:100%!important;min-height:0!important;overflow:hidden!important;
@@ -422,7 +426,7 @@ body.trade-fullscreen .chart-stage #priceChart{
 }
 body.trade-fullscreen .chart-stage #rsiChart{
  position:relative!important;inset:auto!important;left:auto!important;right:auto!important;top:auto!important;bottom:auto!important;
- display:block!important;width:100%!important;height:170px!important;min-height:150px!important;flex:0 0 170px!important;
+ display:block!important;width:100%!important;height:170px;min-height:100px!important;flex:0 0 170px;
  border-top:1px solid #34445c!important;background:#101b2c;
 }
 body.trade-fullscreen .chart-overlay-bottom{
@@ -460,6 +464,7 @@ body.trade-fullscreen .chart-workspace .statusline{flex:0 0 auto}
 <section class="panel chart-workspace">
 <div class="chart-stage">
 <div id="priceChart"></div>
+<div id="rsiResizeHandle" role="separator" aria-label="Kéo để thay đổi chiều cao RSI" title="Kéo để thay đổi chiều cao RSI"></div>
 <div id="rsiChart"></div>
 <div class="chart-overlay-top"><div class="panel-head chart-head">
 <div class="chart-pickers"><strong id="chartTitle">EURUSD · M15</strong><select id="symbol"><option>EURUSD</option><option>GBPUSD</option><option>USDJPY</option><option>XAUUSD</option><option>BTCUSD</option><option>USDCAD</option><option>NZDUSD</option><option>USDCHF</option></select><select id="tf"><option>M15</option><option>H1</option><option>H4</option><option>D1</option><option>M5</option><option>M30</option><option>M1</option></select></div>
@@ -528,12 +533,16 @@ const priceChart=LightweightCharts.createChart($('priceChart'),{layout:{backgrou
 const candleSeries=priceChart.addCandlestickSeries({upColor:'#22c58b',downColor:'#f06478',borderUpColor:'#22c58b',borderDownColor:'#f06478',wickUpColor:'#22c58b',wickDownColor:'#f06478',priceFormat:{type:'price',precision:5,minMove:0.00001}});
 const rsiChart=LightweightCharts.createChart($('rsiChart'),{layout:{background:{color:'#111c2e'},textColor:'#a9b8ca'},grid:{vertLines:{color:'#1c2a3e'},horzLines:{color:'#1c2a3e'}},rightPriceScale:{borderColor:'#34445c',scaleMargins:{top:.04,bottom:.04},autoScale:true},timeScale:{visible:false,borderVisible:false,ticksVisible:false,borderColor:'transparent',rightOffset:10,barSpacing:8,minBarSpacing:2},crosshair:{mode:LightweightCharts.CrosshairMode.Normal,vertLine:{visible:true,labelVisible:false,color:'#a78bfa',width:1,style:2},horzLine:{visible:true,labelVisible:false,color:'#a78bfa',width:1,style:2}},height:150});
 const rsiSeries=rsiChart.addLineSeries({color:'#a78bfa',lineWidth:2,priceLineVisible:false,lastValueVisible:true,priceFormat:{type:'price',precision:0,minMove:1},autoscaleInfoProvider:()=>({priceRange:{minValue:0,maxValue:100}})});
+let divergenceSeries=[];
+function clearDivergenceLines(){divergenceSeries.forEach(series=>{try{rsiChart.removeSeries(series)}catch(_){}});divergenceSeries=[]}
+function nearestPivotIndex(price,bars,start,end){let best=-1,bestDiff=Infinity;for(let i=Math.max(0,start);i<=Math.min(bars.length-1,end);i++){const d=Math.min(Math.abs(bars[i].high-price),Math.abs(bars[i].low-price));if(d<bestDiff){bestDiff=d;best=i}}return bestDiff<=Math.max(Math.abs(price)*0.0008,mt5TickSize*8)?best:-1}
+function renderRsiDivergences(signals,bars){clearDivergenceLines();if(!bars.length)return;(signals||[]).slice(0,60).forEach(s=>{const p1=Number(s.price1),p2=Number(s.price2),v1=Number(s.rsi1),v2=Number(s.rsi2);if(!(p1>0&&p2>0&&v1>=0&&v1<=100&&v2>=0&&v2<=100))return;const secondTime=nearestTime(Number(s.signal_time),bars);let secondIndex=bars.findIndex(b=>b.time===secondTime);if(secondIndex<1)return;const i2=nearestPivotIndex(p2,bars,Math.max(0,secondIndex-12),Math.min(bars.length-1,secondIndex+2));const i1=nearestPivotIndex(p1,bars,0,Math.max(0,(i2>=0?i2:secondIndex)-1));if(i1<0||i2<0||i1>=i2)return;const series=rsiChart.addLineSeries({color:s.direction==='BUY'?'#22c58b':'#f06478',lineWidth:2,lineStyle:0,priceLineVisible:false,lastValueVisible:false,crosshairMarkerVisible:false,pointMarkersVisible:true});series.setData([{time:bars[i1].time,value:v1},{time:bars[i2].time,value:v2}]);divergenceSeries.push(series)})}
 rsiSeries.createPriceLine({price:70,color:'#f06478',lineWidth:1,lineStyle:2,axisLabelVisible:false,title:''});
 rsiSeries.createPriceLine({price:50,color:'#64748b',lineWidth:1,lineStyle:2,axisLabelVisible:false,title:''});
 rsiSeries.createPriceLine({price:30,color:'#22c58b',lineWidth:1,lineStyle:2,axisLabelVisible:false,title:''});
 const closeLine=priceChart.addLineSeries({color:'#60a5fa',lineWidth:2,priceLineVisible:false,lastValueVisible:true,visible:false});
 let chartMode='candles',lastBarsSignature='';
-let syncing=false, firstLoad=true,autoDirection='BUY';
+let syncing=false, firstLoad=true,autoDirection='BUY',lastLoadedSymbol='';
 const dragOverlay=document.createElement('div');dragOverlay.className='drag-overlay';$('priceChart').appendChild(dragOverlay);
 const dragLevels={};
 for(const key of ['entry','sl','tp']){
@@ -565,7 +574,7 @@ if(signature!==lastBarsSignature){
  rsiSeries.setData(rsi(bars));
  lastBarsSignature=signature;
 }
-renderSignals(data.signals||[],bars);if(bars.length){if($('orderMode').value==='MARKET')$('entryPrice').value=Number(bars[bars.length-1].close).toFixed(mt5Digits);if(firstLoad){if(!$('entryPrice').value)$('entryPrice').value=Number(bars[bars.length-1].close).toFixed(mt5Digits);if(!$('slPrice').value)$('slPrice').value=Number(bars[bars.length-1].close-(Math.max(mt5TickSize,0.00001)*20)).toFixed(mt5Digits);priceChart.timeScale().fitContent();priceChart.timeScale().applyOptions({rightOffset:10});rsiChart.timeScale().applyOptions({rightOffset:10});firstLoad=false}else if(oldRange){priceChart.timeScale().setVisibleLogicalRange(oldRange)}calcLot();$('feedState').textContent=bars.length+' nến · cập nhật '+new Date().toLocaleTimeString()}else{$('feedState').textContent='Chưa có nến MT5 được gửi lên server';$('signalDetails').textContent='API đã kết nối, đang chờ MT5 gửi dữ liệu OHLC.'} }catch(e){$('feedState').textContent='Lỗi tải dữ liệu: '+e.message}}
+renderSignals(data.signals||[],bars);renderRsiDivergences(data.signals||[],bars);if(bars.length){const symbolChanged=lastLoadedSymbol!==symbol;if(symbolChanged){const base=Number(bars[bars.length-1].close),gap=Math.max(mt5TickSize*20,Math.abs(base)*0.001);latestMarketPrice=base;$('entryPrice').value=base.toFixed(mt5Digits);if(autoDirection==='BUY'){$('slPrice').value=(base-gap).toFixed(mt5Digits);$('tpPrice').value=(base+gap).toFixed(mt5Digits)}else{$('slPrice').value=(base+gap).toFixed(mt5Digits);$('tpPrice').value=(base-gap).toFixed(mt5Digits)}lastLoadedSymbol=symbol}if($('orderMode').value==='MARKET')$('entryPrice').value=Number(bars[bars.length-1].close).toFixed(mt5Digits);if(firstLoad){priceChart.timeScale().fitContent();priceChart.timeScale().applyOptions({rightOffset:10});rsiChart.timeScale().applyOptions({rightOffset:10});firstLoad=false}else if(oldRange){priceChart.timeScale().setVisibleLogicalRange(oldRange)}calcLot();$('feedState').textContent=bars.length+' nến · cập nhật '+new Date().toLocaleTimeString()}else{$('feedState').textContent='Chưa có nến MT5 được gửi lên server';$('signalDetails').textContent='API đã kết nối, đang chờ MT5 gửi dữ liệu OHLC.'} }catch(e){$('feedState').textContent='Lỗi tải dữ liệu: '+e.message}}
 
 let chartOpenPositions=[],positionLines=[],positionSignature='';
 function renderChartPositions(positions){
@@ -712,6 +721,13 @@ const chartResizeObserver=new ResizeObserver(()=>{
 chartResizeObserver.observe($('priceChart'));
 chartResizeObserver.observe($('rsiChart'));
 document.querySelectorAll('[data-tf]').forEach(x=>x.classList.toggle('selected',x.dataset.tf===$('tf').value));
+const rsiResizeHandle=$('rsiResizeHandle');
+let rsiDragStartY=0,rsiDragStartHeight=170;
+try{const saved=Number(localStorage.getItem('chartRsiHeight'));if(saved>=100&&saved<=420){$('rsiChart').style.height=saved+'px';$('rsiChart').style.flexBasis=saved+'px'}}catch(_){}
+rsiResizeHandle.addEventListener('pointerdown',e=>{e.preventDefault();rsiDragStartY=e.clientY;rsiDragStartHeight=$('rsiChart').getBoundingClientRect().height;rsiResizeHandle.setPointerCapture(e.pointerId);rsiResizeHandle.dataset.dragging='1'});
+rsiResizeHandle.addEventListener('pointermove',e=>{if(rsiResizeHandle.dataset.dragging!=='1')return;const stage=$('.chart-stage').getBoundingClientRect();const next=Math.max(100,Math.min(420,rsiDragStartHeight+rsiDragStartY-e.clientY));$('rsiChart').style.height=next+'px';$('rsiChart').style.flexBasis=next+'px';rsiChart.applyOptions({width:$('rsiChart').clientWidth,height:next});try{localStorage.setItem('chartRsiHeight',String(Math.round(next)))}catch(_){}});
+const stopRsiResize=()=>{rsiResizeHandle.dataset.dragging='0';requestAnimationFrame(()=>{rsiChart.applyOptions({width:$('rsiChart').clientWidth,height:$('rsiChart').clientHeight});priceChart.applyOptions({width:$('priceChart').clientWidth,height:$('priceChart').clientHeight})})};
+rsiResizeHandle.addEventListener('pointerup',stopRsiResize);rsiResizeHandle.addEventListener('pointercancel',stopRsiResize);
 load();setInterval(load,5000);refreshChartPositions();setInterval(refreshChartPositions,3000);
 </script>
 </body></html>
