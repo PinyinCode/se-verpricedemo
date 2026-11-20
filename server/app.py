@@ -97,6 +97,13 @@ def init_db() -> None:
           opened_at REAL NOT NULL, updated_at TEXT NOT NULL
         )""")
         conn.execute("""
+        CREATE TABLE IF NOT EXISTS paper_history (
+          id TEXT PRIMARY KEY, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
+          direction TEXT NOT NULL, entry REAL NOT NULL, sl REAL NOT NULL, tp REAL NOT NULL,
+          volume REAL NOT NULL, risk REAL NOT NULL, profit REAL NOT NULL,
+          outcome TEXT NOT NULL, opened_at REAL NOT NULL, closed_at REAL NOT NULL
+        )""")
+        conn.execute("""
         CREATE TABLE IF NOT EXISTS today_signals (
           signal_key TEXT PRIMARY KEY, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
           direction TEXT NOT NULL, divergence TEXT NOT NULL, signal_type TEXT NOT NULL,
@@ -151,6 +158,11 @@ class PaperPositionIn(BaseModel):
 
 class PaperPositionsIn(BaseModel):
     positions: list[PaperPositionIn] = Field(default_factory=list, max_length=100)
+
+
+class PaperClosedIn(PaperPositionIn):
+    outcome: Literal["PAPER_TP", "PAPER_SL"]
+    closed_at: float = Field(gt=0)
 
 
 class AckIn(BaseModel):
@@ -396,6 +408,21 @@ def update_paper_positions(payload: PaperPositionsIn):
     return {"ok": True, "open_positions": len(payload.positions), "updated_at": now}
 
 
+@app.post("/api/paper/closed", dependencies=[Depends(require_key)])
+def record_paper_closed(payload: PaperClosedIn):
+    with db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO paper_history(id,symbol,timeframe,direction,entry,sl,tp,volume,risk,profit,outcome,opened_at,closed_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            (payload.id, payload.symbol.upper(), payload.timeframe, payload.direction,
+             payload.entry, payload.sl, payload.tp, payload.volume, payload.risk,
+             payload.profit, payload.outcome, payload.opened_at, payload.closed_at),
+        )
+        conn.execute("INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
+                     ("paper_closed", f"{payload.symbol} {payload.direction} {payload.outcome} P/L={payload.profit:.2f}", utc_now()))
+    return {"ok": True}
+
+
 @app.post("/api/heartbeat", dependencies=[Depends(require_key)])
 def heartbeat(payload: HeartbeatIn):
     with db() as conn:
@@ -501,6 +528,9 @@ def dashboard_data():
         paper_positions = [dict(r) for r in conn.execute(
             "SELECT id,symbol,timeframe,direction,entry,sl,tp,volume,risk,profit,opened_at,updated_at "
             "FROM paper_positions ORDER BY opened_at DESC").fetchall()]
+        paper_history = [dict(r) for r in conn.execute(
+            "SELECT id,symbol,timeframe,direction,entry,sl,tp,volume,risk,profit,outcome,opened_at,closed_at "
+            "FROM paper_history ORDER BY closed_at DESC LIMIT 50").fetchall()]
         heartbeats = [dict(r) for r in conn.execute(
             "SELECT component,status,details,updated_at FROM heartbeats ORDER BY component").fetchall()]
         for item in heartbeats:
@@ -534,6 +564,6 @@ def dashboard_data():
             "SELECT symbol,timeframe,direction,divergence,signal_type,signal_time,price1,price2,rsi1,rsi2 "
             "FROM today_signals ORDER BY signal_time DESC LIMIT 200").fetchall()]
     return {"mode": "DEMO_ONLY", "signals": signals, "today_signals": today_signals,
-            "paper_positions": paper_positions,
+            "paper_positions": paper_positions, "paper_history": paper_history,
             "heartbeats": heartbeats, "scan_status": scans, "counts": counts,
             "events": events, "server_time": utc_now()}
