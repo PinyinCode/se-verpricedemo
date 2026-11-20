@@ -11,7 +11,7 @@ input string ApiKey = "SET_A_LONG_RANDOM_API_KEY";
 input string ConsumerId = "trade-v9-paper";
 input int PollSeconds = 3;
 input int HeartbeatSeconds = 15;
-input double VirtualRiskMoney = 25.0;
+// Chart requests supply their own cash risk and calculated lot.
 input double RewardRiskRatio = 2.0;
 input int MaxOpenPaperTrades = 3;
 input int MaxPerSymbol = 1;
@@ -140,35 +140,24 @@ double NormalizeVolume(string symbol,double raw)
    return NormalizeDouble(v,digits);
 }
 
-double CalcVirtualVolume(string symbol,double entry,double sl)
+bool AddPaperTrade(string id,string symbol,string tf,string direction,double entry,double sl,double riskMoney,double requestedLot)
 {
-   double tickSize=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_SIZE);
-   double tickValue=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_VALUE);
-   double distance=MathAbs(entry-sl);
-   if(tickSize<=0 || tickValue<=0 || distance<=0) return 0;
-   double lossPerLot=(distance/tickSize)*tickValue;
-   if(lossPerLot<=0) return 0;
-   return NormalizeVolume(symbol,VirtualRiskMoney/lossPerLot);
-}
-
-void AddPaperTrade(string id,string symbol,string tf,string direction,double entry,double sl,double riskMoney,double requestedLot)
-{
-   if(!SymbolSelect(symbol,true)) { Ack(id,"REJECTED","Symbol unavailable in Market Watch"); return; }
+   if(!SymbolSelect(symbol,true)) { Ack(id,"REJECTED","Symbol unavailable in Market Watch"); return false; }
    double bid=SymbolInfoDouble(symbol,SYMBOL_BID);
    double ask=SymbolInfoDouble(symbol,SYMBOL_ASK);
-   if(bid<=0 || ask<=0) { Ack(id,"REJECTED","No live quote; paper entry not recorded"); return; }
+   if(bid<=0 || ask<=0) { Ack(id,"REJECTED","No live quote; paper entry not recorded"); return false; }
    double distance=MathAbs(entry-sl);
    double tickSize=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_SIZE);
    double tickValue=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_VALUE_LOSS);
    if(tickValue<=0) tickValue=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_VALUE);
    if(distance<=0 || tickSize<=0 || tickValue<=0 || riskMoney<=0)
-   { Ack(id,"REJECTED","Invalid risk or MT5 tick contract data"); return; }
+   { Ack(id,"REJECTED","Invalid risk or MT5 tick contract data"); return false; }
    double volume=NormalizeVolume(symbol,requestedLot);
    if(volume<=0)
-   { Ack(id,"REJECTED","Requested lot is outside MT5 min/max/step"); return; }
+   { Ack(id,"REJECTED","Requested lot is outside MT5 min/max/step"); return false; }
    double actualRisk=(distance/tickSize)*tickValue*volume;
    if(actualRisk>riskMoney+MathMax(0.01,riskMoney*0.005))
-   { Ack(id,"REJECTED","Calculated lot exceeds requested cash risk using MT5 contract data"); return; }
+   { Ack(id,"REJECTED","Calculated lot exceeds requested cash risk using MT5 contract data"); return false; }
    double tp=(direction=="BUY") ? entry+distance*RewardRiskRatio : entry-distance*RewardRiskRatio;
 
    int n=ArraySize(trades); ArrayResize(trades,n+1);
@@ -183,6 +172,7 @@ void AddPaperTrade(string id,string symbol,string tf,string direction,double ent
          " virtual lots=",DoubleToString(volume,4)," risk=$",DoubleToString(actualRisk,2),
          " requested risk=$",DoubleToString(riskMoney,2));
    Ack(id,"SIMULATED","Paper position opened with chart-calculated lot; MT5 risk revalidated; no broker order sent");
+   return true;
 }
 
 void ManagePaperTrades()
@@ -228,7 +218,7 @@ void PollServer()
    for(int i=0;i<ArraySize(lastTradeTime);i++)
       if(lastSource[i]==symbol && TimeCurrent()-lastTradeTime[i]<CooldownMinutes*60)
       { Ack(id,"REJECTED","Paper cooldown active"); return; }
-   AddPaperTrade(id,symbol,tf,direction,entry,sl,riskMoney,requestedLot);
+   if(!AddPaperTrade(id,symbol,tf,direction,entry,sl,riskMoney,requestedLot)) return;
    int n=ArraySize(lastSource);
    if(n==0) { ArrayResize(lastSource,1); ArrayResize(lastTradeTime,1); }
    else { ArrayResize(lastSource,n+1); ArrayResize(lastTradeTime,n+1); }
