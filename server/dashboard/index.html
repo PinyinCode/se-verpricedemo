@@ -36,17 +36,65 @@ tr:hover td{background:rgba(85,128,176,.055)}
 #tradeWorkspace iframe{background:#080f1b}
 select{background:#17263c;color:var(--text);border:1px solid #354963;border-radius:7px}
 @media(max-width:800px){main{padding:9px}.grid{gap:7px;margin:9px 0}.card,section{border-radius:9px;padding:12px}#tradeWorkspace iframe{height:1000px}}
+
+/* Compact dashboard overview and signal tables */
+.overview{display:grid;grid-template-columns:minmax(0,1fr);gap:8px;margin:10px 0}
+.overview .grid{grid-template-columns:repeat(4,minmax(0,1fr));gap:8px;margin:0}
+.overview .card{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:9px 13px;min-height:58px;border-radius:9px;box-shadow:none}
+.overview .card .muted{font-size:11px;line-height:1.25}
+.overview .metric{font-size:22px;margin:0;line-height:1.1}
+.scan-compact{padding:9px 12px;border-radius:9px;box-shadow:none}
+.scan-compact h2{font-size:13px}
+.scan-compact .chips{gap:6px;margin-top:7px}
+.scan-compact .chip{padding:3px 8px;font-size:11px}
+.scan-compact .chip small{font-size:10px}
+.today-panel{padding:12px 14px;margin-bottom:10px}
+.today-panel .scan-head{margin-bottom:4px}
+.today-panel h2{font-size:14px;margin:0}
+.today-panel .wrap{margin-top:5px!important;max-height:250px}
+.today-panel table{white-space:nowrap}
+.today-panel th,.today-panel td{padding:6px 8px;font-size:11px}
+.today-panel thead th{position:sticky;top:0;z-index:1}
+.layout{grid-template-columns:minmax(0,2fr) minmax(250px,1fr);gap:10px}
+.layout>section{padding:12px}
+.layout h2{font-size:14px}
+.layout .wrap{max-height:360px}
+.layout th,.layout td{padding:6px 7px;font-size:11px}
+#historyCount{font-size:11px}
+#services .item,#events .item{padding:7px 0}
+@media(max-width:800px){
+ .overview{gap:7px;margin:8px 0}
+ .overview .grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .overview .card{min-height:50px;padding:8px 10px}
+ .overview .metric{font-size:20px}
+ .scan-compact{padding:8px 10px}
+ .today-panel{padding:9px;margin-bottom:8px}
+ .today-panel .wrap{max-height:220px}
+ .layout{grid-template-columns:1fr}
+ .layout .wrap{max-height:300px}
+}
+@media(max-width:420px){
+ .overview .card{align-items:flex-start;flex-direction:column;gap:3px}
+ .overview .card .muted{font-size:10px}
+ .overview .metric{font-size:19px}
+ .scan-compact .chip{gap:5px;padding:3px 6px}
+ .scan-compact .chip small{padding-left:5px}
+ .today-panel th,.today-panel td{padding:5px 6px;font-size:10px}
+}
+
 </style></head><body><main>
 <div class="top"><div><h1>Forex AI Server</h1><div class="muted">Giám sát hệ thống phân tích và MT5 bridge</div></div><div style="display:flex;align-items:center;gap:10px"><span class="pill">DEMO / PAPER ONLY</span></div></div>
 <section id="tradeWorkspace" style="margin:16px 0;padding:0;overflow:hidden"><iframe src="/chart?embedded=1" title="Forex AI Trading Chart" allow="fullscreen" style="display:block;width:100%;height:980px;border:0;background:#0b1220"></iframe></section>
+<div class="overview">
 <div class="grid">
 <div class="card"><div class="muted">Tín hiệu chờ</div><div class="metric" id="pending">0</div></div>
 <div class="card"><div class="muted">Đã mô phỏng</div><div class="metric" id="done">0</div></div>
 <div class="card"><div class="muted">Đã hết hạn</div><div class="metric" id="expired">0</div></div>
 <div class="card"><div class="muted">MT5 Connector</div><div class="metric" id="mt5">—</div></div>
 </div>
-<section style="margin-bottom:14px"><div class="scan-head"><h2 style="margin:0">Symbol đang quét</h2><span id="scanUpdated" class="scan-muted">Chưa nhận dữ liệu từ AI OOP V8</span></div><div id="scanSymbols" class="chips"><span class="scan-muted">Đang chờ dữ liệu quét...</span></div></section>
-<section style="margin-bottom:14px"><div class="scan-head"><h2 style="margin:0">TODAY SIGNALS (GMT+7) · AI OOP V8</h2><span id="todayCount" class="scan-muted">Đang chờ dữ liệu từ MT5</span></div><div class="wrap" style="margin-top:10px"><table><thead><tr><th>Thời gian (GMT+7)</th><th>Mã</th><th>TF</th><th>Hướng</th><th>Phân kỳ</th><th>Loại</th><th>Giá 1</th><th>Giá 2</th></tr></thead><tbody id="todaySignals"><tr><td colspan="8" class="empty">Đang chờ AI OOP V8 gửi dữ liệu...</td></tr></tbody></table></div></section>
+<section class="scan-compact"><div class="scan-head"><h2 style="margin:0">Symbol đang quét</h2><span id="scanUpdated" class="scan-muted">Chưa nhận dữ liệu từ AI OOP V8</span></div><div id="scanSymbols" class="chips"><span class="scan-muted">Đang chờ dữ liệu quét...</span></div></section>
+</div>
+<section class="today-panel"><div class="scan-head"><h2 style="margin:0">TODAY SIGNALS (GMT+7) · AI OOP V8</h2><span id="todayCount" class="scan-muted">Đang chờ dữ liệu từ MT5</span></div><div class="wrap" style="margin-top:10px"><table><thead><tr><th>Thời gian (GMT+7)</th><th>Mã</th><th>TF</th><th>Hướng</th><th>Phân kỳ</th><th>Loại</th><th>Giá 1</th><th>Giá 2</th></tr></thead><tbody id="todaySignals"><tr><td colspan="8" class="empty">Đang chờ AI OOP V8 gửi dữ liệu...</td></tr></tbody></table></div></section>
 <div class="layout"><section><div class="scan-head"><h2 style="margin:0">Lịch sử tín hiệu (100 gần nhất)</h2><select id="signalFilter" aria-label="Lọc lịch sử" style="background:#17243a;color:var(--text);border:1px solid var(--line);border-radius:7px;padding:7px"><option value="ALL">Tất cả trạng thái</option><option value="pending">Đang chờ</option><option value="claimed">Đang xử lý</option><option value="SIMULATED">Đã mô phỏng</option><option value="REJECTED">Bị từ chối</option><option value="ERROR">Lỗi xử lý</option><option value="expired">Hết hạn</option></select></div><div class="scan-muted" id="historyCount" style="margin:8px 0">Đang tải lịch sử...</div><div class="wrap"><table><thead><tr><th>Thời gian</th><th>Mã</th><th>TF</th><th>Hướng</th><th>Entry</th><th>SL</th><th>Score</th><th>Loại tín hiệu</th><th>Trạng thái</th></tr></thead><tbody id="signals"><tr><td colspan="9" class="empty">Đang tải...</td></tr></tbody></table></div></section>
 <section><h2>Trạng thái dịch vụ</h2><div id="services" class="muted">Chưa có heartbeat</div><h2 style="margin-top:18px">Sự kiện</h2><div id="events"></div></section></div>
 <div class="muted" style="margin-top:16px">Tự cập nhật mỗi 3 giây · <span id="updated">—</span></div>
