@@ -134,10 +134,7 @@ double NormalizeVolume(string symbol,double raw)
    if(step<=0 || raw<vmin || raw>vmax) return 0;
    double v=MathFloor((raw+1e-10)/step)*step;
    if(v<vmin) return 0;
-   int digits=2;
-   if(step<0.01) digits=3;
-   if(step<0.001) digits=4;
-   return NormalizeDouble(v,digits);
+   return NormalizeDouble(v,8);
 }
 
 bool AddPaperTrade(string id,string symbol,string tf,string direction,double entry,double sl,double riskMoney,double requestedLot)
