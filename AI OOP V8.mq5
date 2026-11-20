@@ -138,7 +138,7 @@ void ClearAllDivergenceData(string sym, string tfStr);
 void CleanupOldSignals();
 void PrintStrongSignalOnce(SSymbolTFData &data, string sym, string tfStr, string type, string divType, double entryPrice, double slPrice, datetime signalTime, string signalKey);
 void PrintRTSignalChange(int currentRTCount, string comment);
-void WriteStrongSignalToGV(string sym, string tfStr, string type, double entryPrice, double slPrice, double highPrice, double lowPrice, bool isStrong, double score = 0);
+void WriteStrongSignalToGV(string sym, string tfStr, string type, double entryPrice, double slPrice, double highPrice, double lowPrice, bool isStrong, string divType, datetime signalTime, double score = 0);
 void PublishScanSymbols(string symbols);
 void CleanupInvalidRTTodaySignals();
 
@@ -427,7 +427,7 @@ void SendDivergenceNotify(string sym, string tfStr, string divType, string direc
       Print("Push FAILED! Error: ",GetLastError());
 }
 
-void WriteStrongSignalToGV(string sym, string tfStr, string type, double entryPrice, double slPrice, double highPrice, double lowPrice, bool isStrong, double score=0)
+void WriteStrongSignalToGV(string sym, string tfStr, string type, double entryPrice, double slPrice, double highPrice, double lowPrice, bool isStrong, string divType, datetime signalTime, double score=0)
 {
    if(!EnableSignalOutput||!isStrong)return;
    string prefix="DIVSIGNAL_";
@@ -436,10 +436,18 @@ void WriteStrongSignalToGV(string sym, string tfStr, string type, double entryPr
    GlobalVariableSet(prefix+"SL",slPrice);
    GlobalVariableSet(prefix+"HIGH",highPrice);
    GlobalVariableSet(prefix+"LOW",lowPrice);
-   GlobalVariableSet(prefix+"TIME",(double)TimeCurrent());
+   GlobalVariableSet(prefix+"TIME",(double)signalTime);
    GlobalVariableSet(prefix+"ACTIVE",1);
    GlobalVariableSet(prefix+"TF",StringToEnum(tfStr));
    if(score>0)GlobalVariableSet(prefix+"SCORE",score);
+   int q=FileOpen("DIVSIGNAL_QUEUE.txt",FILE_READ|FILE_WRITE|FILE_TXT|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(q!=INVALID_HANDLE)
+   {
+      FileSeek(q,0,SEEK_END);
+      string queueLine=StringFormat("%s|%s|%s|%s|%d|%.8f|%.8f|%.2f\r\n",sym,tfStr,type,divType,(int)signalTime,entryPrice,slPrice,score);
+      FileWriteString(q,queueLine);
+      FileClose(q);
+   }
    int h=FileOpen("DIVSIGNAL_SYMBOL.txt",FILE_WRITE|FILE_TXT|FILE_COMMON);
    if(h!=INVALID_HANDLE)
    {
@@ -1386,7 +1394,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   
                   if(isStrong && timeAtMaxHigh >= g_initTime && IsNewsSafe() && shouldTrack)
                   {
-                     WriteStrongSignalToGV(sym, tfStr, "SELL", currentPrice, rtMaxHigh, rtMaxHigh, lastHighPrice, true);
+                     WriteStrongSignalToGV(sym, tfStr, "SELL", currentPrice, rtMaxHigh, rtMaxHigh, lastHighPrice, true, "REG", timeAtMaxHigh);
                      string sigKey = sym + "|" + tfStr + "|SELL|Reg|" + IntegerToString(timeAtMaxHigh);
                      PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "SELL", "Reg", currentPrice, rtMaxHigh, timeAtMaxHigh, sigKey);
                   }
@@ -1448,7 +1456,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   if(isStrong && timeAtMaxRSI >= g_initTime && IsNewsSafe() && shouldTrack)
                   {
                      double sl = MathMax(lastHighPrice, priceAtMaxRSI);
-                     WriteStrongSignalToGV(sym, tfStr, "SELL", currentPrice, sl, lastHighPrice, lastHighPrice, true);
+                     WriteStrongSignalToGV(sym, tfStr, "SELL", currentPrice, sl, lastHighPrice, lastHighPrice, true, "HID", timeAtMaxRSI);
                      string sigKey = sym + "|" + tfStr + "|SELL|Hid|" + IntegerToString(timeAtMaxRSI);
                      PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "SELL", "Hid", currentPrice, sl, timeAtMaxRSI, sigKey);
                   }
@@ -1533,7 +1541,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   
                   if(isStrong && timeAtMinLow >= g_initTime && IsNewsSafe() && shouldTrack)
                   {
-                     WriteStrongSignalToGV(sym, tfStr, "BUY", currentPrice, rtMinLow, lastHighPrice, rtMinLow, true);
+                     WriteStrongSignalToGV(sym, tfStr, "BUY", currentPrice, rtMinLow, lastHighPrice, rtMinLow, true, "REG", timeAtMinLow);
                      string sigKey = sym + "|" + tfStr + "|BUY|Reg|" + IntegerToString(timeAtMinLow);
                      PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "BUY", "Reg", currentPrice, rtMinLow, timeAtMinLow, sigKey);
                   }
@@ -1595,7 +1603,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   if(isStrong && timeAtMinRSI >= g_initTime && IsNewsSafe() && shouldTrack)
                   {
                      double sl = MathMin(lastLowPrice, priceAtMinRSI);
-                     WriteStrongSignalToGV(sym, tfStr, "BUY", currentPrice, sl, lastHighPrice, lastLowPrice, true);
+                     WriteStrongSignalToGV(sym, tfStr, "BUY", currentPrice, sl, lastHighPrice, lastLowPrice, true, "HID", timeAtMinRSI);
                      string sigKey = sym + "|" + tfStr + "|BUY|Hid|" + IntegerToString(timeAtMinRSI);
                      PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "BUY", "Hid", currentPrice, sl, timeAtMinRSI, sigKey);
                   }
