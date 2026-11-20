@@ -407,6 +407,48 @@ body.trade-fullscreen .chart-overlay-bottom .trade-submit button{min-width:78px}
  body.trade-fullscreen .chart-overlay-bottom .trade-submit button{min-width:64px}
 }
 
+
+/* Layout correction: price chart + readable RSI stacked above trade controls */
+body.trade-fullscreen .chart-workspace{
+ display:flex!important;flex-direction:column!important;height:100%!important;min-height:0!important;overflow:hidden!important;
+}
+body.trade-fullscreen .chart-workspace .chart-stage{
+ position:relative!important;display:flex!important;flex:1 1 auto!important;flex-direction:column!important;
+ min-height:300px!important;overflow:hidden!important;
+}
+body.trade-fullscreen .chart-stage #priceChart{
+ position:relative!important;inset:auto!important;left:auto!important;right:auto!important;top:auto!important;bottom:auto!important;
+ display:block!important;width:100%!important;height:auto!important;min-height:170px!important;flex:1 1 auto!important;
+}
+body.trade-fullscreen .chart-stage #rsiChart{
+ position:relative!important;inset:auto!important;left:auto!important;right:auto!important;top:auto!important;bottom:auto!important;
+ display:block!important;width:100%!important;height:170px!important;min-height:150px!important;flex:0 0 170px!important;
+ border-top:1px solid #34445c!important;background:#101b2c;
+}
+body.trade-fullscreen .chart-overlay-bottom{
+ position:relative!important;left:auto!important;right:auto!important;top:auto!important;bottom:auto!important;
+ z-index:15;flex:0 0 auto!important;margin:0!important;display:flex!important;flex-direction:column;gap:0!important;
+ border-top:1px solid #34445c;background:#0d192a;
+}
+body.trade-fullscreen .chart-overlay-bottom>*{
+ width:100%;border-radius:0!important;box-shadow:none!important;backdrop-filter:none!important;
+}
+body.trade-fullscreen .chart-overlay-bottom .trade-strip{padding:6px 9px!important}
+body.trade-fullscreen .chart-overlay-bottom .trade-footer{padding:6px 9px!important}
+body.trade-fullscreen .chart-workspace .statusline{flex:0 0 auto}
+@media(max-width:600px){
+ body.trade-fullscreen .chart-stage{min-height:260px!important}
+ body.trade-fullscreen .chart-stage #priceChart{min-height:150px!important}
+ body.trade-fullscreen .chart-stage #rsiChart{height:158px!important;min-height:150px!important;flex-basis:158px!important}
+ body.trade-fullscreen .chart-overlay-bottom .trade-fields{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+ body.trade-fullscreen .chart-overlay-bottom .trade-footer{grid-template-columns:minmax(0,1fr) auto!important}
+}
+@media(orientation:landscape) and (max-height:520px){
+ body.trade-fullscreen .chart-stage{min-height:220px!important}
+ body.trade-fullscreen .chart-stage #rsiChart{height:132px!important;min-height:125px!important;flex-basis:132px!important}
+ body.trade-fullscreen .chart-overlay-bottom .trade-fields{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+}
+
 </style>
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.2/dist/lightweight-charts.standalone.production.js"></script>
 </head>
