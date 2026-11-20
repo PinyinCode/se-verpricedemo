@@ -769,22 +769,33 @@ document.querySelectorAll('[data-tf]').forEach(x=>x.classList.toggle('selected',
 const rsiResizeHandle=$('rsiResizeHandle');
 const lotResizeHandle=$('lotResizeHandle');
 let activeResize=null,resizeStartY=0,resizeStartHeight=0;
+function refreshChartAfterResize(){
+ const pw=$('priceChart').clientWidth,ph=$('priceChart').clientHeight;
+ const rw=$('rsiChart').clientWidth,rh=$('rsiChart').clientHeight;
+ if(pw>0&&ph>0)priceChart.applyOptions({width:pw,height:ph});
+ if(rw>0&&rh>0)rsiChart.applyOptions({width:rw,height:Math.max(1,rh)});
+ setLevelLines();
+}
 function setRsiHeight(height){
- const stage=$('.chart-stage'),handle=rsiResizeHandle,chart=$('rsiChart');
+ const stage=document.querySelector('.chart-stage'),handle=rsiResizeHandle,chart=$('rsiChart');
+ if(!stage||!handle||!chart)return;
  const max=Math.max(0,stage.clientHeight-handle.offsetHeight-80);
  const next=Math.max(0,Math.min(max,height));
  chart.style.setProperty('height',next+'px','important');
  chart.style.setProperty('flex',`0 0 ${next}px`,'important');
- rsiChart.applyOptions({width:chart.clientWidth,height:Math.max(1,next)});
+ rsiChart.applyOptions({width:chart.clientWidth||1,height:Math.max(1,next)});
+ refreshChartAfterResize();
  try{localStorage.setItem('chartRsiHeight',String(Math.round(next)))}catch(_){}
 }
 function setLotHeight(height){
  const footer=lotResizeHandle.nextElementSibling;
- const workspace=$('.chart-workspace');
+ const workspace=document.querySelector('.chart-workspace');
+ if(!footer||!workspace)return;
  const max=Math.max(56,Math.floor(workspace.clientHeight*.45));
  const next=Math.max(56,Math.min(max,height));
  footer.style.setProperty('height',next+'px','important');
  footer.style.setProperty('flex',`0 0 ${next}px`,'important');
+ refreshChartAfterResize();
  try{localStorage.setItem('chartLotPanelHeight',String(Math.round(next)))}catch(_){}
 }
 try{
@@ -795,8 +806,10 @@ try{
 }catch(_){}
 function startResize(kind,e){
  e.preventDefault();
+ const handle=kind==='rsi'?rsiResizeHandle:lotResizeHandle;
  activeResize=kind;resizeStartY=e.clientY;
  resizeStartHeight=kind==='rsi'?$('rsiChart').getBoundingClientRect().height:lotResizeHandle.nextElementSibling.getBoundingClientRect().height;
+ try{handle.setPointerCapture(e.pointerId)}catch(_){}
  document.body.style.setProperty('user-select','none');
  document.body.style.setProperty('-webkit-user-select','none');
 }
@@ -808,14 +821,17 @@ document.addEventListener('pointermove',e=>{
  const next=resizeStartHeight+resizeStartY-e.clientY;
  if(activeResize==='rsi')setRsiHeight(next);else setLotHeight(next);
 },{passive:false});
-function stopResize(){
+function stopResize(e){
  if(!activeResize)return;
+ const handle=activeResize==='rsi'?rsiResizeHandle:lotResizeHandle;
+ if(e&&e.pointerId!=null){try{handle.releasePointerCapture(e.pointerId)}catch(_){}}
  activeResize=null;
  document.body.style.removeProperty('user-select');
  document.body.style.removeProperty('-webkit-user-select');
  requestAnimationFrame(()=>{
   rsiChart.applyOptions({width:$('rsiChart').clientWidth,height:Math.max(1,$('rsiChart').clientHeight)});
   priceChart.applyOptions({width:$('priceChart').clientWidth,height:$('priceChart').clientHeight});
+  setLevelLines();
  });
 }
 document.addEventListener('pointerup',stopResize);
