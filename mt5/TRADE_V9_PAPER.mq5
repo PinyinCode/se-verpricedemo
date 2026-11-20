@@ -174,6 +174,17 @@ bool AddPaperTrade(string id,string symbol,string tf,string direction,double ent
    return true;
 }
 
+void SendPaperClosed(int i,string outcome,double realized)
+{
+   string body=StringFormat("{\\"id\\":\\"%s\\",\\"symbol\\":\\"%s\\",\\"timeframe\\":\\"%s\\",\\"direction\\":\\"%s\\",\\"entry\\":%.10f,\\"sl\\":%.10f,\\"tp\\":%.10f,\\"volume\\":%.8f,\\"risk\\":%.2f,\\"profit\\":%.2f,\\"opened_at\\":%.0f,\\"outcome\\":\\"%s\\",\\"closed_at\\":%.0f}",
+      trades[i].id,trades[i].symbol,trades[i].timeframe,trades[i].direction,
+      trades[i].entry,trades[i].sl,trades[i].tp,trades[i].volume,trades[i].riskMoney,
+      realized,(double)trades[i].opened,outcome,(double)TimeCurrent());
+   string response; int status;
+   if(!Request("POST","/api/paper/closed",body,response,status))
+      Print("[PAPER V9] Closed history sync failed HTTP=",status," response=",response);
+}
+
 void ManagePaperTrades()
 {
    for(int i=ArraySize(trades)-1;i>=0;i--)
@@ -192,6 +203,7 @@ void ManagePaperTrades()
       string outcome=target ? "PAPER_TP" : "PAPER_SL";
       Print("[PAPER CLOSE] ",outcome," ",s," signal=",trades[i].id,
             " volume=",DoubleToString(trades[i].volume,4)," realized P/L=",DoubleToString(realized,2));
+      SendPaperClosed(i,outcome,realized);
       int last=ArraySize(trades)-1;
       for(int j=i;j<last;j++) trades[j]=trades[j+1];
       ArrayResize(trades,last);
