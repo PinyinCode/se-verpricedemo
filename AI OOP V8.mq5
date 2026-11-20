@@ -139,6 +139,7 @@ void CleanupOldSignals();
 void PrintStrongSignalOnce(SSymbolTFData &data, string sym, string tfStr, string type, string divType, double entryPrice, double slPrice, datetime signalTime, string signalKey);
 void PrintRTSignalChange(int currentRTCount, string comment);
 void WriteStrongSignalToGV(string sym, string tfStr, string type, double entryPrice, double slPrice, double highPrice, double lowPrice, bool isStrong, double score = 0);
+void PublishScanSymbols(string symbols);
 void CleanupInvalidRTTodaySignals();
 
 //+------------------------------------------------------------------+
@@ -897,6 +898,14 @@ int OnInit()
 //+------------------------------------------------------------------+
 //| ONTIMER                                                           |
 //+------------------------------------------------------------------+
+void PublishScanSymbols(string symbols)
+{
+   int h=FileOpen("DIVSCAN_SYMBOLS.txt",FILE_WRITE|FILE_TXT|FILE_COMMON);
+   if(h==INVALID_HANDLE) return;
+   FileWriteString(h,IntegerToString((int)TimeCurrent())+"#"+symbols);
+   FileClose(h);
+}
+
 void OnTimer()
 {
    GlobalVariableSet("HB_RSI_Indicator",(double)TimeCurrent());
@@ -916,6 +925,7 @@ void OnTimer()
    
    if(g_isNewsBlocked)
    {
+      PublishScanSymbols("");
       g_statusColor=clrOrangeRed;
       g_statusText="NEWS BLOCKED";
       Draw("NEWS BLOCKED");
@@ -943,6 +953,7 @@ void OnTimer()
    
    if(has_crash)
    {
+      PublishScanSymbols("");
       g_statusColor=clrRed;
       g_statusText="CRASHED!";
       Draw("CRASHED");
@@ -951,6 +962,7 @@ void OnTimer()
    
    if(!isScanTime)
    {
+      PublishScanSymbols("");
       g_statusColor=clrGray;
       g_statusText="STANDBY";
       Draw("STANDBY");
@@ -980,6 +992,7 @@ void OnTimer()
    datetime histTimes[];
    int histCount=0;
    
+   string scannedSymbols="";
    int totalSymbols=SymbolsTotal(true);
    for(int s=0; s<totalSymbols; s++)
    {
@@ -995,6 +1008,8 @@ void OnTimer()
             ProcessSymbolTF(idx,rtLines,rtCount,histLines,histTimes,histCount);
             ClearInactiveRTDivergence(sym,"M15",PERIOD_M15);
          }
+         if(scannedSymbols!="") scannedSymbols+=";";
+         scannedSymbols+=sym+"|M15";
       }
       
       if(EnableH1)
@@ -1006,8 +1021,11 @@ void OnTimer()
             ProcessSymbolTF(idx,rtLines,rtCount,histLines,histTimes,histCount);
             ClearInactiveRTDivergence(sym,"H1",PERIOD_H1);
          }
+         if(scannedSymbols!="") scannedSymbols+=";";
+         scannedSymbols+=sym+"|H1";
       }
    }
+   PublishScanSymbols(scannedSymbols);
    
    string dc="";
    static string slr="";
