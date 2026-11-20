@@ -74,9 +74,14 @@ def init_db() -> None:
         CREATE TABLE IF NOT EXISTS candles (
           symbol TEXT NOT NULL, timeframe TEXT NOT NULL, candle_time INTEGER NOT NULL,
           open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL, close REAL NOT NULL,
-          volume REAL NOT NULL DEFAULT 0,
+          volume REAL NOT NULL DEFAULT 0, digits INTEGER NOT NULL DEFAULT 5,
+          tick_size REAL NOT NULL DEFAULT 0.00001, tick_value REAL NOT NULL DEFAULT 0,
           PRIMARY KEY(symbol,timeframe,candle_time)
         )""")
+        cols = {row[1] for row in conn.execute("PRAGMA table_info(candles)")}
+        if "digits" not in cols: conn.execute("ALTER TABLE candles ADD COLUMN digits INTEGER NOT NULL DEFAULT 5")
+        if "tick_size" not in cols: conn.execute("ALTER TABLE candles ADD COLUMN tick_size REAL NOT NULL DEFAULT 0.00001")
+        if "tick_value" not in cols: conn.execute("ALTER TABLE candles ADD COLUMN tick_value REAL NOT NULL DEFAULT 0")
         conn.execute("""
         CREATE TABLE IF NOT EXISTS today_signals (
           signal_key TEXT PRIMARY KEY, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
@@ -171,6 +176,9 @@ class CandleItem(BaseModel):
 class CandleBatchIn(BaseModel):
     symbol: str = Field(min_length=3, max_length=32)
     timeframe: Literal["M1", "M5", "M15", "M30", "H1", "H4", "D1"]
+    digits: int = Field(default=5, ge=0, le=10)
+    tick_size: float = Field(default=0.00001, gt=0)
+    tick_value: float = Field(default=0, ge=0)
     candles: list[CandleItem] = Field(min_length=1, max_length=1000)
 
     @field_validator("symbol")
@@ -335,12 +343,13 @@ def update_candles(payload: CandleBatchIn):
         if candle.high < max(candle.open, candle.close, candle.low) or candle.low > min(candle.open, candle.close, candle.high):
             raise HTTPException(status_code=422, detail="OHLC không hợp lệ")
         rows.append((payload.symbol, payload.timeframe, candle.time, candle.open,
-                     candle.high, candle.low, candle.close, candle.volume))
+                     candle.high, candle.low, candle.close, candle.volume, payload.digits, payload.tick_size, payload.tick_value))
     with db() as conn:
         conn.executemany(
-            "INSERT INTO candles(symbol,timeframe,candle_time,open,high,low,close,volume) "
-            "VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(symbol,timeframe,candle_time) DO UPDATE SET "
-            "open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,volume=excluded.volume",
+            "INSERT INTO candles(symbol,timeframe,candle_time,open,high,low,close,volume,digits,tick_size,tick_value) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(symbol,timeframe,candle_time) DO UPDATE SET "
+            "open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,volume=excluded.volume,"
+            "digits=excluded.digits,tick_size=excluded.tick_size,tick_value=excluded.tick_value",
             rows,
         )
         # Keep storage bounded per symbol/timeframe.
@@ -362,7 +371,7 @@ def chart_data(
     symbol = symbol.strip().upper()
     with db() as conn:
         candles = [dict(r) for r in conn.execute(
-            "SELECT candle_time AS time,open,high,low,close,volume FROM candles "
+            "SELECT candle_time AS time,open,high,low,close,volume,digits,tick_size,tick_value FROM candles "
             "WHERE symbol=? AND timeframe=? ORDER BY candle_time DESC LIMIT ?",
             (symbol, timeframe, limit),
         ).fetchall()]
@@ -372,8 +381,9 @@ def chart_data(
             "FROM today_signals WHERE symbol=? AND timeframe=? ORDER BY signal_time DESC LIMIT 200",
             (symbol, timeframe),
         ).fetchall()]
+    meta = {"digits": candles[-1]["digits"], "tick_size": candles[-1]["tick_size"], "tick_value": candles[-1]["tick_value"]} if candles else {"digits": 5, "tick_size": 0.00001, "tick_value": 0}
     return {"mode": "DEMO_ONLY", "symbol": symbol, "timeframe": timeframe,
-            "candles": candles, "signals": signals, "server_time": utc_now()}
+            **meta, "candles": candles, "signals": signals, "server_time": utc_now()}
 
 
 @app.get("/api/dashboard")
