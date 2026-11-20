@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026"
 #property link      "https://www.mql5.com"
-#property version   "1.01"
+#property version   "1.02"
 #property indicator_chart_window
 #property indicator_buffers 1
 #property indicator_plots   1
@@ -86,6 +86,7 @@ int g_todaySignalCount = 0;
 datetime g_lastUpdateTime = 0;
 int g_heartbeatCounter = 0;
 bool g_heartbeatState = false;
+uint g_lastScanDurationMs = 0;
 color g_statusColor = clrDimGray;
 string g_statusText = "KHỞI TẠO...";
 string g_latestRTSignal = "";
@@ -602,7 +603,7 @@ void PrintStrongSignalOnce(SSymbolTFData &data, string sym, string tfStr, string
 {
    if(signalKey==data.lastStrongSignalKey)return;
    datetime gmt7Time=ServerTimeToGMT7(signalTime);
-   Print("STRONG SIGNAL SENT: ",sym," ",tfStr," ",type," ",divType," Entry=",DoubleToString(entryPrice,5)," SL=",DoubleToString(slPrice,5)," Time(GMT+7)=",TimeToString(gmt7Time,TIME_DATE|TIME_MINUTES));
+   Print("STRONG SIGNAL SENT: ",sym," ",tfStr," ",type," ",divType," Entry=",DoubleToString(entryPrice,5)," SL=",DoubleToString(slPrice,5)," Time=",TimeToString(gmt7Time,TIME_DATE|TIME_MINUTES));
    data.lastStrongSignalKey=signalKey;
    data.lastStrongSignalPrintTime=TimeCurrent();
 }
@@ -644,11 +645,10 @@ void PublishTodaySignals()
    int h=FileOpen("DIVTODAY_SIGNALS.txt",FILE_WRITE|FILE_TXT|FILE_COMMON|FILE_SHARE_READ);
    if(h==INVALID_HANDLE) return;
    datetime nowGMT7=GetGMT7Now();
-   FileWriteString(h,"GMT7|"+IntegerToString((int)nowGMT7)+"\r\n");
+   FileWriteString(h,"TIME|"+IntegerToString((int)nowGMT7)+"\r\n");
    for(int i=0;i<g_todaySignalCount;i++)
    {
       string direction=(g_todaySignals[i].type=="BEAR")?"SELL":"BUY";
-      // Giữ nguyên epoch gốc của nến/server để đồng bộ với biểu đồ và API.
       string line=StringFormat("%s|%s|%s|%s|%s|%d|%.8f|%.8f|%.2f|%.2f|%d|%d\r\n",
          g_todaySignals[i].sym,g_todaySignals[i].tfStr,direction,g_todaySignals[i].divType,
          g_todaySignals[i].signalType,(int)g_todaySignals[i].time,
@@ -701,7 +701,7 @@ string BuildTodaySignalsDisplay()
    CleanupInvalidRTTodaySignals();
    PublishTodaySignals();
    
-   string display="\nTODAY SIGNALS (GMT+7) - "+IntegerToString(g_todaySignalCount)+" signals\n";
+   string display="\nTODAY SIGNALS - "+IntegerToString(g_todaySignalCount)+" signals\n";
    display+=" \n";
    
    if(g_todaySignalCount > 0)
@@ -748,7 +748,10 @@ void Draw(string divergenceComment)
    int y=topMargin;
    datetime gmt7Time=GetGMT7Now();
    string timeStr=TimeToString(gmt7Time,TIME_MINUTES|TIME_SECONDS);
-   string heartbeatChar=g_heartbeatState?"*":".";
+   string dotChar=g_heartbeatState?"●":"○";
+   string speedStr=(g_lastScanDurationMs>=1000)
+      ? DoubleToString((double)g_lastScanDurationMs/1000.0,1)+"s"
+      : IntegerToString((int)g_lastScanDurationMs)+"ms";
    
    string tfListStr="";
    if(EnableM15) tfListStr+="M15 ";
@@ -762,13 +765,13 @@ void Draw(string divergenceComment)
    if(EnableNewsFilter)
       newsStatus=g_isNewsBlocked?"NEWS:BLOCKED":"NEWS:SAFE";
    
-   string line1Status=StringFormat("[%s] IND: %s | %s | %s (GMT+7)%s",
-                                    heartbeatChar,g_statusText,tfListStr,timeStr,timeFilterStr);
+   string line1Status=StringFormat("%s %s | %s | %s%s",
+                                    dotChar,speedStr,g_statusText,timeStr,timeFilterStr);
    UpdMsg("HEARTBEAT",line1Status,startX,y,g_statusColor,HeaderFontSize,true);
    y+=rowH+2;
    
-   string line2Features=StringFormat("%s | %s | %s | %s",
-                                      signalStatus,notifyStatus,monoStatus,newsStatus);
+   string line2Features=StringFormat("%s | %s | %s | %s | %s",
+                                      tfListStr,signalStatus,notifyStatus,monoStatus,newsStatus);
    color line2Color=g_isNewsBlocked?clrOrangeRed:clrDimGray;
    UpdMsg("FEATURES",line2Features,startX,y,line2Color,9,false);
    y+=rowH+6;
@@ -907,6 +910,7 @@ int OnInit()
    UpdateTodayBounds();
    g_lastUpdateTime = ct;
    g_heartbeatCounter = 0;
+   g_lastScanDurationMs = 0;
    g_firstScanDone = false;
    g_initTime = ct;
    g_statusText = "KHỞI TẠO...";
@@ -925,7 +929,7 @@ int OnInit()
    if(tfList == "") tfList = "NONE!";
    
    Print("═══════════════════════════════════════════");
-   Print("RSI Divergence Realtime v1.01");
+   Print("RSI Divergence Realtime v1.02");
    Print("   Timeframes: ", tfList);
    Print("═══════════════════════════════════════════");
    
@@ -1025,6 +1029,7 @@ void OnTimer()
       return;
    }
    
+   uint scanStartMs = GetTickCount();
    SRTLine rtLines[];
    int rtCount=0;
    string histLines[];
@@ -1065,6 +1070,7 @@ void OnTimer()
       }
    }
    PublishScanSymbols(scannedSymbols);
+   g_lastScanDurationMs = GetTickCount() - scanStartMs;
    
    string dc="";
    static string slr="";
@@ -1314,7 +1320,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
       datetime gmt7Time = ServerTimeToGMT7(bestBearT2);
       string timeStr = TimeToString(gmt7Time, TIME_DATE|TIME_MINUTES);
       string divShort = bestBearIsReg ? "Reg" : "Hid";
-      arrSymTF[idx].histBearDisplay = "Bear [" + divShort + "] (" + timeStr + " GMT+7)";
+      arrSymTF[idx].histBearDisplay = "Bear [" + divShort + "] (" + timeStr + ")";
       arrSymTF[idx].histBearTime = bestBearT2;
       
       WriteHistoricalDivergence(sym, tfStr, true, bestBearIsReg,
@@ -1336,7 +1342,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
       datetime gmt7Time = ServerTimeToGMT7(bestBullT2);
       string timeStr = TimeToString(gmt7Time, TIME_DATE|TIME_MINUTES);
       string divShort = bestBullIsReg ? "Reg" : "Hid";
-      arrSymTF[idx].histBullDisplay = "Bull [" + divShort + "] (" + timeStr + " GMT+7)";
+      arrSymTF[idx].histBullDisplay = "Bull [" + divShort + "] (" + timeStr + ")";
       arrSymTF[idx].histBullTime = bestBullT2;
       
       WriteHistoricalDivergence(sym, tfStr, false, bestBullIsReg,
@@ -1417,7 +1423,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   string strengthTag = isStrong ? " [STRONG]" : " [WEAK]";
                   
                   ArrayResize(rtLines, rtCount + 1);
-                  rtLines[rtCount].text = "[SELL-RT] [" + tfStr + "] " + sym + " [Reg] (" + timeStr + " GMT+7)" + strengthTag + " [Running...]";
+                  rtLines[rtCount].text = "[SELL-RT] [" + tfStr + "] " + sym + " [Reg] (" + timeStr + ")" + strengthTag + " [Running...]";
                   rtLines[rtCount].time = timeAtMaxHigh;
                   rtLines[rtCount].isToday = (gmt7Time >= todayStartGMT7);
                   rtCount++;
@@ -1478,7 +1484,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   string strengthTag = isStrong ? " [STRONG]" : " [WEAK]";
                   
                   ArrayResize(rtLines, rtCount + 1);
-                  rtLines[rtCount].text = "[SELL-RT] [" + tfStr + "] " + sym + " [Hid] (" + timeStr + " GMT+7)" + strengthTag + " [Running...]";
+                  rtLines[rtCount].text = "[SELL-RT] [" + tfStr + "] " + sym + " [Hid] (" + timeStr + ")" + strengthTag + " [Running...]";
                   rtLines[rtCount].time = timeAtMaxRSI;
                   rtLines[rtCount].isToday = (gmt7Time >= todayStartGMT7);
                   rtCount++;
@@ -1564,7 +1570,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   string strengthTag = isStrong ? " [STRONG]" : " [WEAK]";
                   
                   ArrayResize(rtLines, rtCount + 1);
-                  rtLines[rtCount].text = "[BUY-RT] [" + tfStr + "] " + sym + " [Reg] (" + timeStr + " GMT+7)" + strengthTag + " [Running...]";
+                  rtLines[rtCount].text = "[BUY-RT] [" + tfStr + "] " + sym + " [Reg] (" + timeStr + ")" + strengthTag + " [Running...]";
                   rtLines[rtCount].time = timeAtMinLow;
                   rtLines[rtCount].isToday = (gmt7Time >= todayStartGMT7);
                   rtCount++;
@@ -1625,7 +1631,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   string strengthTag = isStrong ? " [STRONG]" : " [WEAK]";
                   
                   ArrayResize(rtLines, rtCount + 1);
-                  rtLines[rtCount].text = "[BUY-RT] [" + tfStr + "] " + sym + " [Hid] (" + timeStr + " GMT+7)" + strengthTag + " [Running...]";
+                  rtLines[rtCount].text = "[BUY-RT] [" + tfStr + "] " + sym + " [Hid] (" + timeStr + ")" + strengthTag + " [Running...]";
                   rtLines[rtCount].time = timeAtMinRSI;
                   rtLines[rtCount].isToday = (gmt7Time >= todayStartGMT7);
                   rtCount++;
