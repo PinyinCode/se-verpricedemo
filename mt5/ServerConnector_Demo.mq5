@@ -357,9 +357,13 @@ void PublishChartCandles()
    candles+="]";
    int digits=(int)SymbolInfoInteger(symbol,SYMBOL_DIGITS);
    double tickSize=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_SIZE);
-   double tickValue=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_VALUE);
+   double tickValue=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_VALUE_LOSS);
+   if(tickValue<=0) tickValue=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_VALUE);
    if(tickSize<=0) tickSize=SymbolInfoDouble(symbol,SYMBOL_POINT);
-   string body=StringFormat("{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"digits\":%d,\"tick_size\":%.10f,\"tick_value\":%.10f,\"candles\":%s}",symbol,tf,digits,tickSize,tickValue,candles);
+   double volumeMin=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MIN);
+   double volumeMax=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MAX);
+   double volumeStep=SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP);
+   string body=StringFormat("{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"digits\":%d,\"tick_size\":%.10f,\"tick_value\":%.10f,\"volume_min\":%.8f,\"volume_max\":%.8f,\"volume_step\":%.8f,\"candles\":%s}",symbol,tf,digits,tickSize,tickValue,volumeMin,volumeMax,volumeStep,candles);
    string response;
    int status;
    if(!HttpRequest("POST","/api/mt5/candles",body,response,status))
