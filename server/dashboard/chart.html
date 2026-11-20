@@ -343,9 +343,8 @@ function setLevelLines(){
 function updateDirectionFromSL(){
  const sl=Number($('slPrice').value),reference=$('orderMode').value==='MARKET'?latestMarketPrice:Number($('entryPrice').value);
  if(sl>0&&reference>0&&sl!==reference)autoDirection=sl>reference?'SELL':'BUY';
- $('sendBuy').classList.toggle('active',autoDirection==='BUY');$('sendSell').classList.toggle('active',autoDirection==='SELL');
- $('sendBuy').textContent=autoDirection==='BUY'?'BUY · PAPER ✓':'BUY · PAPER';$('sendSell').textContent=autoDirection==='SELL'?'SELL · PAPER ✓':'SELL · PAPER';
- $('requestState').textContent='Tự chọn '+autoDirection+' theo vị trí SL so với giá hiện tại · PAPER ONLY';
+ $('sendBuy').classList.remove('active');$('sendSell').classList.remove('active');
+ $('requestState').textContent='SL đang gợi ý '+autoDirection+'; hướng gửi được quyết định bởi nút BUY hoặc SELL bạn nhấn.';
 }
 function calcLot(){
  const risk=Number($('riskMoney').value),e=Number($('entryPrice').value),sl=Number($('slPrice').value);
@@ -390,8 +389,8 @@ document.addEventListener('fullscreenchange',()=>{if(!document.fullscreenElement
  if(e.key.toLowerCase()==='r'){e.preventDefault();lastBarsSignature='';load()}
  if(e.key==='0'){e.preventDefault();priceChart.timeScale().fitContent();priceChart.timeScale().applyOptions({rightOffset:10})}
 });
-async function sendPaper(){const c=calcLot();if(!c)return;const direction=autoDirection; if((direction==='BUY'&&c.s>=c.e)||(direction==='SELL'&&c.s<=c.e)){$('requestState').textContent='SL phải nằm dưới Entry với BUY và trên Entry với SELL.';return}const mode=$('orderMode').value;const tp=Number($('tpPrice').value)||0;const summary=`XÁC NHẬN YÊU CẦU PAPER\n\n${direction} · ${mode}\nSymbol: ${$('symbol').value} / ${$('tf').value}\nEntry: ${c.e.toFixed(mt5Digits)}\nSL: ${c.s.toFixed(mt5Digits)}\nTP hiển thị: ${tp>0?tp.toFixed(mt5Digits):'Chưa đặt'}\nLot tính toán: ${c.lot.toFixed(4)}\nRisk: ${c.risk.toFixed(2)}\n\nLưu ý: hàng đợi hiện chỉ nhận Entry/SL; Market/Pending và TP chưa được chuyển thành lệnh MT5. Đây chỉ là PAPER, không đặt lệnh broker. Tiếp tục?`;if(!window.confirm(summary))return;const payload={symbol:$('symbol').value,timeframe:$('tf').value,direction,entry:c.e,sl:c.s,score:0,source:'web-chart'};$('requestState').textContent='Đang gửi yêu cầu PAPER...';try{const r=await fetch('/api/chart/request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const d=await r.json();if(!r.ok)throw new Error(d.detail||('HTTP '+r.status));$('requestState').textContent='Đã đưa '+direction+' vào hàng đợi PAPER · ID '+d.signal_id+' · chờ MT5 nhận';}catch(err){$('requestState').textContent='Không gửi được: '+err.message}}
-$('sendBuy').addEventListener('click',sendPaper);$('sendSell').addEventListener('click',sendPaper);
+async function sendPaper(direction){const c=calcLot();if(!c)return; if((direction==='BUY'&&c.s>=c.e)||(direction==='SELL'&&c.s<=c.e)){$('requestState').textContent='SL phải nằm dưới Entry với BUY và trên Entry với SELL.';return}const mode=$('orderMode').value;const tp=Number($('tpPrice').value)||0;const summary=`XÁC NHẬN YÊU CẦU PAPER\n\n${direction} · ${mode}\nSymbol: ${$('symbol').value} / ${$('tf').value}\nEntry: ${c.e.toFixed(mt5Digits)}\nSL: ${c.s.toFixed(mt5Digits)}\nTP hiển thị: ${tp>0?tp.toFixed(mt5Digits):'Chưa đặt'}\nLot tính toán: ${c.lot.toFixed(4)}\nRisk: ${c.risk.toFixed(2)}\n\nLưu ý: hàng đợi hiện chỉ nhận Entry/SL; Market/Pending và TP chưa được chuyển thành lệnh MT5. Đây chỉ là PAPER, không đặt lệnh broker. Tiếp tục?`;if(!window.confirm(summary))return;const payload={symbol:$('symbol').value,timeframe:$('tf').value,direction,entry:c.e,sl:c.s,score:0,source:'web-chart'};$('requestState').textContent='Đang gửi yêu cầu PAPER...';try{const r=await fetch('/api/chart/request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const d=await r.json();if(!r.ok)throw new Error(d.detail||('HTTP '+r.status));$('requestState').textContent='Đã đưa '+direction+' vào hàng đợi PAPER · ID '+d.signal_id+' · chờ MT5 nhận';}catch(err){$('requestState').textContent='Không gửi được: '+err.message}}
+$('sendBuy').addEventListener('click',()=>sendPaper('BUY'));$('sendSell').addEventListener('click',()=>sendPaper('SELL'));
 $('symbol').addEventListener('change',()=>{firstLoad=true;lastBarsSignature='';load()});
 $('tf').addEventListener('change',()=>{firstLoad=true;lastBarsSignature='';load()});
 $('refresh').addEventListener('click',()=>{lastBarsSignature='';load()});
