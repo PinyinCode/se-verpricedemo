@@ -76,7 +76,7 @@ body.trade-fullscreen .drag-line{z-index:8}
 .lot-controls button{padding:4px 9px;font-size:10px}
 .trade-footer{display:grid;grid-template-columns:minmax(220px,1fr) auto minmax(170px, .8fr);gap:12px;align-items:center;padding:7px 10px;background:#101d2e;border-top:1px solid var(--line)}
 .lot-block{min-width:0}.lot-block #lotResult{margin-top:1px}.lot-block .lot-value{display:inline-block;font-size:20px;margin:0 8px 0 0}
-.trade-submit{display:flex;gap:7px}.trade-submit button{min-width:100px;font-weight:750;padding:8px 12px}
+.trade-submit{display:flex;gap:7px}.trade-submit button{min-width:116px;font-weight:750;padding:8px 12px;white-space:nowrap}
 .request-state{text-align:right;line-height:1.35}
 .chart-tools{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 10px;background:#0c1727;border-bottom:1px solid var(--line)}
 .quick-tf,.chart-style{display:flex;align-items:center;gap:3px;flex-wrap:wrap}
@@ -93,7 +93,7 @@ body.trade-fullscreen .drag-line{z-index:8}
  main{padding:7px}.layout{gap:8px}.chart-head{align-items:flex-start}.chart-pickers{width:100%}.chart-actions{width:100%;margin-left:0;justify-content:space-between}.chart-actions #feedState{flex:1;max-width:none}
  .trade-fields{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}.trade-fields input,.trade-fields select,.trade-fields #entryWrap input{width:100%;font-size:12px;padding:6px 5px}
  .trade-options{align-items:flex-start}.trade-options .level-toggles{gap:7px;flex-wrap:wrap}.trade-options .level-toggles label{font-size:10px}
- .trade-footer{grid-template-columns:1fr auto;gap:6px}.trade-submit{grid-column:2;grid-row:1}.request-state{grid-column:1/-1;text-align:left}.trade-submit button{min-width:70px;padding:7px 9px}
+ .trade-footer{grid-template-columns:1fr auto;gap:6px}.trade-submit{grid-column:2;grid-row:1}.request-state{grid-column:1/-1;text-align:left}.trade-submit button{min-width:86px;padding:7px 9px}
  .chart-workspace #priceChart{height:43vh;min-height:260px}.chart-workspace #rsiChart{height:82px}
 }
 body.trade-fullscreen main{padding:6px}
@@ -107,7 +107,7 @@ body.trade-fullscreen .chart-workspace .trade-fields{gap:6px}
 body.trade-fullscreen .chart-workspace .trade-fields input,.chart-workspace .trade-fields select{width:100px;padding:4px 6px}
 body.trade-fullscreen .chart-workspace .trade-footer{padding:5px 8px;grid-template-columns:minmax(180px,1fr) auto minmax(130px,.7fr)}
 body.trade-fullscreen .chart-workspace .lot-value{font-size:18px}
-body.trade-fullscreen .chart-workspace .trade-submit button{padding:6px 9px;min-width:82px}
+body.trade-fullscreen .chart-workspace .trade-submit button{padding:6px 9px;min-width:88px}
 body.trade-fullscreen .chart-workspace .statusline{padding:3px 8px}
 body.trade-fullscreen .signal-panel{display:none}
 @media(max-width:900px){
@@ -142,16 +142,17 @@ select:focus,button:focus-visible,.trade-fields input:focus{outline:none;border-
 button{background:#192941;border-color:#354963}
 button:hover{background:#213651;border-color:#4b6585}
 button.active{background:rgba(39,201,149,.11);border-color:#27c995;color:#70e4bd}
+button.sell.active{background:rgba(240,107,126,.14);border-color:#f06b7e;color:#ff9aaa}
 .trade-strip{background:#0d192a;padding:9px 11px}
 .trade-fields label{color:#aab9cc;font-size:10px;letter-spacing:.35px;text-transform:uppercase}
 .trade-fields input,.trade-fields select{background:#111f33;border-color:#31445f;border-radius:7px}
 .trade-options{margin-top:8px}
 .trade-options .level-toggles label{color:#aebdd0}
 .trade-footer{background:linear-gradient(180deg,#101e31,#0d1929);border-top-color:#2a3b53;padding:9px 11px}
-.trade-submit button{min-width:112px;border-radius:8px}
+.trade-submit button{min-width:118px;border-radius:8px}
 #sendBuy{background:rgba(39,201,149,.12);border-color:#217c62;color:#6de3b8}
 #sendSell{background:rgba(240,107,126,.1);border-color:#8c4050;color:#ff9aaa}
-#requestState{max-width:260px}
+#requestState{max-width:280px}
 .signal-panel{background:#101b2c}
 .signal-panel .panel-head{background:#142239}
 .side{background:linear-gradient(180deg,#111e31,#0e1929)}
@@ -168,7 +169,7 @@ button.active{background:rgba(39,201,149,.11);border-color:#27c995;color:#70e4bd
  .trade-fields label{font-size:9px}
  .trade-fields input,.trade-fields select{border-radius:6px}
  .trade-footer{padding:7px;gap:6px}
- .trade-submit button{min-width:76px;font-size:11px}
+ .trade-submit button{min-width:86px;font-size:11px}
  #requestState{max-width:none}
 }
 
@@ -228,7 +229,7 @@ button.active{background:rgba(39,201,149,.11);border-color:#27c995;color:#70e4bd
   .trade-options{align-items:center}
   .trade-options .level-toggles{gap:6px}
   .trade-options .level-toggles label{font-size:9px}
-  .trade-submit button{min-width:68px;padding:7px 8px}
+  .trade-submit button{min-width:82px;padding:7px 8px}
   .chart-workspace #priceChart{height:46dvh;min-height:260px}
   .chart-workspace #rsiChart{height:68px}
 }
@@ -244,7 +245,7 @@ button.active{background:rgba(39,201,149,.11);border-color:#27c995;color:#70e4bd
   .trade-options .level-toggles{gap:6px}
   .trade-options .level-toggles label{font-size:9px}
   .trade-footer{padding:5px;gap:5px}
-  .trade-submit button{min-width:62px;padding:5px 7px;font-size:10px}
+  .trade-submit button{min-width:76px;padding:5px 7px;font-size:10px}
   .signal-panel #signalTable{max-height:100px}
 }
 body.trade-fullscreen .layout>aside{display:none!important}
@@ -315,7 +316,7 @@ body.trade-fullscreen .chart-overlay-bottom .trade-options .level-toggles{gap:8p
 body.trade-fullscreen .chart-overlay-bottom .trade-options label{font-size:9px}
 body.trade-fullscreen .chart-overlay-bottom .trade-footer{padding:5px 7px;grid-template-columns:minmax(0,1fr) auto minmax(100px,.7fr);gap:7px}
 body.trade-fullscreen .chart-overlay-bottom .lot-value{font-size:16px}
-body.trade-fullscreen .chart-overlay-bottom .trade-submit button{min-width:76px;padding:5px 8px;font-size:11px}
+body.trade-fullscreen .chart-overlay-bottom .trade-submit button{min-width:88px;padding:5px 8px;font-size:11px}
 body.trade-fullscreen .chart-overlay-bottom #contractMeta{display:none}
 body.trade-fullscreen .chart-workspace #rsiChart{height:58px;flex:0 0 58px}
 body.trade-fullscreen .chart-workspace .statusline{display:none}
@@ -343,7 +344,7 @@ body.trade-fullscreen .chart-workspace .statusline{display:none}
  body.trade-fullscreen .chart-overlay-bottom .lot-block .small{font-size:8px}
  body.trade-fullscreen .chart-overlay-bottom .lot-value{font-size:14px}
  body.trade-fullscreen .chart-overlay-bottom .trade-submit{gap:3px}
- body.trade-fullscreen .chart-overlay-bottom .trade-submit button{min-width:58px;padding:5px 6px;font-size:10px}
+ body.trade-fullscreen .chart-overlay-bottom .trade-submit button{min-width:72px;padding:5px 6px;font-size:10px}
  body.trade-fullscreen .chart-overlay-bottom .request-state{display:none}
  body.trade-fullscreen .chart-workspace #rsiChart{height:50px;flex-basis:50px}
 }
@@ -372,7 +373,7 @@ body.trade-fullscreen .chart-overlay-bottom .trade-fields select{width:100%;min-
 body.trade-fullscreen .chart-overlay-bottom .trade-options{margin-top:6px}
 body.trade-fullscreen .chart-overlay-bottom .trade-footer{grid-template-columns:minmax(0,1fr) auto minmax(150px,.55fr);padding:7px 9px;gap:10px}
 body.trade-fullscreen .chart-overlay-bottom .lot-value{font-size:18px}
-body.trade-fullscreen .chart-overlay-bottom .trade-submit button{min-width:94px;min-height:34px;font-size:12px}
+body.trade-fullscreen .chart-overlay-bottom .trade-submit button{min-width:108px;min-height:34px;font-size:12px}
 body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:10px}
 body.trade-fullscreen .signal-panel{display:none!important}
 @media(orientation:portrait){
@@ -385,7 +386,7 @@ body.trade-fullscreen .signal-panel{display:none!important}
  body.trade-fullscreen .chart-overlay-bottom .trade-fields{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
  body.trade-fullscreen .chart-overlay-bottom .trade-footer{grid-template-columns:minmax(0,1fr) auto;gap:5px}
  body.trade-fullscreen .chart-overlay-bottom .request-state{display:none}
- body.trade-fullscreen .chart-overlay-bottom .trade-submit button{min-width:76px}
+ body.trade-fullscreen .chart-overlay-bottom .trade-submit button{min-width:86px}
  body.trade-fullscreen .chart-workspace #rsiChart{flex-basis:54px;height:54px}
 }
 @media(orientation:landscape) and (max-height:520px){
@@ -414,13 +415,13 @@ body.trade-fullscreen .trade-fields label{min-width:0}
 body.trade-fullscreen .trade-fields input{width:100%}
 body.trade-fullscreen .chart-overlay-bottom .trade-fields{grid-template-columns:repeat(2,minmax(0,1fr))}
 body.trade-fullscreen .chart-overlay-bottom .trade-fields label{font-size:9px}
-body.trade-fullscreen .chart-overlay-bottom .trade-submit button{min-width:78px}
+body.trade-fullscreen .chart-overlay-bottom .trade-submit button{min-width:92px}
 @media(max-width:600px){
  body.trade-fullscreen .chart-stage #priceChart{bottom:52px}
  body.trade-fullscreen .chart-stage #rsiChart{height:52px!important}
  body.trade-fullscreen .chart-overlay-bottom{bottom:58px}
  body.trade-fullscreen .chart-overlay-bottom .trade-fields{grid-template-columns:repeat(2,minmax(0,1fr))}
- body.trade-fullscreen .chart-overlay-bottom .trade-submit button{min-width:64px}
+ body.trade-fullscreen .chart-overlay-bottom .trade-submit button{min-width:78px}
 }
 
 /* Resizable RSI separator and divergence overlay */
@@ -529,8 +530,8 @@ body.trade-fullscreen .chart-overlay-bottom .trade-footer{max-height:none!import
 <div class="ohlc-strip" id="ohlcLegend"><b>O —</b><span>H —</span><span>L —</span><span>C —</span><span class="ohlc-change">—</span></div>
 </div>
 <div class="chart-overlay-bottom">
-<div id="lotResizeHandle" role="separator" aria-label="Kéo để thay đổi chiều cao ô khối lượng" title="Kéo để thay đổi chiều cao ô khối lượng"></div><div class="trade-footer"><div class="lot-block"><div id="lotResult" class="small">Đang chờ dữ liệu MT5 để tính lot.</div><div id="contractMeta" class="small">Đang chờ thông số hợp đồng từ MT5...</div><div class="lot-controls"><div class="level-toggles"><label><input id="showEntry" type="checkbox"> Entry</label><label><input id="showSL" type="checkbox" checked> SL</label><label><input id="showTP" type="checkbox" checked> TP</label></div></div></div>
-<div class="trade-submit"><button id="sendBuy" class="active">BUY</button><button id="sendSell">SELL</button></div>
+<div id="lotResizeHandle" role="separator" aria-label="Kéo để thay đổi chiều cao ô khối lượng" title="Kéo để thay đổi chiều cao ô khối lượng"></div><div class="trade-footer"><div class="lot-block"><div id="lotResult" class="small">Đang chờ dữ liệu MT5 để tính lot.</div><div id="contractMeta" class="small">Đang chờ thông số hợp đồng từ MT5...</div><div class="lot-controls"><div class="level-toggles"><label><input id="showEntry" type="checkbox"> Entry (Limit)</label><label><input id="showSL" type="checkbox" checked> SL</label><label><input id="showTP" type="checkbox" checked> TP</label></div></div></div>
+<div class="trade-submit"><button id="sendBuy" class="active">BUY</button><button id="sendSell" class="sell">SELL</button></div>
 <div id="requestState" class="small request-state">Chỉ gửi yêu cầu vào hàng đợi PAPER · không đặt lệnh broker.</div></div>
 </div>
 </div>
@@ -548,14 +549,14 @@ body.trade-fullscreen .chart-overlay-bottom .trade-footer{max-height:none!import
 </main>
 
 <dialog id="tradeSettingsDialog" class="positions-dialog trade-settings-dialog">
- <div class="positions-dialog-head"><div><strong>CÀI ĐẶT GIAO DỊCH PAPER</strong><div class="small">Chế độ, Risk, Entry, SL và TP</div></div><button type="button" id="closeTradeSettings" aria-label="Đóng">✕</button></div>
+ <div class="positions-dialog-head"><div><strong>CÀI ĐẶT GIAO DỊCH PAPER</strong><div class="small">Chế độ, Risk, Entry (Limit), SL và TP</div></div><button type="button" id="closeTradeSettings" aria-label="Đóng">✕</button></div>
  <div class="positions-dialog-body"><div class="settings-fields">
-  <label>Chế độ<select id="orderMode"><option value="MARKET" selected>Market</option><option value="PENDING">Pending</option></select></label>
+  <label>Chế độ<select id="orderMode"><option value="MARKET" selected>Market</option><option value="PENDING">Pending (Limit Only)</option></select></label>
   <label>Risk ($)<input id="riskMoney" type="number" min="0.01" step="1" value="25"></label>
-  <label id="entryWrap">Entry<input id="entryPrice" type="number" step="any"></label>
+  <label id="entryWrap">Entry (Limit)<input id="entryPrice" type="number" step="any"></label>
    <label>SL<input id="slPrice" type="number" step="any"></label>
    <label>TP<input id="tpPrice" type="number" step="any"></label>
- </div><p class="small">Market tự lấy giá hiện tại. Chọn Pending nếu muốn chỉnh Entry thủ công.</p></div>
+ </div><p class="small">Khi bật Entry (Pending), chỉ dùng BUY LIMIT (Entry &lt; giá hiện tại) và SELL LIMIT (Entry &gt; giá hiện tại), không dùng Stop.</p></div>
 </dialog>
 
 <dialog id="positionsDialog" class="positions-dialog">
@@ -597,7 +598,7 @@ rsiSeries.createPriceLine({price:30,color:'#22c58b',lineWidth:1,lineStyle:2,axis
 const volumeSeries=priceChart.addHistogramSeries({priceScaleId:'volume',priceFormat:{type:'volume'},priceLineVisible:false,lastValueVisible:false,base:0});
 priceChart.priceScale('volume').applyOptions({scaleMargins:{top:0.82,bottom:0},visible:false,autoScale:true});
 let lastBarsSignature='';
-let syncing=false, firstLoad=true,autoDirection='BUY',lastLoadedSymbol='';
+let syncing=false, firstLoad=true,autoDirection='BUY',pendingOrderType='BUY_LIMIT',lastLoadedSymbol='';
 const dragOverlay=document.createElement('div');dragOverlay.className='drag-overlay';$('priceChart').appendChild(dragOverlay);
 const dragLevels={};
 for(const key of ['entry','sl','tp']){
@@ -629,7 +630,7 @@ if(signature!==lastBarsSignature){
  rsiSeries.setData(rsi(bars));
  lastBarsSignature=signature;
 }
-renderSignals(data.signals||[],bars);renderRsiDivergences(data.signals||[],bars);if(bars.length){const symbolChanged=lastLoadedSymbol!==symbol;if(symbolChanged){const base=Number(bars[bars.length-1].close),gap=Math.max(mt5TickSize*20,Math.abs(base)*0.001);latestMarketPrice=base;$('entryPrice').value=base.toFixed(mt5Digits);if(autoDirection==='BUY'){$('slPrice').value=(base-gap).toFixed(mt5Digits);$('tpPrice').value=(base+gap).toFixed(mt5Digits)}else{$('slPrice').value=(base+gap).toFixed(mt5Digits);$('tpPrice').value=(base-gap).toFixed(mt5Digits)}lastLoadedSymbol=symbol}if($('orderMode').value==='MARKET')$('entryPrice').value=Number(bars[bars.length-1].close).toFixed(mt5Digits);if(firstLoad){priceChart.timeScale().fitContent();priceChart.timeScale().applyOptions({rightOffset:10});rsiChart.timeScale().applyOptions({rightOffset:10});firstLoad=false}else if(oldRange){priceChart.timeScale().setVisibleLogicalRange(oldRange)}calcLot();$('feedState').textContent=bars.length+' nến · cập nhật '+new Date().toLocaleTimeString()}else{$('feedState').textContent='Chưa có nến MT5 được gửi lên server';$('signalDetails').textContent='API đã kết nối, đang chờ MT5 gửi dữ liệu OHLC.'} }catch(e){$('feedState').textContent='Lỗi tải dữ liệu: '+e.message}}
+renderSignals(data.signals||[],bars);renderRsiDivergences(data.signals||[],bars);if(bars.length){const symbolChanged=lastLoadedSymbol!==symbol;if(symbolChanged){const base=Number(bars[bars.length-1].close),gap=Math.max(mt5TickSize*20,Math.abs(base)*0.001);latestMarketPrice=base;if($('orderMode').value==='PENDING'){$('entryPrice').value=(base-gap).toFixed(mt5Digits);$('slPrice').value=(base-gap*2).toFixed(mt5Digits);$('tpPrice').value=base.toFixed(mt5Digits)}else{$('entryPrice').value=base.toFixed(mt5Digits);if(autoDirection==='BUY'){$('slPrice').value=(base-gap).toFixed(mt5Digits);$('tpPrice').value=(base+gap).toFixed(mt5Digits)}else{$('slPrice').value=(base+gap).toFixed(mt5Digits);$('tpPrice').value=(base-gap).toFixed(mt5Digits)}}lastLoadedSymbol=symbol}if($('orderMode').value==='MARKET')$('entryPrice').value=Number(bars[bars.length-1].close).toFixed(mt5Digits);if(firstLoad){priceChart.timeScale().fitContent();priceChart.timeScale().applyOptions({rightOffset:10});rsiChart.timeScale().applyOptions({rightOffset:10});firstLoad=false}else if(oldRange){priceChart.timeScale().setVisibleLogicalRange(oldRange)}calcLot();$('feedState').textContent=bars.length+' nến · cập nhật '+new Date().toLocaleTimeString()}else{$('feedState').textContent='Chưa có nến MT5 được gửi lên server';$('signalDetails').textContent='API đã kết nối, đang chờ MT5 gửi dữ liệu OHLC.'} }catch(e){$('feedState').textContent='Lỗi tải dữ liệu: '+e.message}}
 
 let chartOpenPositions=[],positionLines=[],positionSignature='',closingIds=new Set();
 function getPositionId(p){return p&&(p.id??p.ticket??p.position_id??p.order_id??p.deal_id??'')}
@@ -755,20 +756,92 @@ $('closeStatsDialog').addEventListener('click',()=>$('statsDialog').close());
 $('statsDialog').addEventListener('click',e=>{if(e.target===$('statsDialog'))$('statsDialog').close()});
 
 function setLevelLines(){
+ const mode=$('orderMode').value;
  for(const key of ['entry','sl','tp']){
   const id=key==='entry'?'entryPrice':key==='sl'?'slPrice':'tpPrice',value=Number($(id).value),toggle=$(key==='entry'?'showEntry':key==='sl'?'showSL':'showTP');
   const y=value>0?candleSeries.priceToCoordinate(value):null,line=dragLevels[key];
-  const mode=$('orderMode').value;
   const allowed=(key!=='entry'||mode==='PENDING');
   line.style.display=allowed&&toggle.checked&&y!=null?'block':'none';
-  if(allowed&&toggle.checked&&y!=null){line.style.top=y+'px';line.firstChild.textContent=key.toUpperCase()+' '+value.toFixed(mt5Digits)}
+  if(allowed&&toggle.checked&&y!=null){
+   line.style.top=y+'px';
+   const labelText=key==='entry'
+    ?(pendingOrderType==='BUY_LIMIT'?'BUY LIMIT':'SELL LIMIT')+' '+value.toFixed(mt5Digits)
+    :key.toUpperCase()+' '+value.toFixed(mt5Digits);
+   line.firstChild.textContent=labelText;
+  }
  }
 }
+
+function getLimitValidation(){
+ const entry=Number($('entryPrice').value);
+ const sl=Number($('slPrice').value);
+ const ref=Number(latestMarketPrice);
+ if(!(entry>0)||!(ref>0)){
+  return {
+   pendingType:pendingOrderType,
+   direction:pendingOrderType==='SELL_LIMIT'?'SELL':'BUY',
+   valid:false,
+   reason:'Chờ giá thị trường và mức Entry Limit hợp lệ.'
+  };
+ }
+ const pendingType=entry<ref?'BUY_LIMIT':'SELL_LIMIT';
+ const direction=pendingType==='BUY_LIMIT'?'BUY':'SELL';
+ if(entry===ref){
+  return {
+   pendingType,
+   direction,
+   valid:false,
+   reason:'Entry Limit phải khác giá hiện tại ('+fmt(ref)+').'
+  };
+ }
+ if(sl>0){
+  if(pendingType==='BUY_LIMIT'&&sl>=entry){
+   return {
+    pendingType,
+    direction,
+    valid:false,
+    reason:'BUY LIMIT yêu cầu SL < Entry Limit ('+fmt(entry)+').'
+   };
+  }
+  if(pendingType==='SELL_LIMIT'&&sl<=entry){
+   return {
+    pendingType,
+    direction,
+    valid:false,
+    reason:'SELL LIMIT yêu cầu SL > Entry Limit ('+fmt(entry)+').'
+   };
+  }
+ }
+ return {pendingType,direction,valid:true,reason:''};
+}
+
 function updateDirectionFromSL(){
- const sl=Number($('slPrice').value),reference=$('orderMode').value==='MARKET'?latestMarketPrice:Number($('entryPrice').value);
+ const mode=$('orderMode').value;
+ if(mode==='PENDING'){
+  const info=getLimitValidation();
+  pendingOrderType=info.pendingType;
+  autoDirection=info.direction;
+  const isBuyLimit=pendingOrderType==='BUY_LIMIT';
+  $('sendBuy').textContent='BUY LIMIT';
+  $('sendSell').textContent='SELL LIMIT';
+  $('sendBuy').classList.toggle('active',isBuyLimit);
+  $('sendSell').classList.toggle('active',!isBuyLimit);
+  $('sendBuy').style.display=isBuyLimit?'':'none';
+  $('sendSell').style.display=!isBuyLimit?'':'none';
+  $('requestState').textContent=info.valid
+   ?('Chế độ Pending: '+(isBuyLimit?'BUY LIMIT (Entry < giá hiện tại)':'SELL LIMIT (Entry > giá hiện tại)')+' · chỉ gửi PAPER.')
+   :('Pending: '+info.reason);
+  return;
+ }
+
+ $('sendBuy').textContent='BUY';
+ $('sendSell').textContent='SELL';
+ const sl=Number($('slPrice').value),reference=Number(latestMarketPrice);
  if(sl>0&&reference>0&&sl!==reference)autoDirection=sl>reference?'SELL':'BUY';
- $('sendBuy').classList.toggle('active',autoDirection==='BUY');$('sendSell').classList.toggle('active',autoDirection==='SELL');
- $('sendBuy').style.display=autoDirection==='BUY'?'':'none';$('sendSell').style.display=autoDirection==='SELL'?'':'none';
+ $('sendBuy').classList.toggle('active',autoDirection==='BUY');
+ $('sendSell').classList.toggle('active',autoDirection==='SELL');
+ $('sendBuy').style.display=autoDirection==='BUY'?'':'none';
+ $('sendSell').style.display=autoDirection==='SELL'?'':'none';
  $('requestState').textContent='SL đang xác định hướng '+autoDirection+' · chỉ gửi PAPER.';
 }
 function volumeDigits(step){
@@ -793,7 +866,8 @@ function calcLot(){
   return null;
  }
  const actualRisk=lot*lossPerLot;
- $('lotResult').innerHTML='<div class="lot-value">'+lot.toFixed(lotDigits)+' LOT</div><div>SL: '+distance.toFixed(mt5Digits)+' · Lỗ/lot: '+lossPerLot.toFixed(2)+' · Risk thực tế: '+actualRisk.toFixed(2)+' / '+risk.toFixed(2)+'</div>';
+ const modeTag=$('orderMode').value==='PENDING'?' · '+pendingOrderType.replace('_',' '):'';
+ $('lotResult').innerHTML='<div class="lot-value">'+lot.toFixed(lotDigits)+' LOT</div><div>SL: '+distance.toFixed(mt5Digits)+' · Lỗ/lot: '+lossPerLot.toFixed(2)+' · Risk thực tế: '+actualRisk.toFixed(2)+' / '+risk.toFixed(2)+modeTag+'</div>';
  return {risk,e,s:sl,lot,actualRisk};
 }
 $('fitChart').addEventListener('click',()=>{
@@ -802,8 +876,28 @@ $('fitChart').addEventListener('click',()=>{
  setLevelLines();
 });
 $('tf').addEventListener('change',()=>document.querySelectorAll('[data-tf]').forEach(x=>x.classList.toggle('selected',x.dataset.tf===$('tf').value)));
-function syncOrderModeFromEntry(){const pending=$('showEntry').checked;$('orderMode').value=pending?'PENDING':'MARKET';$('entryWrap').style.opacity=pending?'1':'.65';$('entryPrice').readOnly=!pending;if(!pending&&latestMarketPrice>0)$('entryPrice').value=latestMarketPrice.toFixed(mt5Digits);setLevelLines();calcLot()}
-['showEntry','showSL','showTP'].forEach(id=>$(id).addEventListener('change',()=>{if(id==='showEntry')syncOrderModeFromEntry();else{setLevelLines();calcLot()}}));$('orderMode').addEventListener('change',()=>{$('showEntry').checked=$('orderMode').value==='PENDING';syncOrderModeFromEntry()});$('showEntry').checked=false;$('entryPrice').readOnly=true;['entryPrice','slPrice','tpPrice','riskMoney'].forEach(id=>$(id).addEventListener('input',calcLot));new ResizeObserver(()=>{setLevelLines();const w=$('priceChart').clientWidth;priceChart.applyOptions({width:w});rsiChart.applyOptions({width:w})}).observe($('priceChart'));
+function syncOrderModeFromEntry(){
+ const pending=$('showEntry').checked;
+ $('orderMode').value=pending?'PENDING':'MARKET';
+ $('entryWrap').style.opacity=pending?'1':'.65';
+ $('entryPrice').readOnly=!pending;
+ if(!pending&&latestMarketPrice>0){
+  $('entryPrice').value=latestMarketPrice.toFixed(mt5Digits);
+ }else if(pending&&latestMarketPrice>0){
+  const curEntry=Number($('entryPrice').value);
+  const gap=Math.max(mt5TickSize*20,Math.abs(latestMarketPrice)*0.001);
+  if(!(curEntry>0)||curEntry===latestMarketPrice){
+   $('entryPrice').value=(latestMarketPrice-gap).toFixed(mt5Digits);
+  }
+ }
+ setLevelLines();
+ calcLot();
+}
+['showEntry','showSL','showTP'].forEach(id=>$(id).addEventListener('change',()=>{if(id==='showEntry')syncOrderModeFromEntry();else{setLevelLines();calcLot()}}));
+$('orderMode').addEventListener('change',()=>{$('showEntry').checked=$('orderMode').value==='PENDING';syncOrderModeFromEntry()});
+$('showEntry').checked=false;$('entryPrice').readOnly=true;
+['entryPrice','slPrice','tpPrice','riskMoney'].forEach(id=>$(id).addEventListener('input',calcLot));
+new ResizeObserver(()=>{setLevelLines();const w=$('priceChart').clientWidth;priceChart.applyOptions({width:w});rsiChart.applyOptions({width:w})}).observe($('priceChart'));
 async function toggleTradeFullscreen(){const on=!document.body.classList.contains('trade-fullscreen');document.body.classList.toggle('trade-fullscreen',on);$('fullscreenToggle').textContent='⛶';if(on&&document.fullscreenEnabled&&!document.fullscreenElement){try{await document.documentElement.requestFullscreen()}catch(e){}}else if(!on&&document.fullscreenElement){try{await document.exitFullscreen()}catch(e){}}requestAnimationFrame(()=>{const w=$('priceChart').clientWidth;priceChart.applyOptions({width:w,height:$('priceChart').clientHeight});rsiChart.applyOptions({width:$('rsiChart').clientWidth,height:$('rsiChart').clientHeight});setLevelLines()})}
 $('fullscreenToggle').addEventListener('click',toggleTradeFullscreen);
 document.addEventListener('fullscreenchange',()=>{if(!document.fullscreenElement&&document.body.classList.contains('trade-fullscreen')){document.body.classList.remove('trade-fullscreen');$('fullscreenToggle').textContent='⛶';requestAnimationFrame(()=>{priceChart.applyOptions({width:$('priceChart').clientWidth,height:$('priceChart').clientHeight});rsiChart.applyOptions({width:$('rsiChart').clientWidth,height:$('rsiChart').clientHeight});setLevelLines()})}});document.addEventListener('keydown',e=>{
@@ -814,7 +908,41 @@ document.addEventListener('fullscreenchange',()=>{if(!document.fullscreenElement
  if(e.key.toLowerCase()==='r'){e.preventDefault();lastBarsSignature='';load()}
  if(e.key==='0'){e.preventDefault();priceChart.timeScale().fitContent();priceChart.timeScale().applyOptions({rightOffset:10})}
 });
-async function sendPaper(direction){const c=calcLot();if(!c)return; if((direction==='BUY'&&c.s>=c.e)||(direction==='SELL'&&c.s<=c.e)){$('requestState').textContent='SL phải nằm dưới Entry với BUY và trên Entry với SELL.';return}const mode=$('orderMode').value;const tp=Number($('tpPrice').value)||0;const summary=`XÁC NHẬN YÊU CẦU PAPER\n\n${direction} · ${mode}\nSymbol: ${$('symbol').value} / ${$('tf').value}\nEntry: ${c.e.toFixed(mt5Digits)}\nSL: ${c.s.toFixed(mt5Digits)}\nTP hiển thị: ${tp>0?tp.toFixed(mt5Digits):'Chưa đặt'}\nLot MT5: ${c.lot.toFixed(volumeDigits(mt5VolumeStep))}\nRisk dự kiến tại SL: ${c.actualRisk.toFixed(2)} / ${c.risk.toFixed(2)}\n\nChỉ truyền Risk và Lot đã tính sang Trade V9 PAPER; không đặt lệnh broker. Tiếp tục?`;if(!window.confirm(summary))return;const payload={symbol:$('symbol').value,timeframe:$('tf').value,direction,entry:c.e,sl:c.s,tp,risk_money:c.risk,requested_lot:c.lot,score:0,source:'web-chart'};$('requestState').textContent='Đang gửi yêu cầu PAPER...';try{const r=await fetch('/api/chart/request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});const d=await r.json();if(!r.ok)throw new Error(d.detail||('HTTP '+r.status));$('requestState').textContent='Đã đưa '+direction+' vào hàng đợi PAPER · ID '+d.signal_id+' · chờ MT5 nhận';}catch(err){$('requestState').textContent='Không gửi được: '+err.message}}
+async function sendPaper(direction){
+ const c=calcLot();
+ if(!c)return;
+ const mode=$('orderMode').value;
+ const tp=Number($('tpPrice').value)||0;
+ if(mode==='PENDING'){
+  const info=getLimitValidation();
+  if(!info.valid){$('requestState').textContent=info.reason;return;}
+  if(info.direction!==direction){$('requestState').textContent='Vị trí Entry Limit hiện tại thuộc về '+info.pendingType.replace('_',' ')+'.';return;}
+  const limitLabel=info.pendingType.replace('_',' ');
+  const summary=`XÁC NHẬN YÊU CẦU PAPER (${limitLabel})\n\nLoại lệnh: ${limitLabel}\nSymbol: ${$('symbol').value} / ${$('tf').value}\nGiá hiện tại: ${fmt(latestMarketPrice)}\nEntry Limit: ${c.e.toFixed(mt5Digits)}\nSL: ${c.s.toFixed(mt5Digits)}\nTP hiển thị: ${tp>0?tp.toFixed(mt5Digits):'Chưa đặt'}\nLot MT5: ${c.lot.toFixed(volumeDigits(mt5VolumeStep))}\nRisk dự kiến tại SL: ${c.actualRisk.toFixed(2)} / ${c.risk.toFixed(2)}\n\nChỉ gửi yêu cầu ${limitLabel} vào hàng đợi PAPER; không đặt lệnh broker. Tiếp tục?`;
+  if(!window.confirm(summary))return;
+  const payload={symbol:$('symbol').value,timeframe:$('tf').value,direction,entry:c.e,sl:c.s,tp,risk_money:c.risk,requested_lot:c.lot,score:0,source:'web-chart'};
+  $('requestState').textContent='Đang gửi yêu cầu '+limitLabel+' PAPER...';
+  try{
+   const r=await fetch('/api/chart/request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+   const d=await r.json();
+   if(!r.ok)throw new Error(d.detail||('HTTP '+r.status));
+   $('requestState').textContent='Đã đưa '+limitLabel+' vào hàng đợi PAPER · ID '+d.signal_id+' · chờ MT5 nhận';
+  }catch(err){$('requestState').textContent='Không gửi được: '+err.message}
+  return;
+ }
+
+ if((direction==='BUY'&&c.s>=c.e)||(direction==='SELL'&&c.s<=c.e)){$('requestState').textContent='SL phải nằm dưới Entry với BUY và trên Entry với SELL.';return}
+ const summary=`XÁC NHẬN YÊU CẦU PAPER\n\n${direction} · ${mode}\nSymbol: ${$('symbol').value} / ${$('tf').value}\nEntry: ${c.e.toFixed(mt5Digits)}\nSL: ${c.s.toFixed(mt5Digits)}\nTP hiển thị: ${tp>0?tp.toFixed(mt5Digits):'Chưa đặt'}\nLot MT5: ${c.lot.toFixed(volumeDigits(mt5VolumeStep))}\nRisk dự kiến tại SL: ${c.actualRisk.toFixed(2)} / ${c.risk.toFixed(2)}\n\nChỉ truyền Risk và Lot đã tính sang Trade V9 PAPER; không đặt lệnh broker. Tiếp tục?`;
+ if(!window.confirm(summary))return;
+ const payload={symbol:$('symbol').value,timeframe:$('tf').value,direction,entry:c.e,sl:c.s,tp,risk_money:c.risk,requested_lot:c.lot,score:0,source:'web-chart'};
+ $('requestState').textContent='Đang gửi yêu cầu PAPER...';
+ try{
+  const r=await fetch('/api/chart/request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+  const d=await r.json();
+  if(!r.ok)throw new Error(d.detail||('HTTP '+r.status));
+  $('requestState').textContent='Đã đưa '+direction+' vào hàng đợi PAPER · ID '+d.signal_id+' · chờ MT5 nhận';
+ }catch(err){$('requestState').textContent='Không gửi được: '+err.message}
+}
 $('sendBuy').addEventListener('click',()=>sendPaper('BUY'));$('sendSell').addEventListener('click',()=>sendPaper('SELL'));
 $('symbol').addEventListener('change',()=>{firstLoad=true;lastBarsSignature='';load()});
 $('tf').addEventListener('change',()=>{firstLoad=true;lastBarsSignature='';load()});
