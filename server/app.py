@@ -82,6 +82,12 @@ def init_db() -> None:
         if "digits" not in cols: conn.execute("ALTER TABLE candles ADD COLUMN digits INTEGER NOT NULL DEFAULT 5")
         if "tick_size" not in cols: conn.execute("ALTER TABLE candles ADD COLUMN tick_size REAL NOT NULL DEFAULT 0.00001")
         if "tick_value" not in cols: conn.execute("ALTER TABLE candles ADD COLUMN tick_value REAL NOT NULL DEFAULT 0")
+        if "volume_min" not in cols: conn.execute("ALTER TABLE candles ADD COLUMN volume_min REAL NOT NULL DEFAULT 0")
+        if "volume_max" not in cols: conn.execute("ALTER TABLE candles ADD COLUMN volume_max REAL NOT NULL DEFAULT 0")
+        if "volume_step" not in cols: conn.execute("ALTER TABLE candles ADD COLUMN volume_step REAL NOT NULL DEFAULT 0")
+        signal_cols = {row[1] for row in conn.execute("PRAGMA table_info(signals)")}
+        if "risk_money" not in signal_cols: conn.execute("ALTER TABLE signals ADD COLUMN risk_money REAL NOT NULL DEFAULT 25")
+        if "requested_lot" not in signal_cols: conn.execute("ALTER TABLE signals ADD COLUMN requested_lot REAL NOT NULL DEFAULT 0")
         conn.execute("""
         CREATE TABLE IF NOT EXISTS today_signals (
           signal_key TEXT PRIMARY KEY, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
@@ -111,6 +117,8 @@ class SignalIn(BaseModel):
     sl: float = Field(gt=0)
     score: float = Field(default=0, ge=0, le=100)
     source: str = Field(default="api", max_length=40)
+    risk_money: float = Field(default=25, gt=0, le=1000000)
+    requested_lot: float = Field(default=0, ge=0, le=1000000)
 
     @field_validator("symbol")
     @classmethod
@@ -179,6 +187,9 @@ class CandleBatchIn(BaseModel):
     digits: int = Field(default=5, ge=0, le=10)
     tick_size: float = Field(default=0.00001, gt=0)
     tick_value: float = Field(default=0, ge=0)
+    volume_min: float = Field(default=0, ge=0)
+    volume_max: float = Field(default=0, ge=0)
+    volume_step: float = Field(default=0, ge=0)
     candles: list[CandleItem] = Field(min_length=1, max_length=1000)
 
     @field_validator("symbol")
@@ -231,10 +242,11 @@ def create_signal(payload: SignalIn):
                         "status": existing["status"], "created_at": existing["created_at"]}
         signal_id = secrets.token_hex(12)
         conn.execute(
-            "INSERT INTO signals(id,symbol,timeframe,direction,entry,sl,score,source,status,created_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO signals(id,symbol,timeframe,direction,entry,sl,score,risk_money,requested_lot,source,status,created_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             (signal_id, payload.symbol, payload.timeframe, payload.direction,
-             payload.entry, payload.sl, payload.score, payload.source, "pending", created),
+             payload.entry, payload.sl, payload.score, payload.risk_money, payload.requested_lot,
+             payload.source, "pending", created),
         )
         conn.execute("INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
                      ("signal_created", f"{payload.symbol} {payload.timeframe} {payload.direction} {signal_id}", created))
@@ -244,6 +256,8 @@ def create_signal(payload: SignalIn):
 @app.post("/api/chart/request")
 def chart_request(payload: SignalIn):
     """Queue a chart-originated paper request; this endpoint never executes broker orders."""
+    if payload.requested_lot <= 0:
+        raise HTTPException(status_code=422, detail="Thiếu lot đã tính từ Risk và khoảng Entry-SL")
     paper_payload = payload.model_copy(update={"source": "web-chart"})
     return create_signal(paper_payload)
 
@@ -391,13 +405,15 @@ def update_candles(payload: CandleBatchIn):
         if candle.high < max(candle.open, candle.close, candle.low) or candle.low > min(candle.open, candle.close, candle.high):
             raise HTTPException(status_code=422, detail="OHLC không hợp lệ")
         rows.append((payload.symbol, payload.timeframe, candle.time, candle.open,
-                     candle.high, candle.low, candle.close, candle.volume, payload.digits, payload.tick_size, payload.tick_value))
+                     candle.high, candle.low, candle.close, candle.volume, payload.digits, payload.tick_size, payload.tick_value,
+                     payload.volume_min, payload.volume_max, payload.volume_step))
     with db() as conn:
         conn.executemany(
-            "INSERT INTO candles(symbol,timeframe,candle_time,open,high,low,close,volume,digits,tick_size,tick_value) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(symbol,timeframe,candle_time) DO UPDATE SET "
+            "INSERT INTO candles(symbol,timeframe,candle_time,open,high,low,close,volume,digits,tick_size,tick_value,volume_min,volume_max,volume_step) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(symbol,timeframe,candle_time) DO UPDATE SET "
             "open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,volume=excluded.volume,"
-            "digits=excluded.digits,tick_size=excluded.tick_size,tick_value=excluded.tick_value",
+            "digits=excluded.digits,tick_size=excluded.tick_size,tick_value=excluded.tick_value,"
+            "volume_min=excluded.volume_min,volume_max=excluded.volume_max,volume_step=excluded.volume_step",
             rows,
         )
         # Keep storage bounded per symbol/timeframe.
@@ -419,7 +435,7 @@ def chart_data(
     symbol = symbol.strip().upper()
     with db() as conn:
         candles = [dict(r) for r in conn.execute(
-            "SELECT candle_time AS time,open,high,low,close,volume,digits,tick_size,tick_value FROM candles "
+            "SELECT candle_time AS time,open,high,low,close,volume,digits,tick_size,tick_value,volume_min,volume_max,volume_step FROM candles "
             "WHERE symbol=? AND timeframe=? ORDER BY candle_time DESC LIMIT ?",
             (symbol, timeframe, limit),
         ).fetchall()]
@@ -429,7 +445,7 @@ def chart_data(
             "FROM today_signals WHERE symbol=? AND timeframe=? ORDER BY signal_time DESC LIMIT 200",
             (symbol, timeframe),
         ).fetchall()]
-    meta = {"digits": candles[-1]["digits"], "tick_size": candles[-1]["tick_size"], "tick_value": candles[-1]["tick_value"]} if candles else {"digits": 5, "tick_size": 0.00001, "tick_value": 0}
+    meta = {"digits": candles[-1]["digits"], "tick_size": candles[-1]["tick_size"], "tick_value": candles[-1]["tick_value"], "volume_min": candles[-1]["volume_min"], "volume_max": candles[-1]["volume_max"], "volume_step": candles[-1]["volume_step"]} if candles else {"digits": 5, "tick_size": 0.00001, "tick_value": 0, "volume_min": 0, "volume_max": 0, "volume_step": 0}
     return {"mode": "DEMO_ONLY", "symbol": symbol, "timeframe": timeframe,
             **meta, "candles": candles, "signals": signals, "server_time": utc_now()}
 
