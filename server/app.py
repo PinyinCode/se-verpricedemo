@@ -233,6 +233,13 @@ def create_signal(payload: SignalIn):
     return {"ok": True, "signal_id": signal_id, "status": "pending", "created_at": created}
 
 
+@app.post("/api/chart/request")
+def chart_request(payload: SignalIn):
+    """Queue a chart-originated paper request; this endpoint never executes broker orders."""
+    paper_payload = payload.model_copy(update={"source": "web-chart"})
+    return create_signal(paper_payload)
+
+
 @app.get("/api/mt5/next", dependencies=[Depends(require_key)])
 def next_signal(consumer: str = Query(default="mt5-demo", min_length=2, max_length=40)):
     now = time.time()
