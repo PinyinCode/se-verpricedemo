@@ -293,11 +293,11 @@ let mt5Digits=5,mt5TickSize=0.00001,mt5TickValue=0,mt5VolumeMin=0,mt5VolumeMax=0
 const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const priceChart=LightweightCharts.createChart($('priceChart'),{layout:{background:{color:'#111c2e'},textColor:'#a9b8ca'},grid:{vertLines:{color:'#1c2a3e'},horzLines:{color:'#1c2a3e'}},rightPriceScale:{borderColor:'#34445c'},timeScale:{borderColor:'#34445c',timeVisible:true,secondsVisible:false,rightOffset:10,barSpacing:8,minBarSpacing:2},crosshair:{mode:LightweightCharts.CrosshairMode.Normal},handleScroll:{mouseWheel:true,pressedMouseMove:true,horzTouchDrag:true,vertTouchDrag:true},handleScale:{axisPressedMouseMove:true,mouseWheel:true,pinch:true}});
 const candleSeries=priceChart.addCandlestickSeries({upColor:'#22c58b',downColor:'#f06478',borderUpColor:'#22c58b',borderDownColor:'#f06478',wickUpColor:'#22c58b',wickDownColor:'#f06478',priceFormat:{type:'price',precision:5,minMove:0.00001}});
-const rsiChart=LightweightCharts.createChart($('rsiChart'),{layout:{background:{color:'#111c2e'},textColor:'#a9b8ca'},grid:{vertLines:{color:'#1c2a3e'},horzLines:{color:'#1c2a3e'}},rightPriceScale:{borderColor:'#34445c',scaleMargins:{top:.04,bottom:.04},autoScale:true},timeScale:{visible:false,borderColor:'#34445c',rightOffset:10,barSpacing:8,minBarSpacing:2},height:150});
+const rsiChart=LightweightCharts.createChart($('rsiChart'),{layout:{background:{color:'#111c2e'},textColor:'#a9b8ca'},grid:{vertLines:{color:'#1c2a3e'},horzLines:{color:'#1c2a3e'}},rightPriceScale:{borderColor:'#34445c',scaleMargins:{top:.04,bottom:.04},autoScale:true},timeScale:{visible:false,borderColor:'#34445c',rightOffset:10,barSpacing:8,minBarSpacing:2},crosshair:{mode:LightweightCharts.CrosshairMode.Normal,vertLine:{visible:true,labelVisible:false,color:'#a78bfa',width:1,style:2},horzLine:{visible:true,labelVisible:false,color:'#a78bfa',width:1,style:2}},height:150});
 const rsiSeries=rsiChart.addLineSeries({color:'#a78bfa',lineWidth:2,priceLineVisible:false,lastValueVisible:true,priceFormat:{type:'price',precision:0,minMove:1},autoscaleInfoProvider:()=>({priceRange:{minValue:0,maxValue:100}})});
-rsiSeries.createPriceLine({price:70,color:'#f06478',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:'70'});
-rsiSeries.createPriceLine({price:50,color:'#64748b',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:'50'});
-rsiSeries.createPriceLine({price:30,color:'#22c58b',lineWidth:1,lineStyle:2,axisLabelVisible:true,title:'30'});
+rsiSeries.createPriceLine({price:70,color:'#f06478',lineWidth:1,lineStyle:2,axisLabelVisible:false,title:''});
+rsiSeries.createPriceLine({price:50,color:'#64748b',lineWidth:1,lineStyle:2,axisLabelVisible:false,title:''});
+rsiSeries.createPriceLine({price:30,color:'#22c58b',lineWidth:1,lineStyle:2,axisLabelVisible:false,title:''});
 const closeLine=priceChart.addLineSeries({color:'#60a5fa',lineWidth:2,priceLineVisible:false,lastValueVisible:true,visible:false});
 let chartMode='candles',lastBarsSignature='';
 let syncing=false, firstLoad=true,autoDirection='BUY';
