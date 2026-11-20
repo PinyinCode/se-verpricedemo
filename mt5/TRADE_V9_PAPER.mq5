@@ -28,6 +28,7 @@ struct PaperTrade
    double sl;
    double tp;
    double volume;
+   double riskMoney;
    datetime opened;
 };
 PaperTrade trades[];
@@ -130,10 +131,13 @@ double NormalizeVolume(string symbol,double raw)
    double vmin=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MIN);
    double vmax=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MAX);
    double step=SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP);
-   if(step<=0) return 0;
-   double v=MathFloor(raw/step)*step;
-   v=MathMax(vmin,MathMin(vmax,v));
-   return NormalizeDouble(v,2);
+   if(step<=0 || raw<vmin || raw>vmax) return 0;
+   double v=MathFloor((raw+1e-10)/step)*step;
+   if(v<vmin) return 0;
+   int digits=2;
+   if(step<0.01) digits=3;
+   if(step<0.001) digits=4;
+   return NormalizeDouble(v,digits);
 }
 
 double CalcVirtualVolume(string symbol,double entry,double sl)
@@ -147,28 +151,38 @@ double CalcVirtualVolume(string symbol,double entry,double sl)
    return NormalizeVolume(symbol,VirtualRiskMoney/lossPerLot);
 }
 
-void AddPaperTrade(string id,string symbol,string tf,string direction,double entry,double sl)
+void AddPaperTrade(string id,string symbol,string tf,string direction,double entry,double sl,double riskMoney,double requestedLot)
 {
    if(!SymbolSelect(symbol,true)) { Ack(id,"REJECTED","Symbol unavailable in Market Watch"); return; }
    double bid=SymbolInfoDouble(symbol,SYMBOL_BID);
    double ask=SymbolInfoDouble(symbol,SYMBOL_ASK);
    if(bid<=0 || ask<=0) { Ack(id,"REJECTED","No live quote; paper entry not recorded"); return; }
-   double risk=MathAbs(entry-sl);
-   double tp=(direction=="BUY") ? entry+risk*RewardRiskRatio : entry-risk*RewardRiskRatio;
-   double volume=CalcVirtualVolume(symbol,entry,sl);
-   if(volume<=0) { Ack(id,"REJECTED","Cannot calculate virtual volume from symbol tick data"); return; }
+   double distance=MathAbs(entry-sl);
+   double tickSize=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_SIZE);
+   double tickValue=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_VALUE_LOSS);
+   if(tickValue<=0) tickValue=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_VALUE);
+   if(distance<=0 || tickSize<=0 || tickValue<=0 || riskMoney<=0)
+   { Ack(id,"REJECTED","Invalid risk or MT5 tick contract data"); return; }
+   double volume=NormalizeVolume(symbol,requestedLot);
+   if(volume<=0)
+   { Ack(id,"REJECTED","Requested lot is outside MT5 min/max/step"); return; }
+   double actualRisk=(distance/tickSize)*tickValue*volume;
+   if(actualRisk>riskMoney+MathMax(0.01,riskMoney*0.005))
+   { Ack(id,"REJECTED","Calculated lot exceeds requested cash risk using MT5 contract data"); return; }
+   double tp=(direction=="BUY") ? entry+distance*RewardRiskRatio : entry-distance*RewardRiskRatio;
 
    int n=ArraySize(trades); ArrayResize(trades,n+1);
    trades[n].id=id; trades[n].symbol=symbol; trades[n].timeframe=tf;
    trades[n].direction=direction; trades[n].entry=entry; trades[n].sl=sl;
-   trades[n].tp=tp; trades[n].volume=volume; trades[n].opened=TimeCurrent();
+   trades[n].tp=tp; trades[n].volume=volume; trades[n].riskMoney=actualRisk; trades[n].opened=TimeCurrent();
 
    Print("[PAPER OPEN] ",symbol," ",tf," ",direction,
          " entry=",DoubleToString(entry,(int)SymbolInfoInteger(symbol,SYMBOL_DIGITS)),
          " SL=",DoubleToString(sl,(int)SymbolInfoInteger(symbol,SYMBOL_DIGITS)),
          " TP=",DoubleToString(tp,(int)SymbolInfoInteger(symbol,SYMBOL_DIGITS)),
-         " virtual lots=",DoubleToString(volume,2)," risk=$",DoubleToString(VirtualRiskMoney,2));
-   Ack(id,"SIMULATED","Paper position opened; no broker order sent");
+         " virtual lots=",DoubleToString(volume,4)," risk=$",DoubleToString(actualRisk,2),
+         " requested risk=$",DoubleToString(riskMoney,2));
+   Ack(id,"SIMULATED","Paper position opened with chart-calculated lot; MT5 risk revalidated; no broker order sent");
 }
 
 void ManagePaperTrades()
@@ -184,7 +198,7 @@ void ManagePaperTrades()
       if(!stop && !target) continue;
       string outcome=target ? "PAPER_TP" : "PAPER_SL";
       Print("[PAPER CLOSE] ",outcome," ",s," signal=",trades[i].id,
-            " virtual result=",target ? "+" : "-",DoubleToString(VirtualRiskMoney*(target?RewardRiskRatio:1.0),2));
+            " virtual result=",target ? "+" : "-",DoubleToString(trades[i].riskMoney*(target?RewardRiskRatio:1.0),2));
       int last=ArraySize(trades)-1;
       for(int j=i;j<last;j++) trades[j]=trades[j+1];
       ArrayResize(trades,last);
@@ -202,7 +216,9 @@ void PollServer()
    string id=JsonValue(obj,"id"), symbol=JsonValue(obj,"symbol");
    string tf=JsonValue(obj,"timeframe"), direction=JsonValue(obj,"direction");
    double entry=StringToDouble(JsonValue(obj,"entry")), sl=StringToDouble(JsonValue(obj,"sl"));
-   if(id=="" || symbol=="" || entry<=0 || sl<=0 ||
+   double riskMoney=StringToDouble(JsonValue(obj,"risk_money"));
+   double requestedLot=StringToDouble(JsonValue(obj,"requested_lot"));
+   if(id=="" || symbol=="" || entry<=0 || sl<=0 || riskMoney<=0 || requestedLot<=0 ||
       (direction!="BUY" && direction!="SELL"))
    { if(id!="") Ack(id,"REJECTED","Malformed signal"); return; }
    if((direction=="BUY" && sl>=entry) || (direction=="SELL" && sl<=entry))
@@ -212,7 +228,7 @@ void PollServer()
    for(int i=0;i<ArraySize(lastTradeTime);i++)
       if(lastSource[i]==symbol && TimeCurrent()-lastTradeTime[i]<CooldownMinutes*60)
       { Ack(id,"REJECTED","Paper cooldown active"); return; }
-   AddPaperTrade(id,symbol,tf,direction,entry,sl);
+   AddPaperTrade(id,symbol,tf,direction,entry,sl,riskMoney,requestedLot);
    int n=ArraySize(lastSource);
    if(n==0) { ArrayResize(lastSource,1); ArrayResize(lastTradeTime,1); }
    else { ArrayResize(lastSource,n+1); ArrayResize(lastTradeTime,n+1); }
