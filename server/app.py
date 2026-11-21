@@ -128,6 +128,15 @@ def init_db() -> None:
             conn.execute("ALTER TABLE paper_positions ADD COLUMN is_pending INTEGER NOT NULL DEFAULT 0")
 
         conn.execute("""
+        CREATE TABLE IF NOT EXISTS mt5_account_items (
+          id TEXT PRIMARY KEY, ticket TEXT, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
+          direction TEXT NOT NULL, entry REAL NOT NULL, sl REAL NOT NULL, tp REAL NOT NULL,
+          volume REAL NOT NULL, profit REAL NOT NULL, opened_at REAL NOT NULL,
+          is_pending INTEGER NOT NULL DEFAULT 0, order_type TEXT NOT NULL DEFAULT '',
+          magic INTEGER NOT NULL DEFAULT 0, comment TEXT NOT NULL DEFAULT '',
+          source TEXT NOT NULL DEFAULT 'MT5_EXTERNAL', updated_at TEXT NOT NULL
+        )""")
+        conn.execute("""
         CREATE TABLE IF NOT EXISTS paper_history (
           id TEXT PRIMARY KEY, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
           direction TEXT NOT NULL, entry REAL NOT NULL, sl REAL NOT NULL, tp REAL NOT NULL,
@@ -257,6 +266,29 @@ class PaperPositionIn(BaseModel):
 
 class PaperPositionsIn(BaseModel):
     positions: list[PaperPositionIn] = Field(default_factory=list, max_length=100)
+
+
+class Mt5AccountItemIn(BaseModel):
+    id: str = Field(min_length=1, max_length=64)
+    ticket: str | int | None = None
+    symbol: str = Field(min_length=3, max_length=32)
+    timeframe: str = Field(default="MT5", min_length=1, max_length=16)
+    direction: Literal["BUY", "SELL"]
+    entry: float = Field(gt=0)
+    sl: float = Field(default=0, ge=0)
+    tp: float = Field(default=0, ge=0)
+    volume: float = Field(gt=0)
+    profit: float = 0
+    opened_at: float = Field(default=0, ge=0)
+    is_pending: bool = False
+    order_type: str = Field(default="", max_length=32)
+    magic: int = 0
+    comment: str = Field(default="", max_length=120)
+    source: Literal["TRADE_V9", "MT5_EXTERNAL"] = "MT5_EXTERNAL"
+
+
+class Mt5AccountSnapshotIn(BaseModel):
+    items: list[Mt5AccountItemIn] = Field(default_factory=list, max_length=500)
 
 
 class PaperClosedIn(PaperPositionIn):
@@ -574,6 +606,25 @@ def acknowledge(payload: AckIn):
     return {"ok": True}
 
 
+@app.post("/api/mt5/account-snapshot", dependencies=[Depends(require_key)])
+def update_mt5_account_snapshot(payload: Mt5AccountSnapshotIn):
+    now = utc_now()
+    with db() as conn:
+        conn.execute("DELETE FROM mt5_account_items")
+        for item in payload.items:
+            ticket_str = str(item.ticket).strip() if item.ticket is not None else item.id
+            conn.execute(
+                "INSERT INTO mt5_account_items(id,ticket,symbol,timeframe,direction,entry,sl,tp,volume,profit,"
+                "opened_at,is_pending,order_type,magic,comment,source,updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (item.id, ticket_str, item.symbol.upper(), item.timeframe, item.direction,
+                 item.entry, item.sl, item.tp, item.volume, item.profit, item.opened_at,
+                 1 if item.is_pending else 0, item.order_type, item.magic, item.comment,
+                 item.source, now),
+            )
+    return {"ok": True, "items": len(payload.items), "updated_at": now}
+
+
 @app.post("/api/paper/positions", dependencies=[Depends(require_key)])
 def update_paper_positions(payload: PaperPositionsIn):
     now = utc_now()
@@ -864,6 +915,22 @@ def dashboard_data():
              "status": "Đang chờ khớp"}
             for p in all_paper_orders if p["is_pending"]
         ]
+        mt5_account_items = [dict(r) for r in conn.execute(
+            "SELECT id,ticket,symbol,timeframe,direction,entry,sl,tp,volume,profit,opened_at,"
+            "is_pending,order_type,magic,comment,source,updated_at "
+            "FROM mt5_account_items ORDER BY opened_at DESC").fetchall()]
+        mt5_positions = [
+            {**p, "read_only": True, "origin": p["source"]}
+            for p in mt5_account_items if not p["is_pending"]
+        ]
+        mt5_pending_orders = [
+            {**p, "read_only": True, "origin": p["source"],
+             "status": "Đang chờ trên MT5"}
+            for p in mt5_account_items if p["is_pending"]
+        ]
+        mt5_snapshot_updated_at = (
+            mt5_account_items[0]["updated_at"] if mt5_account_items else None
+        )
         paper_history = [dict(r) for r in conn.execute(
             "SELECT id,symbol,timeframe,direction,entry,sl,tp,volume,risk,profit,outcome,opened_at,closed_at "
             "FROM paper_history ORDER BY closed_at DESC LIMIT 50").fetchall()]
@@ -909,7 +976,10 @@ def dashboard_data():
         "paper_positions": paper_positions,
         "open_positions": paper_positions,
         "paper_pending_orders": paper_pending_orders,
-        "pending_orders": paper_pending_orders,
+        "pending_orders": paper_pending_orders + mt5_pending_orders,
+        "mt5_positions": mt5_positions,
+        "mt5_pending_orders": mt5_pending_orders,
+        "mt5_snapshot_updated_at": mt5_snapshot_updated_at,
         "paper_history": paper_history,
         "real_history": real_history,
         "mt5_history": real_history,
