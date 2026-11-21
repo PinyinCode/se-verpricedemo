@@ -121,13 +121,15 @@ button.sell.active{background:rgba(240,107,126,.14);border-color:var(--red);colo
 .chart-actions #feedState{max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 .status-strip{
-  display:flex;
+  display:inline-flex;
   align-items:center;
-  justify-content:space-between;
+  justify-content:flex-start;
+  width:max-content;
+  max-width:calc(100% - 16px);
   gap:12px;
-  padding:3px 10px;
-  background:#0b1626;
-  border-bottom:1px solid var(--line-soft);
+  padding:3px 8px;
+  background:transparent;
+  border:0;
   font:11px/1.35 ui-monospace,SFMono-Regular,monospace;
   white-space:nowrap;
 }
