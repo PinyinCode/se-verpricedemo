@@ -1104,6 +1104,7 @@ async function load(forceNetwork = false) {
       chartCachePrimed.add(cacheKey);
       void writeChartCache(cacheKey, data);
     }
+    if ($('symbol').value !== symbol || $('tf').value !== tf) return;
     mt5Digits = Math.max(0, Math.min(10, Number(data.digits ?? 5)));
     mt5TickSize = Number(data.tick_size ?? 0.00001);
     mt5TickValue = Number(data.tick_value ?? 0);
