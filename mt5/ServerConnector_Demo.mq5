@@ -1,10 +1,10 @@
 //+------------------------------------------------------------------+
 //| ServerConnector_Demo.mq5                                         |
-//| Polls Python server, syncs candles/signals/history, and handles  |
-//| optional close requests without opening new live trades.         |
+//| Polls Python server, syncs candles/signals/history.              |
+//| Chart feed only (no trade execution). Complements TRADE_V9.      |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.12"
+#property version "1.13"
 
 #include <Trade\Trade.mqh>
 
@@ -13,16 +13,25 @@ input string ApiKey = "SET_A_LONG_RANDOM_API_KEY";
 input string ConsumerId = "mt5-demo-vps";
 input int PollSeconds = 3;
 input int HeartbeatSeconds = 15;
+
+// Legacy divergence import (AI OOP V8 writes to COMMON files)
 input bool EnableLegacyDivergenceImport = false;
-input bool EnableSignalPolling = false; // TRADE_V9_PAPER owns the server consumer by default
 input int MaxLegacySignalAgeSeconds = 300;
-input bool EnableChartCandleFeed = true; // Uploads OHLC only; never places trades
-input int ChartFeedSeconds = 5; // One symbol/timeframe per interval
+
+// Signal polling: TRADE_V9_PAPER owns the server consumer by default
+input bool EnableSignalPolling = false;
+
+// Chart candle feed (this EA's main job)
+input bool EnableChartCandleFeed = true;
+input int ChartFeedSeconds = 10;
 input int ChartBarsToSend = 500;
-input bool EnableRealHistorySync = true; // Syncs closed MT5 deals to /api/mt5/history
+input string FallbackSymbols = "EURUSD,GBPUSD,USDJPY,XAUUSD,BTCUSD,USDCAD,NZDUSD,USDCHF";
+input string FallbackTimeframes = "M15,H1";
+
+// Real history sync: TRADE_V9_PAPER owns /api/mt5/history by default
+input bool EnableRealHistorySync = false;
 input int HistorySyncSeconds = 15;
 input int HistoryLookbackDays = 7;
-input bool EnableCloseRequests = false; // Keep false for read-only/paper-only connector
 
 datetime g_lastHeartbeat = 0;
 datetime g_lastPoll = 0;
@@ -30,10 +39,8 @@ string g_lastLegacySignature = "";
 datetime g_lastScanPost = 0;
 datetime g_lastCandlePost = 0;
 datetime g_lastHistoryPost = 0;
-int g_chartCursor = 0;
 string g_queueCursorName = "DIVSERVER_QUEUE_CURSOR";
 string g_lastHistoryDigest = "";
-CTrade g_closeTrade;
 
 string JsonEscape(string s)
 {
@@ -76,41 +83,40 @@ string JsonValue(string json, string key)
    return StringSubstr(json,p,e-p);
 }
 
-void ExtractTopLevelObjects(string arrJson, string &outObjects[])
+string JsonObjectValue(string json, string key)
 {
-   ArrayResize(outObjects, 0);
-   int depth = 0;
-   bool inString = false;
-   bool escaped = false;
-   int start = -1;
-   for(int i = 0; i < StringLen(arrJson); i++)
+   string token = "\"" + key + "\"";
+   int p = StringFind(json, token);
+   if(p < 0) return "";
+   p = StringFind(json, ":", p + StringLen(token));
+   if(p < 0) return "";
+   p++;
+   while(p < StringLen(json) && (StringGetCharacter(json,p)==' ' ||
+         StringGetCharacter(json,p)=='\t' || StringGetCharacter(json,p)=='\r' ||
+         StringGetCharacter(json,p)=='\n')) p++;
+   if(p >= StringLen(json) || StringGetCharacter(json,p)!='{') return "";
+   int depth=0;
+   bool inString=false;
+   bool escaped=false;
+   for(int i=p; i<StringLen(json); i++)
    {
-      ushort ch = StringGetCharacter(arrJson, i);
+      ushort ch=StringGetCharacter(json,i);
       if(inString)
       {
-         if(escaped) escaped = false;
-         else if(ch == '\\') escaped = true;
-         else if(ch == '"') inString = false;
+         if(escaped) escaped=false;
+         else if(ch=='\\') escaped=true;
+         else if(ch=='"') inString=false;
          continue;
       }
-      if(ch == '"') { inString = true; continue; }
-      if(ch == '{')
-      {
-         if(depth == 0) start = i;
-         depth++;
-      }
-      else if(ch == '}')
+      if(ch=='"') { inString=true; continue; }
+      if(ch=='{') depth++;
+      else if(ch=='}')
       {
          depth--;
-         if(depth == 0 && start >= 0)
-         {
-            int n = ArraySize(outObjects);
-            ArrayResize(outObjects, n + 1);
-            outObjects[n] = StringSubstr(arrJson, start, i - start + 1);
-            start = -1;
-         }
+         if(depth==0) return StringSubstr(json,p,i-p+1);
       }
    }
+   return "";
 }
 
 bool HttpRequest(string method,string path,string body,string &response,int &status)
@@ -141,7 +147,7 @@ bool HttpRequest(string method,string path,string body,string &response,int &sta
 void SendHeartbeat()
 {
    string response; int status;
-   string body="{\"component\":\"MT5-Connector\",\"status\":\"online\",\"details\":\"Connector active; synced with bridge API\"}";
+   string body="{\"component\":\"MT5-Connector\",\"status\":\"online\",\"details\":\"Connector active; candle/history feed only\"}";
    if(HttpRequest("POST","/api/heartbeat",body,response,status))
       g_lastHeartbeat=TimeCurrent();
    else
@@ -155,43 +161,6 @@ bool AckSignal(string id,string result,string message)
    bool ok=HttpRequest("POST","/api/mt5/ack",body,response,status);
    if(!ok) Print("[SERVER] Ack failed. HTTP=",status," response=",response);
    return ok;
-}
-
-string JsonObjectValue(string json, string key)
-{
-   string token = "\"" + key + "\"";
-   int p = StringFind(json, token);
-   if(p < 0) return "";
-   p = StringFind(json, ":", p + StringLen(token));
-   if(p < 0) return "";
-   p++;
-   while(p < StringLen(json) && (StringGetCharacter(json,p)==' ' ||
-         StringGetCharacter(json,p)=='\t' || StringGetCharacter(json,p)=='\r' ||
-         StringGetCharacter(json,p)=='\n')) p++;
-   if(p >= StringLen(json) || StringGetCharacter(json,p)!='{') return "";
-
-   int depth=0;
-   bool inString=false;
-   bool escaped=false;
-   for(int i=p; i<StringLen(json); i++)
-   {
-      ushort ch=StringGetCharacter(json,i);
-      if(inString)
-      {
-         if(escaped) escaped=false;
-         else if(ch=='\\') escaped=true;
-         else if(ch=='"') inString=false;
-         continue;
-      }
-      if(ch=='"') { inString=true; continue; }
-      if(ch=='{') depth++;
-      else if(ch=='}')
-      {
-         depth--;
-         if(depth==0) return StringSubstr(json,p,i-p+1);
-      }
-   }
-   return "";
 }
 
 void ImportLegacyDivergenceSignal()
@@ -376,37 +345,92 @@ ENUM_TIMEFRAMES ChartTimeframeFromText(string tf)
    return PERIOD_CURRENT;
 }
 
-void PublishChartCandles()
+// Build "SYM|TF" list: prefer live scan file, fallback to fixed inputs
+int BuildChartTargets(string &symbols[], string &timeframes[])
 {
+   ArrayResize(symbols, 0);
+   ArrayResize(timeframes, 0);
+
    string raw="";
    int file=FileOpen("DIVSCAN_SYMBOLS.txt",FILE_READ|FILE_TXT|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
-   if(file==INVALID_HANDLE) return;
-   raw=FileReadString(file);
-   FileClose(file);
+   if(file!=INVALID_HANDLE)
+   {
+      raw=FileReadString(file);
+      FileClose(file);
+   }
 
    string fields[];
-   if(StringSplit(raw,'#',fields)<2) return;
-   datetime scanTime=(datetime)StringToInteger(fields[0]);
-   if(scanTime<=0 || TimeCurrent()-scanTime>60) return;
+   if(StringSplit(raw,'#',fields)>=2)
+   {
+      datetime scanTime=(datetime)StringToInteger(fields[0]);
+      if(scanTime>0 && TimeCurrent()-scanTime<=60)
+      {
+         string entries[];
+         int count=StringSplit(fields[1],';',entries);
+         for(int i=0;i<count;i++)
+         {
+            string pair[];
+            if(StringSplit(entries[i],'|',pair)<2) continue;
+            string s=pair[0], t=pair[1];
+            if(s=="" || t=="") continue;
+            if(ChartTimeframeFromText(t)==PERIOD_CURRENT) continue;
+            bool dup=false;
+            for(int k=0;k<ArraySize(symbols);k++)
+               if(symbols[k]==s && timeframes[k]==t) { dup=true; break; }
+            if(dup) continue;
+            int n=ArraySize(symbols);
+            ArrayResize(symbols,n+1); ArrayResize(timeframes,n+1);
+            symbols[n]=s; timeframes[n]=t;
+         }
+      }
+   }
 
-   string entries[];
-   int count=StringSplit(fields[1],';',entries);
-   if(count<=0) return;
-   int index=g_chartCursor%count;
-   g_chartCursor++;
+   if(ArraySize(symbols)==0)
+   {
+      string symList[];
+      string tfList[];
+      int sc=StringSplit(FallbackSymbols,',',symList);
+      int tc=StringSplit(FallbackTimeframes,',',tfList);
+      if(sc>0 && tc>0)
+      {
+         for(int i=0;i<sc;i++)
+         {
+            string s=symList[i];
+            StringTrimLeft(s); StringTrimRight(s); StringToUpper(s);
+            if(s=="") continue;
+            for(int j=0;j<tc;j++)
+            {
+               string t=tfList[j];
+               StringTrimLeft(t); StringTrimRight(t); StringToUpper(t);
+               if(ChartTimeframeFromText(t)==PERIOD_CURRENT) continue;
+               int n=ArraySize(symbols);
+               ArrayResize(symbols,n+1); ArrayResize(timeframes,n+1);
+               symbols[n]=s; timeframes[n]=t;
+            }
+         }
+      }
+   }
+   return ArraySize(symbols);
+}
 
-   string pair[];
-   if(StringSplit(entries[index],'|',pair)<2) return;
-   string symbol=pair[0];
-   string tf=pair[1];
-   ENUM_TIMEFRAMES period=ChartTimeframeFromText(tf);
-   if(symbol=="" || period==PERIOD_CURRENT) return;
-   if(!SymbolSelect(symbol,true)) return;
+bool PublishCandleBatch(string symbol, string tfText, ENUM_TIMEFRAMES period)
+{
+   if(symbol=="" || period==PERIOD_CURRENT) return false;
+   if(!SymbolSelect(symbol,true)) return false;
+
+   if(!SeriesInfoInteger(symbol, period, SERIES_SYNCHRONIZED))
+   {
+      // Trigger history load; next call will succeed
+      MqlRates warmup[];
+      CopyRates(symbol, period, 0, 10, warmup);
+      return false;
+   }
 
    MqlRates rates[];
    ArraySetAsSeries(rates,false);
-   int copied=CopyRates(symbol,period,0,MathMax(50,MathMin(1000,ChartBarsToSend)),rates);
-   if(copied<2) return;
+   int want = MathMax(50, MathMin(1000, ChartBarsToSend));
+   int copied = CopyRates(symbol, period, 0, want, rates);
+   if(copied < 2) return false;
 
    string candles="[";
    int validCount=0;
@@ -425,7 +449,7 @@ void PublishChartCandles()
       validCount++;
    }
    candles+="]";
-   if(validCount<2) return;
+   if(validCount<2) return false;
 
    int digits=(int)SymbolInfoInteger(symbol,SYMBOL_DIGITS);
    double tickSize=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_SIZE);
@@ -436,11 +460,32 @@ void PublishChartCandles()
    double volumeMax=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MAX);
    double volumeStep=SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP);
    string body=StringFormat("{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"digits\":%d,\"tick_size\":%.10f,\"tick_value\":%.10f,\"volume_min\":%.8f,\"volume_max\":%.8f,\"volume_step\":%.8f,\"candles\":%s}",
-      JsonEscape(symbol),JsonEscape(tf),digits,tickSize,tickValue,volumeMin,volumeMax,volumeStep,candles);
-   string response;
-   int status;
+      JsonEscape(symbol),JsonEscape(tfText),digits,tickSize,tickValue,volumeMin,volumeMax,volumeStep,candles);
+   string response; int status;
    if(!HttpRequest("POST","/api/mt5/candles",body,response,status))
-      Print("[CHART FEED] Upload failed for ",symbol," ",tf,". HTTP=",status," response=",response);
+   {
+      Print("[CHART FEED] Upload failed for ",symbol," ",tfText,". HTTP=",status," response=",response);
+      return false;
+   }
+   return true;
+}
+
+void PublishChartCandles()
+{
+   string symbols[];
+   string timeframes[];
+   int total = BuildChartTargets(symbols, timeframes);
+   if(total<=0) return;
+
+   int ok=0, fail=0;
+   for(int i=0;i<total;i++)
+   {
+      ENUM_TIMEFRAMES period=ChartTimeframeFromText(timeframes[i]);
+      if(PublishCandleBatch(symbols[i], timeframes[i], period)) ok++;
+      else fail++;
+   }
+   if(ok>0 || fail>0)
+      Print("[CHART FEED] batch done: ok=",ok," skip=",fail," total=",total);
 }
 
 void PublishRealHistory()
@@ -491,59 +536,10 @@ void PublishRealHistory()
       Print("[HISTORY] Real history sync failed. HTTP=",status," response=",response);
 }
 
-void PollCloseRequests()
-{
-   if(!EnableCloseRequests) return;
-   string response; int status;
-   if(!HttpRequest("GET","/api/paper/close-requests","",response,status)) return;
-   if(StringFind(response,"\"close_requests\":[]")>=0) return;
-
-   string items[];
-   ExtractTopLevelObjects(response, items);
-   for(int k = 0; k < ArraySize(items); k++)
-   {
-      string item = items[k];
-      string reqId = JsonValue(item, "request_id");
-      if(reqId == "") continue;
-      string ticketStr = JsonValue(item, "ticket");
-      string sym = JsonValue(item, "symbol");
-      string dir = JsonValue(item, "direction");
-
-      bool closedAny = false;
-      string msg = "No matching open position";
-      for(int i = PositionsTotal() - 1; i >= 0; i--)
-      {
-         ulong posTicket = PositionGetTicket(i);
-         if(posTicket == 0 || !PositionSelectByTicket(posTicket)) continue;
-         string pSym = PositionGetString(POSITION_SYMBOL);
-         ENUM_POSITION_TYPE pType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-         string pDir = (pType == POSITION_TYPE_BUY) ? "BUY" : "SELL";
-         bool matchTicket = (ticketStr != "" && IntegerToString((long)posTicket) == ticketStr);
-         bool matchSymDir = (sym != "" && pSym == sym && (dir == "" || pDir == dir));
-         if(matchTicket || matchSymDir)
-         {
-            if(g_closeTrade.PositionClose(posTicket))
-            {
-               closedAny = true;
-               msg = "Closed position " + IntegerToString((long)posTicket);
-            }
-            else
-            {
-               msg = "Close failed: " + IntegerToString(g_closeTrade.ResultRetcode());
-            }
-            break;
-         }
-      }
-
-      string ackBody = StringFormat("{\"request_id\":\"%s\",\"position_id\":\"%s\",\"ok\":%s,\"message\":\"%s\"}",
-         JsonEscape(reqId), JsonEscape(ticketStr), closedAny ? "true" : "false", JsonEscape(msg));
-      string ackResp; int ackStatus;
-      HttpRequest("POST", "/api/paper/close-requests/ack", ackBody, ackResp, ackStatus);
-   }
-}
-
+// Optional: only if EnableSignalPolling=true and TRADE_V9 is off
 void PollSignal()
 {
+   if(!EnableSignalPolling) return;
    string response; int status;
    string path="/api/mt5/next?consumer="+ConsumerId;
    if(!HttpRequest("GET",path,"",response,status))
@@ -586,10 +582,10 @@ void PollSignal()
       AckSignal(id,"REJECTED","Invalid entry/SL geometry");
       return;
    }
-   Print("[PAPER SIGNAL] ",symbol," ",tf," ",orderType," ",direction,
+   Print("[CONNECTOR SIGNAL] ",symbol," ",tf," ",orderType," ",direction,
          " entry=",DoubleToString(entryPrice,8)," SL=",DoubleToString(slPrice,8),
          " id=",id," created=",created);
-   AckSignal(id,"SIMULATED","Signal received and validated; paper mode only");
+   AckSignal(id,"PLACED","Signal acknowledged by connector (no trade placed)");
 }
 
 int OnInit()
@@ -605,8 +601,8 @@ int OnInit()
       return INIT_PARAMETERS_INCORRECT;
    }
    EventSetTimer(1);
-   Print("ServerConnector v1.12 initialized. Add ",ServerBaseURL,
-         " to MT5 WebRequest allowlist.");
+   Print("ServerConnector v1.13 initialized. Chart feed + AI OOP V8 sync only. ",
+         "Add ",ServerBaseURL," to MT5 WebRequest allowlist.");
    return INIT_SUCCEEDED;
 }
 
@@ -617,16 +613,19 @@ void OnTick() {}
 void OnTimer()
 {
    if(TimeCurrent()-g_lastHeartbeat>=HeartbeatSeconds) SendHeartbeat();
-   if(EnableChartCandleFeed && TimeCurrent()-g_lastCandlePost>=MathMax(2,ChartFeedSeconds))
+
+   if(EnableChartCandleFeed && TimeCurrent()-g_lastCandlePost>=MathMax(5,ChartFeedSeconds))
    {
       g_lastCandlePost=TimeCurrent();
       PublishChartCandles();
    }
+
    if(EnableRealHistorySync && TimeCurrent()-g_lastHistoryPost>=MathMax(5,HistorySyncSeconds))
    {
       g_lastHistoryPost=TimeCurrent();
       PublishRealHistory();
    }
+
    if(TimeCurrent()-g_lastPoll>=PollSeconds)
    {
       g_lastPoll=TimeCurrent();
@@ -634,7 +633,6 @@ void OnTimer()
       PublishTodaySignals();
       ImportDivergenceQueue();
       ImportLegacyDivergenceSignal();
-      PollCloseRequests();
-      if(EnableSignalPolling) PollSignal();
+      PollSignal(); // no-op unless EnableSignalPolling=true
    }
 }
