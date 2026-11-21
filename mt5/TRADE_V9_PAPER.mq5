@@ -806,8 +806,9 @@ void PollSltpRequests()
 //--- Poll signal ---------------------------------------------------
 void PollServer()
 {
+   string path = "/api/mt5/next?consumer=" + ConsumerId;
    string response; int status;
-   if(!Request("GET","/api/mt5/next",'{"consumer":"'+ConsumerId+'"}',response,status))
+   if(!Request("GET", path, "", response, status))
    { Print("[V9] Poll failed HTTP=",status); return; }
    if(StringFind(response,"\"signal\":null")>=0) return;
 
@@ -815,6 +816,7 @@ void PollServer()
    if(obj=="") return;
 
    string id        = JsonValue(obj,"id");
+   
    string symbol    = JsonValue(obj,"symbol");
    string tf        = JsonValue(obj,"timeframe");
    string direction = JsonValue(obj,"direction");
