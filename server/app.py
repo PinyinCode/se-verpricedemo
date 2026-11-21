@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -201,6 +202,18 @@ app = FastAPI(
     version="0.2.0",
     description="Signal analysis and MT5 demo bridge. No live order execution.",
     lifespan=lifespan,
+)
+
+# Cho phép frontend tĩnh trên GitHub Pages gọi API. Có thể ghi đè bằng FRONTEND_ORIGINS.
+_frontend_origins = [x.strip() for x in os.getenv(
+    "FRONTEND_ORIGINS", "https://pinyincode.github.io,http://localhost:8000,http://127.0.0.1:8000"
+).split(",") if x.strip()]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=_frontend_origins,
+    allow_credentials=False,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "X-API-Key"],
 )
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "dashboard")), name="static")
 
