@@ -26,6 +26,7 @@ API_KEY = os.getenv("FOREX_API_KEY", "").strip()
 STALE_SECONDS = int(os.getenv("SIGNAL_STALE_SECONDS", "300"))
 CLOSE_REQUEST_TTL = int(os.getenv("CLOSE_REQUEST_TTL_SECONDS", "45"))
 SLTP_REQUEST_TTL = int(os.getenv("SLTP_REQUEST_TTL_SECONDS", "60"))
+PENDING_MODIFY_TTL = int(os.getenv("PENDING_MODIFY_TTL_SECONDS", "60"))
 
 _db_lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
@@ -158,6 +159,16 @@ def init_db() -> None:
         )""")
 
         conn.execute("""
+        CREATE TABLE IF NOT EXISTS pending_modify_requests (
+          request_id TEXT PRIMARY KEY, ticket TEXT NOT NULL, symbol TEXT,
+          order_type TEXT NOT NULL DEFAULT '',
+          old_entry REAL NOT NULL DEFAULT 0, old_sl REAL NOT NULL DEFAULT 0, old_tp REAL NOT NULL DEFAULT 0,
+          new_entry REAL NOT NULL DEFAULT 0, new_sl REAL NOT NULL DEFAULT 0, new_tp REAL NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'pending',
+          created_at TEXT NOT NULL, acked_at TEXT, ok INTEGER, message TEXT
+        )""")
+
+        conn.execute("""
         CREATE TABLE IF NOT EXISTS today_signals (
           signal_key TEXT PRIMARY KEY, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
           direction TEXT NOT NULL, divergence TEXT NOT NULL, signal_type TEXT NOT NULL,
@@ -183,7 +194,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Forex AI Server",
-    version="0.3.0",
+    version="0.4.0",
     description="Signal analysis and MT5 real-order bridge.",
     lifespan=lifespan,
 )
@@ -363,6 +374,33 @@ class ModifySltpIn(BaseModel):
 
 
 class SltpRequestAckIn(BaseModel):
+    request_id: str = Field(min_length=1, max_length=64)
+    ticket: str = Field(default="", max_length=64)
+    ok: bool
+    message: str = Field(default="", max_length=500)
+
+
+class ModifyPendingIn(BaseModel):
+    ticket: str | int
+    symbol: str | None = Field(default=None, max_length=32)
+    order_type: str | None = Field(default=None, max_length=32)
+    old_entry: float = Field(default=0, ge=0)
+    old_sl: float = Field(default=0, ge=0)
+    old_tp: float = Field(default=0, ge=0)
+    new_entry: float = Field(default=0, ge=0)
+    new_sl: float = Field(default=0, ge=0)
+    new_tp: float = Field(default=0, ge=0)
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_pending_symbol(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip().upper()
+        return cleaned or None
+
+
+class PendingModifyAckIn(BaseModel):
     request_id: str = Field(min_length=1, max_length=64)
     ticket: str = Field(default="", max_length=64)
     ok: bool
@@ -645,7 +683,6 @@ def _find_matching_item(
     symbol: str | None,
     direction: str | None,
 ):
-    """Chỉ fallback sang symbol khi pos_id rỗng. Tránh đóng nhầm lệnh."""
     if pos_id:
         if want_pending is None:
             row = conn.execute(
@@ -832,7 +869,6 @@ def modify_sltp(payload: ModifySltpIn):
         sym = row["symbol"]
         entry = float(row["entry"])
         direction = row["direction"]
-        # Kiểm tra hình học SL/TP mới
         if payload.new_sl > 0:
             if direction == "BUY" and payload.new_sl >= entry:
                 raise HTTPException(status_code=422, detail="SL BUY phải < Entry")
@@ -904,6 +940,116 @@ def ack_sltp_request(payload: SltpRequestAckIn):
         conn.execute(
             "INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
             ("sltp_ack", f"{payload.request_id} ticket={payload.ticket}: ok={payload.ok} {payload.message}".strip(), now),
+        )
+    return {"ok": True}
+
+
+@app.post("/api/mt5/modify-pending", dependencies=[Depends(require_key)])
+def modify_pending(payload: ModifyPendingIn):
+    ticket_str = str(payload.ticket).strip()
+    if not ticket_str:
+        raise HTTPException(status_code=422, detail="Thiếu ticket")
+    if payload.new_entry <= 0 and payload.new_sl <= 0 and payload.new_tp <= 0:
+        raise HTTPException(status_code=422, detail="Cần ít nhất Entry, SL hoặc TP mới")
+
+    now = utc_now()
+    with db() as conn:
+        row = conn.execute(
+            "SELECT * FROM mt5_account_items WHERE (id=? OR ticket=?) AND is_pending=1",
+            (ticket_str, ticket_str),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy lệnh chờ với ticket này")
+
+        sym = row["symbol"]
+        order_type = row["order_type"] or ""
+        direction = row["direction"]
+
+        entry_for_check = payload.new_entry if payload.new_entry > 0 else float(row["entry"])
+        sl_for_check = payload.new_sl if payload.new_sl > 0 else float(row["sl"])
+        tp_for_check = payload.new_tp if payload.new_tp > 0 else float(row["tp"])
+
+        if order_type == "BUY_LIMIT" or (not order_type and direction == "BUY"):
+            if sl_for_check > 0 and sl_for_check >= entry_for_check:
+                raise HTTPException(status_code=422, detail="BUY LIMIT yêu cầu SL < Entry")
+            if tp_for_check > 0 and tp_for_check <= entry_for_check:
+                raise HTTPException(status_code=422, detail="BUY LIMIT yêu cầu TP > Entry")
+        elif order_type == "SELL_LIMIT" or (not order_type and direction == "SELL"):
+            if sl_for_check > 0 and sl_for_check <= entry_for_check:
+                raise HTTPException(status_code=422, detail="SELL LIMIT yêu cầu SL > Entry")
+            if tp_for_check > 0 and tp_for_check >= entry_for_check:
+                raise HTTPException(status_code=422, detail="SELL LIMIT yêu cầu TP < Entry")
+
+        existing = conn.execute(
+            "SELECT request_id FROM pending_modify_requests WHERE status='pending' AND ticket=?",
+            (ticket_str,),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE pending_modify_requests SET new_entry=?, new_sl=?, new_tp=?, created_at=? "
+                "WHERE request_id=?",
+                (payload.new_entry, payload.new_sl, payload.new_tp, now, existing["request_id"]),
+            )
+            request_id = existing["request_id"]
+        else:
+            request_id = secrets.token_hex(10)
+            conn.execute(
+                "INSERT INTO pending_modify_requests(request_id,ticket,symbol,order_type,"
+                "old_entry,old_sl,old_tp,new_entry,new_sl,new_tp,status,created_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,'pending',?)",
+                (request_id, ticket_str, sym, order_type,
+                 payload.old_entry, payload.old_sl, payload.old_tp,
+                 payload.new_entry, payload.new_sl, payload.new_tp, now),
+            )
+        conn.execute(
+            "INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
+            ("pending_modify_requested",
+             f"ticket={ticket_str} {sym} {order_type} "
+             f"Entry {payload.old_entry}->{payload.new_entry} "
+             f"SL {payload.old_sl}->{payload.new_sl} "
+             f"TP {payload.old_tp}->{payload.new_tp}",
+             now),
+        )
+    return {"ok": True, "request_id": request_id, "status": "pending", "ticket": ticket_str}
+
+
+@app.get("/api/mt5/pending-modify-requests", dependencies=[Depends(require_key)])
+def get_pending_modify_requests():
+    now = time.time()
+    cutoff = datetime.fromtimestamp(now - PENDING_MODIFY_TTL, timezone.utc).isoformat()
+    with db() as conn:
+        conn.execute(
+            "UPDATE pending_modify_requests SET status='expired',acked_at=?,message='Hết hạn chờ MT5' "
+            "WHERE status='pending' AND created_at < ?",
+            (utc_now(), cutoff),
+        )
+        rows = [dict(r) for r in conn.execute(
+            "SELECT request_id, ticket, symbol, order_type, "
+            "old_entry, old_sl, old_tp, new_entry, new_sl, new_tp "
+            "FROM pending_modify_requests WHERE status='pending' ORDER BY created_at ASC LIMIT 20"
+        ).fetchall()]
+    return {"ok": True, "pending_modify_requests": rows}
+
+
+@app.post("/api/mt5/pending-modify-requests/ack", dependencies=[Depends(require_key)])
+def ack_pending_modify_request(payload: PendingModifyAckIn):
+    now = utc_now()
+    with db() as conn:
+        req_row = conn.execute(
+            "SELECT * FROM pending_modify_requests WHERE request_id=?", (payload.request_id,)
+        ).fetchone()
+        if req_row is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy pending modify request")
+        conn.execute(
+            "UPDATE pending_modify_requests SET status='acked',acked_at=?,ok=?,message=? "
+            "WHERE request_id=?",
+            (now, 1 if payload.ok else 0, payload.message, payload.request_id),
+        )
+        conn.execute(
+            "INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
+            ("pending_modify_ack",
+             f"{payload.request_id} ticket={payload.ticket}: ok={payload.ok} {payload.message}".strip(),
+             now),
         )
     return {"ok": True}
 
