@@ -27,6 +27,11 @@ input int ChartFeedSeconds = 10;
 input int ChartBarsToSend = 500;
 input string FallbackSymbols = "EURUSD,GBPUSD,USDJPY,XAUUSD,BTCUSD,USDCAD,NZDUSD,USDCHF";
 input string FallbackTimeframes = "M15,H1";
+ 
+// Commission snapshot sync (reads COMM_* Global Variables from comission.mq5)
+input bool EnableCommissionSync = true;
+input int CommissionSyncSeconds = 60;
+input string CommissionSymbols = "XAUUSD,USDJPY,EURUSD,GBPUSD";
 
 // Real history sync: TRADE_V9_PAPER owns /api/mt5/history by default
 input bool EnableRealHistorySync = false;
@@ -39,6 +44,7 @@ string g_lastLegacySignature = "";
 datetime g_lastScanPost = 0;
 datetime g_lastCandlePost = 0;
 datetime g_lastHistoryPost = 0;
+datetime g_lastCommissionPost = 0;
 string g_queueCursorName = "DIVSERVER_QUEUE_CURSOR";
 string g_lastHistoryDigest = "";
 
@@ -142,6 +148,73 @@ bool HttpRequest(string method,string path,string body,string &response,int &sta
    }
    response=CharArrayToString(result,0,-1,CP_UTF8);
    return (status>=200 && status<300);
+}
+
+void PublishCommissionSnapshot()
+{
+   if(!EnableCommissionSync) return;
+
+   string symbols[];
+   string accountId=IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN));
+   int count=StringSplit(CommissionSymbols,',',symbols);
+   if(count<=0) return;
+
+   string items="[";
+   int sent=0;
+   for(int i=0;i<count;i++)
+   {
+      string symbol=symbols[i];
+      StringTrimLeft(symbol);
+      StringTrimRight(symbol);
+      StringToUpper(symbol);
+      if(symbol=="") continue;
+
+      string symbolPart=(StringLen(symbol)>=6 ? StringSubstr(symbol,0,6) : symbol);
+      string gvName="COMM_"+symbolPart+"_"+accountId;
+      if(!GlobalVariableCheck(gvName)) continue;
+      if(!SymbolSelect(symbol,true)) continue;
+
+      double commission=GlobalVariableGet(gvName);
+      double point=SymbolInfoDouble(symbol,SYMBOL_POINT);
+      double tickSize=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_SIZE);
+      double tickValue=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_VALUE);
+      double contractSize=SymbolInfoDouble(symbol,SYMBOL_TRADE_CONTRACT_SIZE);
+      if(commission<0 || point<=0) continue;
+
+      double swapLong=SymbolInfoDouble(symbol,SYMBOL_SWAP_LONG);
+      double swapShort=SymbolInfoDouble(symbol,SYMBOL_SWAP_SHORT);
+      if(tickSize>0)
+      {
+         double pointsPerTick=tickSize/point;
+         if(tickValue>0 && pointsPerTick>0)
+         {
+            double pointValue=tickValue/pointsPerTick;
+            swapLong*=pointValue;
+            swapShort*=pointValue;
+         }
+      }
+
+      if(sent>0) items+=",";
+      items+="{\"symbol\":\""+JsonEscape(symbol)+"\"";
+      items+=",\"commission_per_lot\":"+DoubleToString(commission,6);
+      items+=",\"swap_long\":"+DoubleToString(swapLong,8);
+      items+=",\"swap_short\":"+DoubleToString(swapShort,8);
+      items+=",\"contract_size\":"+DoubleToString(contractSize,2);
+      items+=",\"tick_value\":"+DoubleToString(tickValue,8);
+      items+=",\"point_size\":"+DoubleToString(point,10);
+      items+=",\"source_updated_at\":"+IntegerToString((int)TimeCurrent())+"}";
+      sent++;
+   }
+   items+="]";
+   if(sent<=0) return;
+
+   string body="{\"account_id\":\""+accountId+"\",\"items\":"+items+"}";
+   string response;
+   int status=0;
+   if(HttpRequest("POST","/api/mt5/commissions",body,response,status))
+      Print("[COMMISSION] Synced ",sent," symbols for account ",accountId);
+   else
+      Print("[COMMISSION] Sync failed. HTTP=",status," response=",response);
 }
 
 void SendHeartbeat()
@@ -613,6 +686,12 @@ void OnTick() {}
 void OnTimer()
 {
    if(TimeCurrent()-g_lastHeartbeat>=HeartbeatSeconds) SendHeartbeat();
+
+   if(EnableCommissionSync && TimeCurrent()-g_lastCommissionPost>=MathMax(15,CommissionSyncSeconds))
+   {
+      g_lastCommissionPost=TimeCurrent();
+      PublishCommissionSnapshot();
+   }
 
    if(EnableChartCandleFeed && TimeCurrent()-g_lastCandlePost>=MathMax(5,ChartFeedSeconds))
    {
