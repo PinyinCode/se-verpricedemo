@@ -28,7 +28,7 @@ input int ChartBarsToSend = 500;
 input string FallbackSymbols = "EURUSD,GBPUSD,USDJPY,XAUUSD,BTCUSD,USDCAD,NZDUSD,USDCHF";
 input string FallbackTimeframes = "M15,H1";
  
-// Commission snapshot sync (reads COMM_* Global Variables from comission.mq5)
+// Commission snapshot sync (reads MT5 deal history directly; no separate indicator required)
 input bool EnableCommissionSync = true;
 input int CommissionSyncSeconds = 60;
 input string CommissionSymbols = "XAUUSD,USDJPY,EURUSD,GBPUSD";
@@ -150,6 +150,38 @@ bool HttpRequest(string method,string path,string body,string &response,int &sta
    return (status>=200 && status<300);
 }
 
+// Read commission directly from MT5 deal history; no separate commission indicator/GV required.
+double ReadCommissionPerLotFromHistory(string symbol, bool &hasHistory)
+{
+   hasHistory=false;
+   datetime toTime=TimeCurrent();
+   datetime fromTime=toTime-(datetime)(30*86400);
+   if(!HistorySelect(fromTime,toTime)) return 0.0;
+
+   double totalCommission=0.0;
+   double openedVolume=0.0;
+   int matchedDeals=0;
+
+   for(int i=HistoryDealsTotal()-1;i>=0;i--)
+   {
+      ulong ticket=HistoryDealGetTicket(i);
+      if(ticket==0 || HistoryDealGetString(ticket,DEAL_SYMBOL)!=symbol) continue;
+
+      long entry=HistoryDealGetInteger(ticket,DEAL_ENTRY);
+      if(entry!=DEAL_ENTRY_IN && entry!=DEAL_ENTRY_OUT && entry!=DEAL_ENTRY_INOUT) continue;
+
+      matchedDeals++;
+      totalCommission+=MathAbs(HistoryDealGetDouble(ticket,DEAL_COMMISSION));
+      if(entry==DEAL_ENTRY_IN || entry==DEAL_ENTRY_INOUT)
+         openedVolume+=HistoryDealGetDouble(ticket,DEAL_VOLUME);
+   }
+
+   if(matchedDeals<=0 || openedVolume<=0) return 0.0;
+   hasHistory=true;
+   // Aggregate observed entry + exit commissions over opened lots (account currency / lot).
+   return totalCommission/openedVolume;
+}
+
 void PublishCommissionSnapshot()
 {
    if(!EnableCommissionSync) return;
@@ -167,52 +199,41 @@ void PublishCommissionSnapshot()
       StringTrimLeft(symbol);
       StringTrimRight(symbol);
       StringToUpper(symbol);
-      if(symbol=="") continue;
+      if(symbol=="" || !SymbolSelect(symbol,true)) continue;
 
-      string symbolPart=(StringLen(symbol)>=6 ? StringSubstr(symbol,0,6) : symbol);
-      string gvName="COMM_"+symbolPart+"_"+accountId;
-      if(!GlobalVariableCheck(gvName)) continue;
-      if(!SymbolSelect(symbol,true)) continue;
+      bool hasHistory=false;
+      double commission=ReadCommissionPerLotFromHistory(symbol,hasHistory);
+      if(!hasHistory) continue;
 
-      double commission=GlobalVariableGet(gvName);
       double point=SymbolInfoDouble(symbol,SYMBOL_POINT);
       double tickSize=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_SIZE);
       double tickValue=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_VALUE);
       double contractSize=SymbolInfoDouble(symbol,SYMBOL_TRADE_CONTRACT_SIZE);
-      if(commission<0 || point<=0) continue;
+      if(point<=0) continue;
 
+      // Preserve broker-reported swap units; conversion depends on SYMBOL_SWAP_MODE.
       double swapLong=SymbolInfoDouble(symbol,SYMBOL_SWAP_LONG);
       double swapShort=SymbolInfoDouble(symbol,SYMBOL_SWAP_SHORT);
-      if(tickSize>0)
-      {
-         double pointsPerTick=tickSize/point;
-         if(tickValue>0 && pointsPerTick>0)
-         {
-            double pointValue=tickValue/pointsPerTick;
-            swapLong*=pointValue;
-            swapShort*=pointValue;
-         }
-      }
 
       if(sent>0) items+=",";
-      items+="{\"symbol\":\""+JsonEscape(symbol)+"\"";
-      items+=",\"commission_per_lot\":"+DoubleToString(commission,6);
-      items+=",\"swap_long\":"+DoubleToString(swapLong,8);
-      items+=",\"swap_short\":"+DoubleToString(swapShort,8);
-      items+=",\"contract_size\":"+DoubleToString(contractSize,2);
-      items+=",\"tick_value\":"+DoubleToString(tickValue,8);
-      items+=",\"point_size\":"+DoubleToString(point,10);
-      items+=",\"source_updated_at\":"+IntegerToString((int)TimeCurrent())+"}";
+      items+="{\\"symbol\\":\\""+JsonEscape(symbol)+"\\"";
+      items+=",\\"commission_per_lot\\":"+DoubleToString(commission,6);
+      items+=",\\"swap_long\\":"+DoubleToString(swapLong,8);
+      items+=",\\"swap_short\\":"+DoubleToString(swapShort,8);
+      items+=",\\"contract_size\\":"+DoubleToString(contractSize,2);
+      items+=",\\"tick_value\\":"+DoubleToString(tickValue,8);
+      items+=",\\"point_size\\":"+DoubleToString(point,10);
+      items+=",\\"source_updated_at\\":"+IntegerToString((int)TimeCurrent())+"}";
       sent++;
    }
    items+="]";
    if(sent<=0) return;
 
-   string body="{\"account_id\":\""+accountId+"\",\"items\":"+items+"}";
+   string body="{\\"account_id\\":\\""+accountId+"\\",\\"items\\":"+items+"}";
    string response;
    int status=0;
    if(HttpRequest("POST","/api/mt5/commissions",body,response,status))
-      Print("[COMMISSION] Synced ",sent," symbols for account ",accountId);
+      Print("[COMMISSION] History snapshot synced: ",sent," symbols for account ",accountId);
    else
       Print("[COMMISSION] Sync failed. HTTP=",status," response=",response);
 }
