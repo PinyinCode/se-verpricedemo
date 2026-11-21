@@ -45,25 +45,6 @@ header{
 .tag{font-size:11px;border:1px solid #166548;color:#45d6a1;border-radius:20px;padding:3px 9px}
 main{padding:12px;max-width:1680px;margin:auto}
 
-/* API key box */
-.api-key-box{
-  display:flex;align-items:center;gap:5px;
-  padding:3px 4px;border-radius:7px;
-  background:#111f33;border:1px solid #31445f;
-}
-.api-key-box input{
-  background:transparent;border:0;padding:4px 6px;
-  width:160px;font:12px ui-monospace,SFMono-Regular,monospace;
-  color:var(--text);
-}
-.api-key-box input:focus{outline:none}
-.api-key-box button{
-  padding:3px 7px;font-size:11px;border-radius:5px;
-  background:#1a2b43;border:1px solid #354963;
-}
-.api-key-box.ok{border-color:#217c62}
-.api-key-box.err{border-color:#8c4050}
-
 select,button,input{
   font:inherit;
   color:var(--text);
@@ -89,6 +70,7 @@ button:focus-visible,select:focus-visible,input:focus{
 }
 button.active{background:rgba(39,201,149,.11);border-color:var(--green);color:#70e4bd}
 button.sell.active{background:rgba(240,107,126,.14);border-color:var(--red);color:#ff9aaa}
+button.locked{background:rgba(251,191,36,.14);border-color:var(--amber);color:#fcd34d}
 
 .layout{display:grid;grid-template-columns:minmax(0,1fr) 270px;gap:10px}
 .layout>div{min-width:0}
@@ -220,7 +202,90 @@ button.sell.active{background:rgba(240,107,126,.14);border-color:var(--red);colo
 .drag-line.entry{background:var(--blue)}
 .drag-line.sl{background:var(--red)}
 .drag-line.tp{background:var(--green)}
+.drag-line.locked{cursor:not-allowed;opacity:.55}
 
+/* Entry state popup */
+.entry-popup{
+  position:absolute;
+  z-index:60;
+  min-width:250px;
+  max-width:320px;
+  padding:10px 12px;
+  background:rgba(13,25,41,.97);
+  border:1px solid #3a5273;
+  border-radius:10px;
+  box-shadow:0 12px 32px rgba(0,0,0,.5);
+  font-size:11px;
+  line-height:1.5;
+  pointer-events:auto;
+}
+.entry-popup.hidden{display:none}
+.entry-popup .ep-title{
+  font-weight:750;
+  font-size:12px;
+  margin-bottom:6px;
+  display:flex;
+  justify-content:space-between;
+  gap:8px;
+}
+.entry-popup .ep-title .ep-dir.buy{color:var(--green)}
+.entry-popup .ep-title .ep-dir.sell{color:var(--red)}
+.entry-popup .ep-row{display:flex;justify-content:space-between;gap:8px;padding:1px 0}
+.entry-popup .ep-row b{font-variant-numeric:tabular-nums}
+.entry-popup .ep-state{
+  margin-top:6px;
+  padding-top:6px;
+  border-top:1px solid #2a3b53;
+  color:var(--amber);
+  font-weight:600;
+}
+.entry-popup .ep-close{
+  position:absolute;
+  top:6px;
+  right:6px;
+  padding:1px 5px;
+  font-size:10px;
+  background:transparent;
+  border:1px solid #354963;
+  border-radius:5px;
+  cursor:pointer;
+}
+
+/* Confirm dialog */
+.confirm-dialog{
+  width:min(420px,calc(100vw - 24px));
+  padding:0;
+  border:1px solid #354963;
+  border-radius:12px;
+  background:var(--panel);
+  color:var(--text);
+  box-shadow:0 24px 80px rgba(0,0,0,.55);
+}
+.confirm-dialog::backdrop{background:rgba(3,8,16,.72);backdrop-filter:blur(4px)}
+.confirm-dialog .cd-head{
+  padding:12px 14px;
+  border-bottom:1px solid #293a52;
+  background:var(--panel-2);
+  font-weight:750;
+  font-size:13px;
+}
+.confirm-dialog .cd-body{padding:14px;display:grid;gap:6px;font-size:12px}
+.confirm-dialog .cd-body .cd-row{display:flex;justify-content:space-between;gap:8px}
+.confirm-dialog .cd-body .cd-row b{font-variant-numeric:tabular-nums}
+.confirm-dialog .cd-body .cd-row .old{color:var(--muted);text-decoration:line-through}
+.confirm-dialog .cd-body .cd-row .new{color:var(--blue);font-weight:700}
+.confirm-dialog .cd-foot{
+  display:flex;
+  justify-content:flex-end;
+  gap:8px;
+  padding:10px 14px;
+  border-top:1px solid #293a52;
+}
+.confirm-dialog .cd-foot button{min-width:90px}
+.confirm-dialog .cd-foot #cdCancel{background:#192941}
+.confirm-dialog .cd-foot #cdOk{background:rgba(96,165,250,.16);border-color:var(--blue);color:#93c5fd}
+
+/* Order footer */
 .trade-footer{
   display:grid;
   grid-template-columns:minmax(220px,1fr) auto minmax(170px,.8fr);
@@ -253,9 +318,9 @@ button.sell.active{background:rgba(240,107,126,.14);border-color:var(--red);colo
 .request-state{text-align:right;line-height:1.35;max-width:280px}
 .statusline{padding:5px 10px;color:#8195ad;font-size:11px;border-top:1px solid var(--line);background:#0d1929}
 
-.signal-panel #signalTable{max-height:190px;overflow:auto}
 .side{padding:12px;background:linear-gradient(180deg,#111e31,#0e1929)}
 .side h3{font-size:13px;margin:0 0 10px}
+.side h3:not(:first-child){margin-top:20px}
 .signal{padding:10px 0;border-bottom:1px solid var(--line)}
 .signal:last-child{border:0}
 .buy{color:var(--green)}
@@ -386,15 +451,13 @@ th{color:var(--muted);font-weight:600}
   .trade-submit button{min-width:82px;padding:7px 8px;font-size:11px}
   #priceChart{height:46dvh;min-height:260px}
   #rsiChart{height:68px}
-  .api-key-box input{width:90px;font-size:11px}
-  .api-key-box button{padding:2px 5px;font-size:10px}
+  .entry-popup{min-width:210px;font-size:10px}
 }
 @media (orientation:landscape) and (min-width:650px){
   main{padding:8px 10px}
   .layout{grid-template-columns:minmax(0,1fr) minmax(210px,260px);gap:9px}
   #priceChart{height:clamp(230px,48dvh,560px)}
   #rsiChart{height:78px}
-  .signal-panel #signalTable{max-height:150px}
 }
 @media (max-width:650px){
   .stats-body{padding:10px}
@@ -407,11 +470,9 @@ th{color:var(--muted);font-weight:600}
 body.trade-fullscreen{overflow:hidden}
 body.trade-fullscreen header,
 body.trade-fullscreen .layout>aside,
-body.trade-fullscreen .signal-panel,
 body.trade-fullscreen .chart-workspace .statusline,
 body.trade-fullscreen .chart-overlay-top .ohlc-strip,
-body.trade-fullscreen .chart-overlay-top .chart-actions #feedState,
-body.trade-fullscreen .chart-overlay-bottom #contractMeta{display:none}
+body.trade-fullscreen .chart-overlay-top .chart-actions #feedState{display:none}
 
 body.trade-fullscreen main{
   position:fixed;
@@ -523,9 +584,9 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:10px}
 </head>
 <body class="trade-fullscreen">
 <header>
-  <div><span class="brand">Forex AI · Chart</span> <span class="muted">/ AI OOP V8 MT5 feed</span></div>
+  <div><span class="brand">Forex AI · Chart</span> <span class="muted">/ MT5 real feed</span></div>
   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-    <span class="tag">DEMO / PAPER ONLY</span>
+    <span class="tag">MT5 REAL</span>
   </div>
 </header>
 
@@ -559,12 +620,13 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:10px}
               </div>
               <div class="chart-actions">
                 <span class="small" id="feedState">Đang kết nối dữ liệu...</span>
-                <button id="settingsButton" type="button" aria-label="Cài đặt" title="Cài đặt chế độ, Risk và Entry">⚙</button>
+                <button id="lockButton" type="button" aria-label="Khoá/mở kéo SL/TP" title="Khoá/mở kéo SL/TP">🔓</button>
+                <button id="settingsButton" type="button" aria-label="Cài đặt" title="Cài đặt API key, Risk, Entry">⚙</button>
                 <button id="positionsButton" type="button" aria-label="Vị thế đang mở và lệnh chờ" title="Xem vị thế đang mở và vị thế chờ">▣<span id="positionCount">0</span></button>
-                <button id="statsButton" type="button" aria-label="Thống kê" title="Thống kê tín hiệu và lịch sử giao dịch thật">▤</button>
+                <button id="statsButton" type="button" aria-label="Thống kê" title="Thống kê tín hiệu và lịch sử giao dịch">▤</button>
                 <button id="fitChart" type="button" aria-label="Vừa khung" title="Vừa khung biểu đồ">⤢</button>
                 <button id="refresh" type="button" title="Làm mới dữ liệu">↻</button>
-                        </div>
+              </div>
             </div>
             <div class="status-strip" id="telemetryBar">
               <span id="clockGMT7">--:--:--</span>
@@ -573,6 +635,21 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:10px}
             <div class="ohlc-strip" id="ohlcLegend">
               <b>O —</b><span>H —</span><span>L —</span><span>C —</span><span class="ohlc-change">—</span>
             </div>
+          </div>
+
+          <div class="entry-popup hidden" id="entryPopup">
+            <button class="ep-close" id="entryPopupClose" type="button" aria-label="Đóng">✕</button>
+            <div class="ep-title">
+              <span id="epTitle">—</span>
+              <span class="ep-dir buy" id="epDir">BUY</span>
+            </div>
+            <div class="ep-row"><span>Entry</span><b id="epEntry">—</b></div>
+            <div class="ep-row"><span>SL</span><b id="epSl">—</b></div>
+            <div class="ep-row"><span>TP</span><b id="epTp">—</b></div>
+            <div class="ep-row"><span>R:R</span><b id="epRR">—</b></div>
+            <div class="ep-row"><span>Lot</span><b id="epLot">—</b></div>
+            <div class="ep-row"><span>Risk</span><b id="epRisk">—</b></div>
+            <div class="ep-state" id="epState">—</div>
           </div>
         </div>
 
@@ -599,11 +676,11 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:10px}
               <button id="sendBuy" type="button" class="active">BUY</button>
               <button id="sendSell" type="button" class="sell">SELL</button>
             </div>
-            <div id="requestState" class="small request-state">Chỉ gửi yêu cầu vào hàng đợi PAPER · không đặt lệnh broker.</div>
+            <div id="requestState" class="small request-state">Chỉ gửi yêu cầu lệnh vào hàng đợi MT5.</div>
           </div>
         </div>
 
-        <div class="statusline">Nến và tín hiệu lấy từ MT5 / AI OOP V8. RSI 14 chỉ để quan sát, không tạo tín hiệu.</div>
+        <div class="statusline">Nến và tín hiệu lấy từ MT5. RSI 14 chỉ để quan sát, không tạo tín hiệu.</div>
       </section>
 
       <section class="panel signal-panel" style="margin-top:10px">
@@ -615,7 +692,7 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:10px}
     <aside class="panel side">
       <h3>Chi tiết tín hiệu</h3>
       <div id="signalDetails" class="muted">Chọn một tín hiệu trong danh sách để xem chi tiết.</div>
-      <h3 style="margin-top:20px">Chú giải</h3>
+      <h3>Chú giải</h3>
       <div class="signal"><b class="buy">▲ BUY</b><div class="small">Regular / Hidden Bullish</div></div>
       <div class="signal"><b class="sell">▼ SELL</b><div class="small">Regular / Hidden Bearish</div></div>
       <div class="signal"><b>RT</b><div class="small">Tín hiệu realtime</div></div>
@@ -626,7 +703,7 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:10px}
 
 <dialog id="tradeSettingsDialog" class="positions-dialog trade-settings-dialog">
   <div class="positions-dialog-head">
-    <div><strong>CÀI ĐẶT GIAO DỊCH PAPER</strong><div class="small">API key, chế độ, Risk, Entry (Limit), SL và TP</div></div>
+    <div><strong>CÀI ĐẶT GIAO DỊCH</strong><div class="small">API key, chế độ, Risk, Entry (Limit), SL và TP</div></div>
     <button type="button" id="closeTradeSettings" aria-label="Đóng">✕</button>
   </div>
   <div class="positions-dialog-body">
@@ -656,7 +733,7 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:10px}
 
 <dialog id="positionsDialog" class="positions-dialog">
   <div class="positions-dialog-head">
-    <div><strong>VỊ THẾ ĐANG MỞ &amp; VỊ THẾ CHỜ</strong><div class="small">Lệnh PAPER có thể thao tác · lệnh MT5 ngoài luồng chỉ xem</div></div>
+    <div><strong>VỊ THẾ ĐANG MỞ &amp; VỊ THẾ CHỜ</strong><div class="small">Lệnh MT5 có thể thao tác</div></div>
     <button type="button" id="closePositionsDialog" aria-label="Đóng">✕</button>
   </div>
   <div class="positions-dialog-body">
@@ -684,15 +761,15 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:10px}
 
 <dialog id="statsDialog" class="positions-dialog stats-dialog">
   <div class="positions-dialog-head">
-    <div><strong>THỐNG KÊ &amp; LỊCH SỬ THẬT</strong><div class="small">Tín hiệu hôm nay · Lịch sử giao dịch thật (MT5 / Trade V9)</div></div>
+    <div><strong>THỐNG KÊ &amp; LỊCH SỬ</strong><div class="small">Tín hiệu hôm nay · Lịch sử giao dịch MT5</div></div>
     <button type="button" id="closeStatsDialog" aria-label="Đóng">✕</button>
   </div>
   <div class="stats-body">
     <div class="stats-kpis">
       <div class="stats-kpi"><span>Tín hiệu hôm nay</span><strong id="statsSignalCount">—</strong></div>
-      <div class="stats-kpi"><span>Giao dịch thật đóng hôm nay</span><strong id="statsClosedCount">—</strong></div>
+      <div class="stats-kpi"><span>Giao dịch đóng hôm nay</span><strong id="statsClosedCount">—</strong></div>
       <div class="stats-kpi"><span>Thắng / Thua</span><strong id="statsWinLoss">—</strong></div>
-      <div class="stats-kpi"><span>P/L thật hôm nay</span><strong id="statsTodayPL">—</strong></div>
+      <div class="stats-kpi"><span>P/L hôm nay</span><strong id="statsTodayPL">—</strong></div>
     </div>
     <section class="stats-section">
       <div class="stats-section-head"><strong>TÍN HIỆU HÔM NAY</strong><span id="statsSignalMeta" class="small">—</span></div>
@@ -704,15 +781,28 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:10px}
       </div>
     </section>
     <section class="stats-section">
-      <div class="stats-section-head"><strong>LỊCH SỬ GIAO DỊCH THẬT</strong><span id="statsHistoryMeta" class="small">—</span></div>
+      <div class="stats-section-head"><strong>LỊCH SỬ GIAO DỊCH MT5</strong><span id="statsHistoryMeta" class="small">—</span></div>
       <div class="positions-table-wrap">
         <table>
           <thead><tr><th>Đóng lúc</th><th>Mã</th><th>Hướng</th><th>Lot</th><th>Entry</th><th>SL</th><th>TP</th><th>Kết quả</th><th>P/L</th></tr></thead>
-          <tbody id="statsPaperHistory"><tr><td colspan="9" class="empty">Đang tải lịch sử giao dịch thật...</td></tr></tbody>
+          <tbody id="statsPaperHistory"><tr><td colspan="9" class="empty">Đang tải lịch sử...</td></tr></tbody>
         </table>
       </div>
     </section>
     <div id="statsUpdated" class="small stats-updated">Đang đồng bộ...</div>
+  </div>
+</dialog>
+
+<dialog id="confirmSltpDialog" class="confirm-dialog">
+  <div class="cd-head">Xác nhận sửa SL/TP</div>
+  <div class="cd-body">
+    <div class="cd-row"><span>Lệnh</span><b id="cdTicket">—</b></div>
+    <div class="cd-row"><span>SL</span><b><span class="old" id="cdOldSl">—</span> → <span class="new" id="cdNewSl">—</span></b></div>
+    <div class="cd-row"><span>TP</span><b><span class="old" id="cdOldTp">—</span> → <span class="new" id="cdNewTp">—</span></b></div>
+  </div>
+  <div class="cd-foot">
+    <button id="cdCancel" type="button">Huỷ</button>
+    <button id="cdOk" type="button">Đồng ý</button>
   </div>
 </dialog>
 
@@ -757,6 +847,29 @@ async function apiFetch(url, options = {}) {
 const fmt = n => Number(n).toLocaleString('en-US', { minimumFractionDigits: mt5Digits, maximumFractionDigits: mt5Digits });
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+/* ================= LOCK STATE ================= */
+const LOCK_STORAGE = 'chartSltpLocked';
+let sltpLocked = (() => {
+  try { return localStorage.getItem(LOCK_STORAGE) === '1'; } catch { return false; }
+})();
+function applyLockState() {
+  const btn = $('lockButton');
+  if (!btn) return;
+  btn.textContent = sltpLocked ? '🔒' : '🔓';
+  btn.classList.toggle('locked', sltpLocked);
+  btn.title = sltpLocked ? 'Đang khoá kéo SL/TP (bấm để mở)' : 'Đang mở kéo SL/TP (bấm để khoá)';
+  for (const k of ['sl', 'tp']) {
+    const l = dragLevels[k];
+    if (l) l.classList.toggle('locked', sltpLocked);
+  }
+}
+function toggleLock() {
+  sltpLocked = !sltpLocked;
+  try { localStorage.setItem(LOCK_STORAGE, sltpLocked ? '1' : '0'); } catch (_) {}
+  applyLockState();
+}
+
+/* ================= CHARTS ================= */
 const priceChart = LightweightCharts.createChart($('priceChart'), {
   layout: { background: { color: '#111c2e' }, textColor: '#a9b8ca' },
   grid: { vertLines: { color: '#1c2a3e' }, horzLines: { color: '#1c2a3e' } },
@@ -852,10 +965,64 @@ function renderRsiDivergences(signals, bars) {
 let lastBarsSignature = '';
 let syncing = false, firstLoad = true, autoDirection = 'BUY', pendingOrderType = 'BUY_LIMIT', lastLoadedSymbol = '';
 
+/* ================= DRAG OVERLAY ================= */
 const dragOverlay = document.createElement('div');
 dragOverlay.className = 'drag-overlay';
 $('priceChart').appendChild(dragOverlay);
 const dragLevels = {};
+
+function openEntryPopupAt(clientX, clientY) {
+  const popup = $('entryPopup');
+  const rect = $('priceChart').getBoundingClientRect();
+  const mode = $('orderMode').value;
+  const entry = Number($('entryPrice').value);
+  const sl = Number($('slPrice').value);
+  const tp = Number($('tpPrice').value);
+  const isBuy = autoDirection === 'BUY';
+  const direction = mode === 'PENDING'
+    ? (pendingOrderType === 'BUY_LIMIT' ? 'BUY' : 'SELL')
+    : autoDirection;
+  const orderTypeLabel = mode === 'PENDING' ? pendingOrderType.replace('_', ' ') : 'MARKET';
+  const lotCalc = calcLot();
+  const lot = lotCalc ? lotCalc.lot : 0;
+  const risk = lotCalc ? lotCalc.actualRisk : 0;
+
+  $('epTitle').textContent = `${$('symbol').value} · ${$('tf').value} · ${orderTypeLabel}`;
+  $('epDir').textContent = direction;
+  $('epDir').className = 'ep-dir ' + (direction === 'BUY' ? 'buy' : 'sell');
+  $('epEntry').textContent = entry > 0 ? entry.toFixed(mt5Digits) : '—';
+  $('epSl').textContent = sl > 0 ? sl.toFixed(mt5Digits) : '—';
+  $('epTp').textContent = tp > 0 ? tp.toFixed(mt5Digits) : '—';
+  let rr = '—';
+  if (entry > 0 && sl > 0 && tp > 0 && entry !== sl) {
+    const riskDist = Math.abs(entry - sl);
+    const rewardDist = Math.abs(tp - entry);
+    if (riskDist > 0) rr = '1:' + (rewardDist / riskDist).toFixed(2);
+  }
+  $('epRR').textContent = rr;
+  $('epLot').textContent = lot > 0 ? lot.toFixed(volumeDigits(mt5VolumeStep)) : '—';
+  $('epRisk').textContent = risk > 0 ? '$' + risk.toFixed(2) : '—';
+  $('epState').textContent = mode === 'PENDING'
+    ? 'Đang chờ khớp (Limit)'
+    : 'Sẽ khớp ngay (Market)';
+
+  // vị trí
+  let x = clientX - rect.left + 14;
+  let y = clientY - rect.top + 14;
+  popup.classList.remove('hidden');
+  const pw = popup.offsetWidth;
+  const ph = popup.offsetHeight;
+  if (x + pw > rect.width - 6) x = rect.width - pw - 6;
+  if (y + ph > rect.height - 6) y = y - ph - 28;
+  if (x < 6) x = 6;
+  if (y < 6) y = 6;
+  popup.style.left = x + 'px';
+  popup.style.top = y + 'px';
+}
+function closeEntryPopup() {
+  $('entryPopup').classList.add('hidden');
+}
+
 for (const key of ['entry', 'sl', 'tp']) {
   const line = document.createElement('div');
   line.className = 'drag-line ' + key;
@@ -863,22 +1030,42 @@ for (const key of ['entry', 'sl', 'tp']) {
   line.appendChild(tag);
   dragOverlay.appendChild(line);
   dragLevels[key] = line;
-  line.addEventListener('pointerdown', ev => {
-    if (line.style.display === 'none') return;
-    ev.preventDefault(); line.setPointerCapture(ev.pointerId); line.dataset.drag = '1';
-  });
-  line.addEventListener('pointermove', ev => {
-    if (line.dataset.drag !== '1') return;
-    const rect = $('priceChart').getBoundingClientRect();
-    const p = candleSeries.coordinateToPrice(ev.clientY - rect.top);
-    if (p == null || !Number.isFinite(p)) return;
-    const id = key === 'entry' ? 'entryPrice' : key === 'sl' ? 'slPrice' : 'tpPrice';
-    $(id).value = Number(p).toFixed(mt5Digits);
-    handleLevelAdjusted();
-  });
-  const stop = () => { line.dataset.drag = '0'; };
-  line.addEventListener('pointerup', stop);
-  line.addEventListener('pointercancel', stop);
+
+  if (key === 'entry') {
+    line.addEventListener('click', ev => {
+      ev.stopPropagation();
+      openEntryPopupAt(ev.clientX, ev.clientY);
+    });
+  } else {
+    line.addEventListener('pointerdown', ev => {
+      if (line.style.display === 'none') return;
+      if (sltpLocked) return;
+      ev.preventDefault();
+      line.setPointerCapture(ev.pointerId);
+      line.dataset.drag = '1';
+      line.dataset.dragStartPrice = String(Number(key === 'sl' ? $('slPrice').value : $('tpPrice').value) || 0);
+    });
+    line.addEventListener('pointermove', ev => {
+      if (line.dataset.drag !== '1') return;
+      const rect = $('priceChart').getBoundingClientRect();
+      const p = candleSeries.coordinateToPrice(ev.clientY - rect.top);
+      if (p == null || !Number.isFinite(p)) return;
+      const id = key === 'sl' ? 'slPrice' : 'tpPrice';
+      $(id).value = Number(p).toFixed(mt5Digits);
+      handleLevelAdjusted();
+    });
+    const stop = ev => {
+      if (line.dataset.drag !== '1') return;
+      line.dataset.drag = '0';
+      const startPrice = Number(line.dataset.dragStartPrice) || 0;
+      const endPrice = Number(key === 'sl' ? $('slPrice').value : $('tpPrice').value) || 0;
+      if (Math.abs(startPrice - endPrice) > mt5TickSize * 0.5) {
+        proposeSltpChange(key, startPrice, endPrice);
+      }
+    };
+    line.addEventListener('pointerup', stop);
+    line.addEventListener('pointercancel', stop);
+  }
 }
 
 priceChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
@@ -901,6 +1088,130 @@ rsiChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
   syncing = true; priceChart.timeScale().setVisibleLogicalRange(range); syncing = false;
 });
 
+/* ================= SLTP PROPOSE ================= */
+let pendingSltpChange = null;
+
+function findOpenPositionForSymbol() {
+  const sym = String($('symbol').value || '').toUpperCase();
+  return (chartOpenPositions || []).find(p => String(p.symbol || '').toUpperCase() === sym);
+}
+
+function proposeSltpChange(key, oldValue, newValue) {
+  const pos = findOpenPositionForSymbol();
+  if (!pos) {
+    $('requestState').textContent = 'Không có vị thế đang mở trên mã này để sửa SL/TP.';
+    const id = key === 'sl' ? 'slPrice' : 'tpPrice';
+    $(id).value = oldValue.toFixed(mt5Digits);
+    setLevelLines();
+    return;
+  }
+  const ticket = String(pos.ticket ?? pos.id ?? '');
+  const currentSl = Number(pos.sl) || 0;
+  const currentTp = Number(pos.tp) || 0;
+  const desiredSl = key === 'sl' ? newValue : currentSl;
+  const desiredTp = key === 'tp' ? newValue : currentTp;
+
+  // kiểm tra hình học
+  const entry = Number(pos.entry) || 0;
+  const dir = String(pos.direction || '').toUpperCase();
+  if (desiredSl > 0 && entry > 0) {
+    if (dir === 'BUY' && desiredSl >= entry) {
+      $('requestState').textContent = 'SL BUY phải < Entry. Đã hoàn tác.';
+      const id = key === 'sl' ? 'slPrice' : 'tpPrice';
+      $(id).value = oldValue.toFixed(mt5Digits);
+      setLevelLines();
+      return;
+    }
+    if (dir === 'SELL' && desiredSl <= entry) {
+      $('requestState').textContent = 'SL SELL phải > Entry. Đã hoàn tác.';
+      const id = key === 'sl' ? 'slPrice' : 'tpPrice';
+      $(id).value = oldValue.toFixed(mt5Digits);
+      setLevelLines();
+      return;
+    }
+  }
+  if (desiredTp > 0 && entry > 0) {
+    if (dir === 'BUY' && desiredTp <= entry) {
+      $('requestState').textContent = 'TP BUY phải > Entry. Đã hoàn tác.';
+      const id = key === 'sl' ? 'slPrice' : 'tpPrice';
+      $(id).value = oldValue.toFixed(mt5Digits);
+      setLevelLines();
+      return;
+    }
+    if (dir === 'SELL' && desiredTp >= entry) {
+      $('requestState').textContent = 'TP SELL phải < Entry. Đã hoàn tác.';
+      const id = key === 'sl' ? 'slPrice' : 'tpPrice';
+      $(id).value = oldValue.toFixed(mt5Digits);
+      setLevelLines();
+      return;
+    }
+  }
+
+  pendingSltpChange = {
+    ticket, symbol: pos.symbol, direction: dir,
+    oldSl: currentSl, oldTp: currentTp,
+    newSl: desiredSl, newTp: desiredTp,
+    rollbackKey: key, rollbackValue: oldValue,
+  };
+  $('cdTicket').textContent = `${pos.symbol} ${dir} #${ticket}`;
+  $('cdOldSl').textContent = currentSl > 0 ? currentSl.toFixed(mt5Digits) : '—';
+  $('cdNewSl').textContent = desiredSl > 0 ? desiredSl.toFixed(mt5Digits) : '—';
+  $('cdOldTp').textContent = currentTp > 0 ? currentTp.toFixed(mt5Digits) : '—';
+  $('cdNewTp').textContent = desiredTp > 0 ? desiredTp.toFixed(mt5Digits) : '—';
+  $('confirmSltpDialog').showModal();
+}
+
+function rollbackPendingSltp() {
+  if (!pendingSltpChange) return;
+  const id = pendingSltpChange.rollbackKey === 'sl' ? 'slPrice' : 'tpPrice';
+  $(id).value = Number(pendingSltpChange.rollbackValue).toFixed(mt5Digits);
+  pendingSltpChange = null;
+  setLevelLines();
+}
+
+$('cdCancel').addEventListener('click', () => {
+  rollbackPendingSltp();
+  $('confirmSltpDialog').close();
+});
+$('confirmSltpDialog').addEventListener('click', e => {
+  if (e.target === $('confirmSltpDialog')) { rollbackPendingSltp(); $('confirmSltpDialog').close(); }
+});
+$('cdOk').addEventListener('click', async () => {
+  if (!pendingSltpChange) { $('confirmSltpDialog').close(); return; }
+  if (!chartApiKey) {
+    $('requestState').textContent = 'Cần API key để sửa SL/TP.';
+    $('confirmSltpDialog').close();
+    rollbackPendingSltp();
+    $('tradeSettingsDialog').showModal();
+    return;
+  }
+  const payload = {
+    ticket: pendingSltpChange.ticket,
+    symbol: pendingSltpChange.symbol,
+    old_sl: pendingSltpChange.oldSl,
+    old_tp: pendingSltpChange.oldTp,
+    new_sl: pendingSltpChange.newSl,
+    new_tp: pendingSltpChange.newTp,
+  };
+  $('confirmSltpDialog').close();
+  $('requestState').textContent = 'Đang gửi yêu cầu sửa SL/TP...';
+  try {
+    const r = await apiFetch(API_BASE + '/api/mt5/modify-sltp', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    $('requestState').textContent = 'Đã gửi yêu cầu sửa SL/TP · chờ MT5 xác nhận';
+    pendingSltpChange = null;
+  } catch (e) {
+    $('requestState').textContent = 'Không gửi được yêu cầu sửa SL/TP: ' + e.message;
+    rollbackPendingSltp();
+  }
+});
+
+/* ================= RSI ================= */
 function rsi(values, period = 14) {
   const out = [];
   let avgGain = 0, avgLoss = 0;
@@ -1210,7 +1521,7 @@ async function closePosition(posId, btn) {
   closingIds.add(idStr);
   if (btn) btn.disabled = true;
   $('positionsUpdated').textContent = 'Đang gửi lệnh đóng vị thế ' + label + '...';
-  const payload = { id: pos?.id ?? idStr, ticket: pos?.ticket ?? idStr, position_id: pos?.position_id ?? idStr, symbol: pos?.symbol || '', direction: pos?.direction || '', source: 'web-chart', is_pending: false };
+  const payload = { id: pos?.id ?? idStr, ticket: pos?.ticket ?? idStr, position_id: pos?.position_id ?? idStr, symbol: pos?.symbol || '', direction: pos?.direction || '', source: 'web-chart', is_pending: !!pos?.is_pending };
   try {
     const r = await apiFetch(API_BASE + '/api/chart/close', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const d = await r.json().catch(() => ({}));
@@ -1231,7 +1542,6 @@ async function cancelPendingOrder(orderId, btn) {
   if (!chartApiKey) { $('positionsUpdated').textContent = 'Chưa nhập API key — mở Cài đặt để nhập.'; return; }
   const ord = chartPendingOrders.find(x => String(getPendingId(x)) === idStr);
   if (!ord) { $('positionsUpdated').textContent = 'Không tìm thấy lệnh chờ trong danh sách đã đồng bộ.'; return; }
-  if (ord.read_only) { $('positionsUpdated').textContent = 'Lệnh MT5 ngoài luồng PAPER chỉ được hiển thị, không thể hủy từ giao diện này.'; return; }
   const kind = formatOrderKind(ord).label;
   const label = ((ord.symbol || '') + ' ' + kind + ' ' + (ord.volume ?? ord.lots ?? ord.lot ?? '') + ' lot').trim();
   if (!window.confirm('Xác nhận hủy lệnh chờ ' + label + '?')) return;
@@ -1290,8 +1600,8 @@ function renderChartPositions(positions, pendingOrders = []) {
   $('chartPositions').innerHTML = rows.length ? rows.map(p => {
     const pid = String(getPositionId(p));
     const busy = closingIds.has(pid);
-    const sourceLabel = p.read_only ? (p.origin === 'TRADE_V9' ? 'MT5 · Trade V9' : 'MT5 · ngoài server') : (p.timeframe || '—');
-    const action = p.read_only ? '<span class="small">Chỉ xem</span>' : '<button type="button" class="btn-close-pos" data-close-id="' + esc(pid) + '"' + (busy ? ' disabled' : '') + '>' + (busy ? 'Đang đóng...' : 'Đóng') + '</button>';
+    const sourceLabel = p.timeframe || 'MT5';
+    const action = '<button type="button" class="btn-close-pos" data-close-id="' + esc(pid) + '"' + (busy ? ' disabled' : '') + '>' + (busy ? 'Đang đóng...' : 'Đóng') + '</button>';
     return '<tr><td>' + esc(p.symbol) + '</td><td>' + esc(sourceLabel) + '</td><td class="' + (String(p.direction).toUpperCase() === 'BUY' ? 'buy' : 'sell') + '">' + esc(p.direction) + '</td><td>' + fmt(p.entry) + '</td><td>' + (Number(p.sl) > 0 ? fmt(p.sl) : '—') + '</td><td>' + (Number(p.tp) > 0 ? fmt(p.tp) : '—') + '</td><td>' + fmt(p.volume) + '</td><td style="font-weight:700;color:' + (Number(p.profit) >= 0 ? '#27c995' : '#f06b7e') + '">' + fmt(p.profit) + '</td><td>' + action + '</td></tr>';
   }).join('') : '<tr><td colspan="9" class="empty">Chưa có vị thế đang mở</td></tr>';
   $('chartPositions').querySelectorAll('[data-close-id]').forEach(btn => btn.addEventListener('click', () => closePosition(btn.dataset.closeId, btn)));
@@ -1303,30 +1613,19 @@ function renderChartPositions(positions, pendingOrders = []) {
     const priceVal = Number(o.entry ?? o.price ?? o.open_price ?? 0);
     const volVal = Number(o.volume ?? o.lots ?? o.lot ?? 0);
     const statusText = o.status ?? o.state ?? 'Đang chờ khớp';
-    const originLabel = o.read_only ? (o.origin === 'TRADE_V9' ? 'MT5 · Trade V9' : 'MT5 · ngoài server') : '';
-    const statusLabel = originLabel ? statusText + ' · ' + originLabel : statusText;
-    /* ĐÃ SỬA: chỉ hiển thị "Chỉ xem" nếu read_only */
-    const action = o.read_only ? '<span class="small">Chỉ xem</span>' : '<button type="button" class="btn-close-pos" data-cancel-id="' + esc(oid) + '"' + (busy ? ' disabled' : '') + '>' + (busy ? 'Đang hủy...' : 'Hủy') + '</button>';
-    return '<tr><td>' + esc(o.symbol || '—') + '</td><td>' + esc(o.timeframe || '—') + '</td><td class="' + kind.cls + '">' + esc(kind.label) + '</td><td>' + (priceVal > 0 ? fmt(priceVal) : '—') + '</td><td>' + (Number(o.sl) > 0 ? fmt(o.sl) : '—') + '</td><td>' + (Number(o.tp) > 0 ? fmt(o.tp) : '—') + '</td><td>' + (volVal > 0 ? fmt(volVal) : '—') + '</td><td class="pending-badge">' + esc(statusLabel) + '</td><td>' + action + '</td></tr>';
+    const action = '<button type="button" class="btn-close-pos" data-cancel-id="' + esc(oid) + '"' + (busy ? ' disabled' : '') + '>' + (busy ? 'Đang hủy...' : 'Hủy') + '</button>';
+    return '<tr><td>' + esc(o.symbol || '—') + '</td><td>' + esc(o.timeframe || 'MT5') + '</td><td class="' + kind.cls + '">' + esc(kind.label) + '</td><td>' + (priceVal > 0 ? fmt(priceVal) : '—') + '</td><td>' + (Number(o.sl) > 0 ? fmt(o.sl) : '—') + '</td><td>' + (Number(o.tp) > 0 ? fmt(o.tp) : '—') + '</td><td>' + (volVal > 0 ? fmt(volVal) : '—') + '</td><td class="pending-badge">' + esc(statusText) + '</td><td>' + action + '</td></tr>';
   }).join('') : '<tr><td colspan="9" class="empty">Chưa có vị thế chờ</td></tr>';
   $('chartPendingOrders').querySelectorAll('[data-cancel-id]').forEach(btn => btn.addEventListener('click', () => cancelPendingOrder(btn.dataset.cancelId, btn)));
 }
 
 async function refreshChartPositions() {
   try {
-    const r = await fetch(API_BASE + '/api/dashboard', { cache: 'no-store' });
+    const r = await apiFetch(API_BASE + '/api/dashboard', { cache: 'no-store' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
-    const mergedOpen = new Map();
-    (Array.isArray(d.paper_positions) ? d.paper_positions : []).forEach(p => mergedOpen.set(String(getPositionId(p)), p));
-    (Array.isArray(d.mt5_positions) ? d.mt5_positions : []).forEach(p => mergedOpen.set(String(getPositionId(p)), p));
-    const openList = Array.from(mergedOpen.values());
-
-    const mergedPending = new Map();
-    (Array.isArray(d.mt5_pending_orders) ? d.mt5_pending_orders : []).forEach(o => mergedPending.set(String(getPendingId(o)), o));
-    (Array.isArray(d.paper_pending_orders) ? d.paper_pending_orders : []).forEach(o => mergedPending.set(String(getPendingId(o)), { ...o, is_paper: true }));
-    const pendingList = Array.from(mergedPending.values());
-
+    const openList = Array.isArray(d.mt5_positions) ? d.mt5_positions : [];
+    const pendingList = Array.isArray(d.mt5_pending_orders) ? d.mt5_pending_orders : [];
     const snapshotAge = d.mt5_snapshot_updated_at ? Math.max(0, Math.round((Date.now() - Date.parse(d.mt5_snapshot_updated_at)) / 1000)) : null;
     renderChartPositions(openList, pendingList);
     if (!closingIds.size && !cancelingIds.size) {
@@ -1343,6 +1642,15 @@ $('tradeSettingsDialog').addEventListener('click', e => { if (e.target === $('tr
 $('positionsButton').addEventListener('click', () => { refreshChartPositions(); $('positionsDialog').showModal(); });
 $('closePositionsDialog').addEventListener('click', () => $('positionsDialog').close());
 $('positionsDialog').addEventListener('click', e => { if (e.target === $('positionsDialog')) $('positionsDialog').close(); });
+$('lockButton').addEventListener('click', toggleLock);
+$('entryPopupClose').addEventListener('click', closeEntryPopup);
+document.addEventListener('click', e => {
+  const popup = $('entryPopup');
+  if (popup.classList.contains('hidden')) return;
+  if (popup.contains(e.target)) return;
+  if (e.target.closest && e.target.closest('.drag-line.entry')) return;
+  closeEntryPopup();
+});
 
 function normalizeTimestamp(val) {
   if (val == null || val === '') return NaN;
@@ -1362,24 +1670,10 @@ const localDateTime = ts => {
   if (!Number.isFinite(sec)) return String(ts || '—');
   return new Date(sec * 1000).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour12: false });
 };
-function extractRealHistory(data) {
-  const candidates = [
-    { key: 'mt5_history', label: 'Lịch sử thật MT5' },
-    { key: 'real_history', label: 'Lịch sử giao dịch thật' },
-    { key: 'mt5_deals', label: 'Lịch sử lệnh MT5' },
-    { key: 'deals_history', label: 'Lịch sử lệnh thật' },
-    { key: 'closed_positions', label: 'Vị thế thật đã đóng' },
-    { key: 'trade_history', label: 'Lịch sử giao dịch thật' },
-  ];
-  for (const c of candidates) {
-    if (Array.isArray(data[c.key])) return { rows: data[c.key], source: c.label, isReal: true };
-  }
-  return { rows: [], source: 'Chưa có nguồn lịch sử thật từ MT5', isReal: false };
-}
+
 function renderStats(data) {
   const todaySignals = Array.isArray(data.today_signals) ? data.today_signals : [];
-  const realHist = extractRealHistory(data);
-  const history = realHist.rows;
+  const history = Array.isArray(data.real_history) ? data.real_history : [];
   const todayKey = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Ho_Chi_Minh', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
   const closedToday = history.filter(p => localDayKey(p.closed_at ?? p.close_time ?? p.time) === todayKey);
   const wins = closedToday.filter(p => Number(p.profit ?? p.pnl ?? 0) > 0).length;
@@ -1397,20 +1691,20 @@ function renderStats(data) {
     ? todaySignals.map(x => '<tr><td>' + esc(localDateTime(x.signal_time)) + '</td><td>' + esc(x.symbol) + '</td><td>' + esc(x.timeframe) + '</td><td class="' + (String(x.direction).toUpperCase() === 'BUY' ? 'buy' : 'sell') + '">' + esc(x.direction) + '</td><td>' + esc(x.divergence) + '</td><td>' + esc(x.signal_type) + '</td><td>' + fmt(x.price2) + '</td></tr>').join('')
     : '<tr><td colspan="7" class="empty">Hôm nay chưa có tín hiệu</td></tr>';
 
-  $('statsHistoryMeta').textContent = realHist.isReal ? (history.length + ' giao dịch thật (' + realHist.source + ')') : 'Chưa nhận dữ liệu lịch sử giao dịch thật từ server/MT5';
+  $('statsHistoryMeta').textContent = history.length + ' giao dịch';
   $('statsPaperHistory').innerHTML = history.length ? history.map(p => {
     const profit = Number(p.profit ?? p.pnl ?? 0);
     const closeTs = p.closed_at ?? p.close_time ?? p.time;
     const entryVal = p.entry ?? p.open_price ?? p.price ?? 0;
     const volVal = p.volume ?? p.lots ?? p.lot ?? 0;
     return '<tr><td>' + esc(localDateTime(closeTs)) + '</td><td>' + esc(p.symbol) + '</td><td class="' + (String(p.direction ?? p.type).toUpperCase().includes('BUY') ? 'buy' : 'sell') + '">' + esc(p.direction ?? p.type) + '</td><td>' + fmt(volVal) + '</td><td>' + fmt(entryVal) + '</td><td>' + (Number(p.sl) > 0 ? fmt(p.sl) : '—') + '</td><td>' + (Number(p.tp) > 0 ? fmt(p.tp) : '—') + '</td><td>' + esc(p.outcome ?? p.reason ?? p.status ?? 'Đã đóng') + '</td><td style="font-weight:700;color:' + (profit >= 0 ? '#27c995' : '#f06b7e') + '">' + (profit > 0 ? '+' : '') + fmt(profit) + '</td></tr>';
-  }).join('') : '<tr><td colspan="9" class="empty">' + (realHist.isReal ? 'Chưa có giao dịch thật đã đóng' : 'Chưa có lịch sử giao dịch thật từ MT5/Trade V9') + '</td></tr>';
+  }).join('') : '<tr><td colspan="9" class="empty">Chưa có giao dịch đã đóng</td></tr>';
 
   $('statsUpdated').textContent = 'Cập nhật ' + new Date().toLocaleTimeString('vi-VN');
 }
 async function refreshStats() {
   try {
-    const r = await fetch(API_BASE + '/api/dashboard', { cache: 'no-store' });
+    const r = await apiFetch(API_BASE + '/api/dashboard', { cache: 'no-store' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     renderStats(await r.json());
   } catch (e) {
@@ -1438,26 +1732,7 @@ function setLevelLines() {
         : key.toUpperCase() + ' ' + value.toFixed(mt5Digits);
     }
   }
-}
-
-function getLimitValidation(forcedType = null) {
-  const entry = Number($('entryPrice').value);
-  const sl = Number($('slPrice').value);
-  const tp = Number($('tpPrice').value);
-  const ref = Number(latestMarketPrice);
-  const pendingType = forcedType || ((entry > 0 && sl > 0 && entry !== sl) ? (sl > entry ? 'SELL_LIMIT' : 'BUY_LIMIT') : pendingOrderType);
-  const direction = pendingType === 'BUY_LIMIT' ? 'BUY' : 'SELL';
-  if (!(entry > 0) || !(sl > 0) || entry === sl) return { pendingType, direction, valid: false, reason: 'Cần Entry và SL hợp lệ và khác nhau.' };
-  if (pendingType === 'BUY_LIMIT') {
-    if (sl >= entry) return { pendingType, direction, valid: false, reason: 'BUY LIMIT yêu cầu SL < Entry (' + fmt(entry) + ').' };
-    if (ref > 0 && entry >= ref) return { pendingType, direction, valid: false, reason: 'BUY LIMIT yêu cầu Entry (' + fmt(entry) + ') < giá hiện tại (' + fmt(ref) + ').' };
-    if (tp > 0 && tp <= entry) return { pendingType, direction, valid: false, reason: 'BUY LIMIT yêu cầu TP > Entry (' + fmt(entry) + ').' };
-  } else {
-    if (sl <= entry) return { pendingType, direction, valid: false, reason: 'SELL LIMIT yêu cầu SL > Entry (' + fmt(entry) + ').' };
-    if (ref > 0 && entry <= ref) return { pendingType, direction, valid: false, reason: 'SELL LIMIT yêu cầu Entry (' + fmt(entry) + ') > giá hiện tại (' + fmt(ref) + ').' };
-    if (tp > 0 && tp >= entry) return { pendingType, direction, valid: false, reason: 'SELL LIMIT yêu cầu TP < Entry (' + fmt(entry) + ').' };
-  }
-  return { pendingType, direction, valid: true, reason: '' };
+  applyLockState();
 }
 
 function updateDirectionFromSL() {
@@ -1470,16 +1745,12 @@ function updateDirectionFromSL() {
     autoDirection = pendingOrderType === 'BUY_LIMIT' ? 'BUY' : 'SELL';
     syncPresetButtons();
     const isBuyLimit = pendingOrderType === 'BUY_LIMIT';
-    const info = getLimitValidation(pendingOrderType);
     $('sendBuy').textContent = 'BUY LIMIT';
     $('sendSell').textContent = 'SELL LIMIT';
     $('sendBuy').style.display = isBuyLimit ? '' : 'none';
     $('sendSell').style.display = isBuyLimit ? 'none' : '';
     $('sendBuy').classList.toggle('active', isBuyLimit);
     $('sendSell').classList.toggle('active', !isBuyLimit);
-    $('requestState').textContent = info.valid
-      ? ('Sẵn sàng gửi ' + pendingOrderType.replace('_', ' ') + ' · Entry ' + Number($('entryPrice').value).toFixed(mt5Digits) + ' · SL ' + Number($('slPrice').value).toFixed(mt5Digits))
-      : ('Limit: ' + info.reason);
     return;
   }
   $('sendBuy').textContent = 'BUY';
@@ -1490,9 +1761,8 @@ function updateDirectionFromSL() {
   $('sendBuy').classList.toggle('active', autoDirection === 'BUY');
   $('sendSell').classList.toggle('active', autoDirection === 'SELL');
   $('sendBuy').style.display = autoDirection === 'BUY' ? '' : 'none';
-  $('sendSell').style.display = autoDirection === 'SELL' ? 'none' : '';
   $('sendSell').style.display = autoDirection === 'SELL' ? '' : 'none';
-  $('requestState').textContent = 'SL đang xác định hướng ' + autoDirection + ' · chỉ gửi PAPER.';
+  $('requestState').textContent = 'SL đang xác định hướng ' + autoDirection + '.';
 }
 
 function volumeDigits(step) {
@@ -1588,12 +1858,13 @@ document.addEventListener('keydown', e => {
   if (['input', 'textarea', 'select'].includes(tag) || e.target.isContentEditable) return;
   if (e.key.toLowerCase() === 'r') { e.preventDefault(); lastBarsSignature = ''; load(); }
   if (e.key === '0') { e.preventDefault(); priceChart.timeScale().fitContent(); priceChart.timeScale().applyOptions({ rightOffset: 10 }); }
+  if (e.key.toLowerCase() === 'l') { e.preventDefault(); toggleLock(); }
 });
 
-async function sendPaper(direction) {
+async function sendOrder(direction) {
   if (!chartApiKey) {
     $('requestState').textContent = 'Chưa nhập API key — mở Cài đặt để nhập.';
-    $('apiKeyStatus').textContent = 'Cần nhập API key trước khi gửi yêu cầu PAPER.';
+    $('apiKeyStatus').textContent = 'Cần nhập API key trước khi gửi yêu cầu.';
     $('apiKeyStatus').classList.add('err');
     $('tradeSettingsDialog').showModal();
     $('apiKeyInput').focus();
@@ -1606,19 +1877,31 @@ async function sendPaper(direction) {
 
   if (mode === 'PENDING') {
     const requestedLimitType = direction === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT';
-    const info = getLimitValidation(requestedLimitType);
-    if (!info.valid) { $('requestState').textContent = info.reason; return; }
-    const orderType = info.pendingType;
+    const entry = Number($('entryPrice').value);
+    const ref = Number(latestMarketPrice);
+    let error = '';
+    if (!(entry > 0) || entry === c.s) error = 'Cần Entry và SL hợp lệ và khác nhau.';
+    else if (requestedLimitType === 'BUY_LIMIT') {
+      if (c.s >= entry) error = 'BUY LIMIT yêu cầu SL < Entry.';
+      else if (ref > 0 && entry >= ref) error = 'BUY LIMIT yêu cầu Entry < giá hiện tại.';
+      else if (tp > 0 && tp <= entry) error = 'BUY LIMIT yêu cầu TP > Entry.';
+    } else {
+      if (c.s <= entry) error = 'SELL LIMIT yêu cầu SL > Entry.';
+      else if (ref > 0 && entry <= ref) error = 'SELL LIMIT yêu cầu Entry > giá hiện tại.';
+      else if (tp > 0 && tp >= entry) error = 'SELL LIMIT yêu cầu TP < Entry.';
+    }
+    if (error) { $('requestState').textContent = error; return; }
+    const orderType = requestedLimitType;
     const limitLabel = orderType.replace('_', ' ');
-    const summary = `XÁC NHẬN YÊU CẦU PAPER (${limitLabel})\n\nLoại lệnh: ${limitLabel}\nSymbol: ${$('symbol').value} / ${$('tf').value}\nGiá hiện tại: ${fmt(latestMarketPrice)}\nEntry Limit: ${c.e.toFixed(mt5Digits)}\nSL: ${c.s.toFixed(mt5Digits)}\nTP hiển thị: ${tp > 0 ? tp.toFixed(mt5Digits) : 'Chưa đặt'}\nLot MT5: ${c.lot.toFixed(volumeDigits(mt5VolumeStep))}\nRisk dự kiến tại SL: ${c.actualRisk.toFixed(2)} / ${c.risk.toFixed(2)}\n\nChỉ gửi yêu cầu ${limitLabel} vào hàng đợi PAPER; không đặt lệnh broker. Tiếp tục?`;
+    const summary = `XÁC NHẬN LỆNH (${limitLabel})\n\nLoại lệnh: ${limitLabel}\nSymbol: ${$('symbol').value} / ${$('tf').value}\nGiá hiện tại: ${fmt(latestMarketPrice)}\nEntry Limit: ${entry.toFixed(mt5Digits)}\nSL: ${c.s.toFixed(mt5Digits)}\nTP: ${tp > 0 ? tp.toFixed(mt5Digits) : 'Chưa đặt'}\nLot MT5: ${c.lot.toFixed(volumeDigits(mt5VolumeStep))}\nRisk dự kiến tại SL: ${c.actualRisk.toFixed(2)} / ${c.risk.toFixed(2)}\n\nGửi lệnh ${limitLabel} lên MT5 thật? Tiếp tục?`;
     if (!window.confirm(summary)) return;
-    const payload = { symbol: $('symbol').value, timeframe: $('tf').value, direction: info.direction, mode: 'PENDING', order_type: orderType, entry: c.e, sl: c.s, tp, risk_money: c.risk, requested_lot: c.lot, score: 0, source: 'web-chart' };
-    $('requestState').textContent = 'Đang gửi yêu cầu ' + limitLabel + ' PAPER...';
+    const payload = { symbol: $('symbol').value, timeframe: $('tf').value, direction, mode: 'PENDING', order_type: orderType, entry, sl: c.s, tp, risk_money: c.risk, requested_lot: c.lot, score: 0, source: 'web-chart' };
+    $('requestState').textContent = 'Đang gửi yêu cầu ' + limitLabel + '...';
     try {
-      const r = await apiFetch(API_BASE + '/api/chart/request', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const r = await apiFetch(API_BASE + '/api/chart/order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const d = await r.json();
       if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
-      $('requestState').textContent = 'Đã đưa ' + limitLabel + ' vào hàng đợi PAPER · ID ' + d.signal_id + ' · chờ MT5 nhận';
+      $('requestState').textContent = 'Đã đưa ' + limitLabel + ' vào hàng đợi MT5 · ID ' + d.signal_id;
       $('apiKeyStatus').textContent = 'API key hợp lệ.'; $('apiKeyStatus').classList.add('ok');
     } catch (err) {
       $('requestState').textContent = 'Không gửi được: ' + err.message;
@@ -1632,15 +1915,15 @@ async function sendPaper(direction) {
     $('requestState').textContent = 'SL phải nằm dưới giá hiện tại với BUY và trên giá hiện tại với SELL.';
     return;
   }
-  const summary = `XÁC NHẬN YÊU CẦU PAPER\n\n${direction} · ${mode}\nSymbol: ${$('symbol').value} / ${$('tf').value}\nEntry: ${refPrice.toFixed(mt5Digits)}\nSL: ${c.s.toFixed(mt5Digits)}\nTP hiển thị: ${tp > 0 ? tp.toFixed(mt5Digits) : 'Chưa đặt'}\nLot MT5: ${c.lot.toFixed(volumeDigits(mt5VolumeStep))}\nRisk dự kiến tại SL: ${c.actualRisk.toFixed(2)} / ${c.risk.toFixed(2)}\n\nChỉ truyền Risk và Lot đã tính sang Trade V9 PAPER; không đặt lệnh broker. Tiếp tục?`;
+  const summary = `XÁC NHẬN LỆNH\n\n${direction} · ${mode}\nSymbol: ${$('symbol').value} / ${$('tf').value}\nEntry: ${refPrice.toFixed(mt5Digits)}\nSL: ${c.s.toFixed(mt5Digits)}\nTP: ${tp > 0 ? tp.toFixed(mt5Digits) : 'Chưa đặt'}\nLot MT5: ${c.lot.toFixed(volumeDigits(mt5VolumeStep))}\nRisk dự kiến tại SL: ${c.actualRisk.toFixed(2)} / ${c.risk.toFixed(2)}\n\nGửi lệnh ${direction} lên MT5 thật? Tiếp tục?`;
   if (!window.confirm(summary)) return;
   const payload = { symbol: $('symbol').value, timeframe: $('tf').value, direction, mode: 'MARKET', order_type: 'MARKET', entry: refPrice, sl: c.s, tp, risk_money: c.risk, requested_lot: c.lot, score: 0, source: 'web-chart' };
-  $('requestState').textContent = 'Đang gửi yêu cầu PAPER...';
+  $('requestState').textContent = 'Đang gửi yêu cầu...';
   try {
-    const r = await apiFetch(API_BASE + '/api/chart/request', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const r = await apiFetch(API_BASE + '/api/chart/order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const d = await r.json();
     if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
-    $('requestState').textContent = 'Đã đưa ' + direction + ' vào hàng đợi PAPER · ID ' + d.signal_id + ' · chờ MT5 nhận';
+    $('requestState').textContent = 'Đã đưa ' + direction + ' vào hàng đợi MT5 · ID ' + d.signal_id;
     $('apiKeyStatus').textContent = 'API key hợp lệ.'; $('apiKeyStatus').classList.add('ok');
   } catch (err) {
     $('requestState').textContent = 'Không gửi được: ' + err.message;
@@ -1648,8 +1931,8 @@ async function sendPaper(direction) {
   }
 }
 
-$('sendBuy').addEventListener('click', () => sendPaper('BUY'));
-$('sendSell').addEventListener('click', () => sendPaper('SELL'));
+$('sendBuy').addEventListener('click', () => sendOrder('BUY'));
+$('sendSell').addEventListener('click', () => sendOrder('SELL'));
 $('symbol').addEventListener('change', () => { firstLoad = true; lastBarsSignature = ''; load(); });
 $('tf').addEventListener('change', () => { firstLoad = true; lastBarsSignature = ''; load(); });
 $('refresh').addEventListener('click', () => { lastBarsSignature = ''; load(); });
@@ -1749,8 +2032,8 @@ async function checkServerStatus() {
   }
 }
 
-/* ================= API KEY EVENTS ================= */
 refreshApiKeyBox();
+applyLockState();
 
 $('apiKeySave').addEventListener('click', () => {
   saveApiKey($('apiKeyInput').value);
