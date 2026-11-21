@@ -72,7 +72,7 @@ button.active{background:rgba(39,201,149,.11);border-color:var(--green);color:#7
 button.sell.active{background:rgba(240,107,126,.14);border-color:var(--red);color:#ff9aaa}
 button.locked{background:rgba(251,191,36,.14);border-color:var(--amber);color:#fcd34d}
 
-.layout{display:grid;grid-template-columns:minmax(0,1fr) 270px;gap:10px}
+.layout{display:grid;grid-template-columns:minmax(0,1fr);gap:10px}
 .layout>div{min-width:0}
 .panel{
   background:var(--panel);
@@ -529,6 +529,40 @@ th{color:var(--muted);font-weight:600}
 .stats-section td,.stats-section th{font-size:11px;padding:8px}
 .stats-updated{padding-top:10px;text-align:right}
 
+/* Thông báo realtime nổi trong vùng biểu đồ */
+.rt-signal-toast{
+  position:absolute;z-index:35;top:54px;left:12px;width:min(330px,calc(100% - 24px));
+  padding:10px 12px;border:1px solid #2c9b78;border-left:4px solid var(--green);
+  border-radius:11px;background:rgba(12,27,43,.97);box-shadow:0 14px 36px rgba(0,0,0,.42);
+  color:var(--text);display:none;backdrop-filter:blur(10px)
+}
+.rt-signal-toast.show{display:block;animation:rtIn .2s ease-out}
+@keyframes rtIn{from{opacity:0;transform:translateY(-6px)}to{opacity:1;transform:translateY(0)}}
+.rt-toast-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:5px}
+.rt-toast-label{font-size:10px;font-weight:800;letter-spacing:.6px;color:#6de3b8}
+.rt-toast-close{padding:1px 6px;background:transparent;border:0;color:#a9b8ca;font-size:17px}
+.rt-toast-main{font-size:13px;font-weight:800}
+.rt-toast-meta{font-size:11px;color:#aebdd0;margin-top:2px}
+.rt-toast-actions{display:flex;justify-content:flex-end;gap:6px;margin-top:8px}
+.rt-toast-actions button{font-size:11px;padding:4px 9px}
+.rt-toast-actions .rt-detail-btn{border-color:#238866;color:#75e5bd;background:rgba(39,201,149,.12)}
+.rt-signal-dialog{
+  width:min(390px,calc(100vw - 24px));max-height:82dvh;padding:0;
+  border:1px solid #35516f;border-radius:14px;background:#101b2c;color:var(--text);
+  box-shadow:0 24px 80px rgba(0,0,0,.62)
+}
+.rt-signal-dialog::backdrop{background:rgba(2,8,17,.72);backdrop-filter:blur(4px)}
+.rt-dialog-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:12px 14px;background:#142239;border-bottom:1px solid #2a3b53}
+.rt-dialog-body{padding:14px;display:grid;gap:8px}
+.rt-dialog-direction{font-size:18px;font-weight:850}
+.rt-dialog-grid{display:grid;grid-template-columns:1fr 1fr;gap:7px}
+.rt-dialog-cell{padding:8px;border:1px solid #293d56;border-radius:8px;background:#0d1929;min-width:0}
+.rt-dialog-cell span{display:block;color:#91a2b8;font-size:10px}
+.rt-dialog-cell b{display:block;margin-top:3px;font-size:12px;overflow-wrap:anywhere;font-variant-numeric:tabular-nums}
+.rt-dialog-note{color:#9aabc2;font-size:11px;line-height:1.5}
+.rt-dialog-foot{display:flex;justify-content:flex-end;padding:0 14px 14px}
+@media(max-width:560px){.rt-signal-toast{top:44px;left:7px;width:min(300px,calc(100% - 14px));padding:8px 10px}.rt-toast-main{font-size:12px}}
+
 @media (orientation:portrait){
   main{padding:8px}
   .layout{grid-template-columns:minmax(0,1fr);gap:8px}
@@ -803,23 +837,23 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:10px}
         <div class="statusline">Nến và tín hiệu lấy từ MT5. RSI 14 chỉ để quan sát, không tạo tín hiệu.</div>
       </section>
 
-      <section class="panel signal-panel" style="margin-top:10px">
-        <div class="panel-head"><strong>Tín hiệu AI OOP V8</strong><span class="small" id="signalCount">0 tín hiệu</span></div>
-        <div id="signalTable"><div class="empty">Chưa có tín hiệu cho mã và khung đang chọn</div></div>
-      </section>
+      <div hidden aria-hidden="true">
+        <span id="signalCount">0 tín hiệu</span>
+        <div id="signalTable"></div>
+        <div id="signalDetails"></div>
+      </div>
     </div>
-
-    <aside class="panel side">
-      <h3>Chi tiết tín hiệu</h3>
-      <div id="signalDetails" class="muted">Chọn một tín hiệu trong danh sách để xem chi tiết.</div>
-      <h3>Chú giải</h3>
-      <div class="signal"><b class="buy">▲ BUY</b><div class="small">Regular / Hidden Bullish</div></div>
-      <div class="signal"><b class="sell">▼ SELL</b><div class="small">Regular / Hidden Bearish</div></div>
-      <div class="signal"><b>RT</b><div class="small">Tín hiệu realtime</div></div>
-      <div class="signal"><b>HIST</b><div class="small">Tín hiệu lịch sử, chỉ để tham khảo</div></div>
-    </aside>
   </div>
 </main>
+
+<dialog id="rtSignalDialog" class="rt-signal-dialog">
+  <div class="rt-dialog-head">
+    <strong>CHI TIẾT TÍN HIỆU REALTIME</strong>
+    <button type="button" id="rtDialogClose" aria-label="Đóng">✕</button>
+  </div>
+  <div class="rt-dialog-body" id="rtDialogBody"></div>
+  <div class="rt-dialog-foot"><button type="button" id="rtDialogOk">Đóng</button></div>
+</dialog>
 
 <dialog id="tradeSettingsDialog" class="positions-dialog trade-settings-dialog">
   <div class="positions-dialog-head">
@@ -1674,6 +1708,51 @@ function rsi(values, period = 14) {
   return out;
 }
 
+const knownRealtimeByView = new Map();
+let activeRealtimeSignal = null;
+function signalKey(s) {
+  return [s.symbol,s.timeframe,s.direction,s.divergence,s.signal_type,s.signal_time].join('|');
+}
+function signalTimeText(s) {
+  return new Date(Number(s.signal_time) * 1000).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
+}
+function showRealtimeToast(s, count = 1) {
+  activeRealtimeSignal = s;
+  let toast = $('rtSignalToast');
+  if (!toast) {
+    toast = document.createElement('div');
+    toast.id = 'rtSignalToast';
+    toast.className = 'rt-signal-toast';
+    $('priceChart').appendChild(toast);
+  }
+  const isBuy = s.direction === 'BUY';
+  toast.innerHTML = '<div class="rt-toast-head"><span class="rt-toast-label">● REALTIME MỚI' + (count > 1 ? ' · +' + (count - 1) : '') + '</span><button type="button" class="rt-toast-close" aria-label="Ẩn">×</button></div>'
+    + '<div class="rt-toast-main ' + (isBuy ? 'buy' : 'sell') + '">' + (isBuy ? '▲ BUY' : '▼ SELL') + ' · ' + esc(s.symbol) + ' · ' + esc(s.timeframe) + '</div>'
+    + '<div class="rt-toast-meta">' + esc(s.divergence) + ' · Entry điểm phân kỳ: ' + fmt(s.price2) + '</div>'
+    + '<div class="rt-toast-meta">' + esc(signalTimeText(s)) + '</div>'
+    + '<div class="rt-toast-actions"><button type="button" class="rt-detail-btn">Xem chi tiết</button></div>';
+  toast.classList.add('show');
+  toast.querySelector('.rt-toast-close').addEventListener('click', () => toast.classList.remove('show'));
+  toast.querySelector('.rt-detail-btn').addEventListener('click', () => openRealtimeDetails(s));
+}
+function openRealtimeDetails(s) {
+  if (!s) return;
+  const isBuy = s.direction === 'BUY';
+  $('rtDialogBody').innerHTML = '<div class="rt-dialog-direction ' + (isBuy ? 'buy' : 'sell') + '">' + (isBuy ? '▲ BUY' : '▼ SELL') + ' · ' + esc(s.divergence) + '</div>'
+    + '<div class="rt-dialog-note">' + esc(s.symbol) + ' / ' + esc(s.timeframe) + ' · RT realtime</div>'
+    + '<div class="rt-dialog-grid">'
+    + '<div class="rt-dialog-cell"><span>Giá điểm 1</span><b>' + fmt(s.price1) + '</b></div>'
+    + '<div class="rt-dialog-cell"><span>Giá điểm 2</span><b>' + fmt(s.price2) + '</b></div>'
+    + '<div class="rt-dialog-cell"><span>RSI điểm 1</span><b>' + fmt(s.rsi1) + '</b></div>'
+    + '<div class="rt-dialog-cell"><span>RSI điểm 2</span><b>' + fmt(s.rsi2) + '</b></div>'
+    + '<div class="rt-dialog-cell"><span>Thời gian phát hiện</span><b>' + esc(signalTimeText(s)) + '</b></div>'
+    + '<div class="rt-dialog-cell"><span>Loại tín hiệu</span><b>RT · Realtime</b></div></div>'
+    + '<div class="rt-dialog-note">Đây là tín hiệu phân kỳ từ AI OOP V8, không phải xác nhận lệnh đã được mở.</div>';
+  if (!$('rtSignalDialog').open) $('rtSignalDialog').showModal();
+}
+$('rtDialogClose').addEventListener('click', () => $('rtSignalDialog').close());
+$('rtDialogOk').addEventListener('click', () => $('rtSignalDialog').close());
+
 function renderSignals(signals, bars) {
   const list = signals || [];
   $('signalCount').textContent = list.length + ' tín hiệu';
@@ -1685,22 +1764,22 @@ function renderSignals(signals, bars) {
     text: s.direction + ' ' + s.divergence + ' ' + s.signal_type,
   }));
   candleSeries.setMarkers(bars.length ? markers : []);
-  $('signalTable').innerHTML = list.length
-    ? '<table><thead><tr><th>Thời gian</th><th>Hướng</th><th>Loại</th><th>Phân kỳ</th><th>Giá</th></tr></thead><tbody>' + list.map((s, i) => (
-        '<tr data-i="' + i + '"><td>' + esc(new Date(Number(s.signal_time) * 1000).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })) + '</td><td class="' + (s.direction === 'BUY' ? 'buy' : 'sell') + '">' + esc(s.direction) + '</td><td>' + esc(s.signal_type) + '</td><td>' + esc(s.divergence) + '</td><td>' + fmt(s.price2) + '</td></tr>'
-      )).join('') + '</tbody></table>'
-    : '<div class="empty">Không có tín hiệu AI OOP V8 cho lựa chọn này.</div>';
 
-  $('signalTable').querySelectorAll('tr[data-i]').forEach(row => {
-    row.addEventListener('click', () => {
-      const s = list[Number(row.dataset.i)];
-      $('signalDetails').innerHTML = '<b class="' + (s.direction === 'BUY' ? 'buy' : 'sell') + '">' + esc(s.direction) + ' · ' + esc(s.divergence) + ' · ' + esc(s.signal_type) + '</b>'
-        + '<p>' + esc(s.symbol) + ' / ' + esc(s.timeframe) + '</p>'
-        + '<p>Thời gian: ' + esc(new Date(Number(s.signal_time) * 1000).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' })) + '</p>'
-        + '<p>Price 1: ' + fmt(s.price1) + '<br>Price 2: ' + fmt(s.price2) + '</p>'
-        + '<p>RSI 1: ' + fmt(s.rsi1) + '<br>RSI 2: ' + fmt(s.rsi2) + '</p>';
-    });
-  });
+  // Chỉ báo RT mới sau lần tải đầu của từng mã/khung; không bật thông báo hàng loạt khi mở trang.
+  const viewKey = $('symbol').value + '|' + $('tf').value;
+  const rtItems = list.filter(s => s.signal_type === 'RT');
+  const currentKeys = new Set(rtItems.map(signalKey));
+  if (!knownRealtimeByView.has(viewKey)) {
+    knownRealtimeByView.set(viewKey, currentKeys);
+  } else {
+    const known = knownRealtimeByView.get(viewKey);
+    const fresh = rtItems.filter(s => !known.has(signalKey(s)));
+    currentKeys.forEach(k => known.add(k));
+    if (fresh.length) {
+      fresh.sort((a,b) => Number(b.signal_time) - Number(a.signal_time));
+      showRealtimeToast(fresh[0], fresh.length);
+    }
+  }
 }
 
 function defaultGap(ref) {
