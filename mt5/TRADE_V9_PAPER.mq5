@@ -903,10 +903,11 @@ void SendPaperPositions()
          body+=StringFormat(
             "{\"id\":\"%s\",\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\","
             "\"entry\":%.10f,\"sl\":%.10f,\"tp\":%.10f,\"volume\":%.8f,"
-            "\"risk\":%.2f,\"profit\":%.2f,\"opened_at\":%.0f}",
+            "\"risk\":%.2f,\"profit\":%.2f,\"opened_at\":%.0f,\"is_pending\":%s}",
             JsonEscape(trades[i].id),JsonEscape(symbol),JsonEscape(trades[i].timeframe),trades[i].direction,
             trades[i].entry,trades[i].sl,trades[i].tp,trades[i].volume,
-            trades[i].riskMoney,NormalizeDouble(profit,2),(double)trades[i].opened);
+            trades[i].riskMoney,NormalizeDouble(profit,2),(double)trades[i].opened,
+            (trades[i].isPending?"true":"false"));
       }
    }
    else
