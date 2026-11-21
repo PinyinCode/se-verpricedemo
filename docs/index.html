@@ -1158,32 +1158,36 @@ for (const key of ['entry', 'sl', 'tp']) {
   dragOverlay.appendChild(line);
   dragLevels[key] = line;
 
-  if (key === 'entry') {
-    line.addEventListener('click', ev => {
-      ev.stopPropagation();
+  line.addEventListener('pointerdown', ev => {
+    if (line.style.display === 'none') return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    line.setPointerCapture(ev.pointerId);
+    line.dataset.drag = '1';
+    line.dataset.dragMoved = '0';
+  });
+  line.addEventListener('pointermove', ev => {
+    if (line.dataset.drag !== '1') return;
+    const rect = $('priceChart').getBoundingClientRect();
+    const p = candleSeries.coordinateToPrice(ev.clientY - rect.top);
+    if (p == null || !Number.isFinite(p)) return;
+    const id = key === 'entry' ? 'entryPrice' : key === 'sl' ? 'slPrice' : 'tpPrice';
+    $(id).value = Number(p).toFixed(mt5Digits);
+    line.dataset.dragMoved = '1';
+    handleLevelAdjusted();
+  });
+  const stop = ev => {
+    if (line.dataset.drag !== '1') return;
+    line.dataset.drag = '0';
+    try { line.releasePointerCapture(ev.pointerId); } catch (_) {}
+    // Nếu không di chuyển (chỉ click), mở popup Entry
+    if (key === 'entry' && line.dataset.dragMoved !== '1') {
       openEntryPopupAt(ev.clientX, ev.clientY);
-    });
-  } else {
-    line.addEventListener('pointerdown', ev => {
-      if (line.style.display === 'none') return;
-      // Khoá của form mới KHÔNG liên quan nút 🔒 (chỉ khoá lệnh thật)
-      ev.preventDefault();
-      line.setPointerCapture(ev.pointerId);
-      line.dataset.drag = '1';
-    });
-    line.addEventListener('pointermove', ev => {
-      if (line.dataset.drag !== '1') return;
-      const rect = $('priceChart').getBoundingClientRect();
-      const p = candleSeries.coordinateToPrice(ev.clientY - rect.top);
-      if (p == null || !Number.isFinite(p)) return;
-      const id = key === 'sl' ? 'slPrice' : 'tpPrice';
-      $(id).value = Number(p).toFixed(mt5Digits);
-      handleLevelAdjusted();
-    });
-    const stop = () => { line.dataset.drag = '0'; };
-    line.addEventListener('pointerup', stop);
-    line.addEventListener('pointercancel', stop);
-  }
+    }
+    line.dataset.dragMoved = '0';
+  };
+  line.addEventListener('pointerup', stop);
+  line.addEventListener('pointercancel', stop);
 }
 
 priceChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
