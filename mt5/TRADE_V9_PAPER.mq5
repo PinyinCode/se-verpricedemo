@@ -2,10 +2,10 @@
 //| TRADE_V9_PAPER.mq5                                               |
 //| Forex AI Server consumer - REAL orders only.                     |
 //| Pending orders: LIMIT ONLY (BUY_LIMIT / SELL_LIMIT), no Stop     |
-//| Supports remote SL/TP modify via /api/mt5/sltp-requests          |
+//| Supports remote SL/TP modify + pending order modify              |
 //+------------------------------------------------------------------+
 #property strict
-#property version "3.00"
+#property version "3.01"
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
@@ -30,7 +30,6 @@ input bool   AllowCancelExternalPending = true;
 CTrade        trade;
 CPositionInfo posInfo;
 
-// ánh xạ ticket -> thông tin gốc của signal
 string   realTicketIds[];
 string   realSignalIds[];
 string   realSymbols[];
@@ -41,13 +40,15 @@ datetime realOpenTimes[];
 
 string   processedSignalIds[];
 string   processedSltpRequestIds[];
+string   processedPendingModifyIds[];
 string   lastHistoryDigest = "";
 
-uint lastPollMs          = 0;
-uint lastPositionsSyncMs = 0;
-uint lastHeartbeatMs     = 0;
-uint lastHistorySyncMs   = 0;
-uint lastSltpPollMs      = 0;
+uint lastPollMs              = 0;
+uint lastPositionsSyncMs     = 0;
+uint lastHeartbeatMs         = 0;
+uint lastHistorySyncMs       = 0;
+uint lastSltpPollMs          = 0;
+uint lastPendingModifyPollMs = 0;
 
 //--- Forward declarations -------------------------------------------
 void SendAccountSnapshot();
@@ -90,7 +91,6 @@ datetime ParseIsoOrEpochTime(string raw)
    StringReplace(s, "T", " ");
    StringReplace(s, "Z", "");
 
-   // cắt microsecond nếu có (dấu chấm theo sau là chữ số)
    int dotPos = StringFind(s, ".");
    if(dotPos > 0)
    {
@@ -157,6 +157,27 @@ void MarkProcessedSltp(string id)
    }
    ArrayResize(processedSltpRequestIds, n+1);
    processedSltpRequestIds[n] = id;
+}
+
+bool HasProcessedPendingModify(string id)
+{
+   for(int i=0; i<ArraySize(processedPendingModifyIds); i++)
+      if(processedPendingModifyIds[i] == id) return true;
+   return false;
+}
+
+void MarkProcessedPendingModify(string id)
+{
+   if(id == "" || HasProcessedPendingModify(id)) return;
+   int n = ArraySize(processedPendingModifyIds);
+   if(n >= 500)
+   {
+      for(int i=0; i<n-1; i++) processedPendingModifyIds[i] = processedPendingModifyIds[i+1];
+      processedPendingModifyIds[n-1] = id;
+      return;
+   }
+   ArrayResize(processedPendingModifyIds, n+1);
+   processedPendingModifyIds[n] = id;
 }
 
 string JsonValue(string json,string key)
@@ -633,7 +654,6 @@ bool CloseRealPositionById(string targetId,string symbol,string &detailOut,bool 
       return true;
    }
 
-   // Hủy lệnh chờ (pending order) trên MT5
    for(int i=OrdersTotal()-1;i>=0;i--)
    {
       ulong ordTicket=OrderGetTicket(i);
@@ -803,6 +823,96 @@ void PollSltpRequests()
       ExecuteSltpCommand(items[i]);
 }
 
+//--- Pending modify requests -------------------------------------
+void AckPendingModify(string requestId, string ticket, bool ok, string detail)
+{
+   string body=StringFormat(
+      "{\"request_id\":\"%s\",\"ticket\":\"%s\",\"ok\":%s,\"message\":\"%s\"}",
+      JsonEscape(requestId), JsonEscape(ticket), (ok?"true":"false"), JsonEscape(detail));
+   string response; int status;
+   if(!Request("POST","/api/mt5/pending-modify-requests/ack",body,response,status))
+      Print("[V9 PENDING MODIFY ACK FAIL] req=",requestId," HTTP=",status," response=",response);
+}
+
+void ExecutePendingModify(string cmdJson)
+{
+   string reqId  = JsonValue(cmdJson,"request_id");
+   string ticket = JsonValue(cmdJson,"ticket");
+   if(reqId=="" || ticket=="") return;
+   if(HasProcessedPendingModify(reqId)) return;
+
+   double newEntry = StringToDouble(JsonValue(cmdJson,"new_entry"));
+   double newSl    = StringToDouble(JsonValue(cmdJson,"new_sl"));
+   double newTp    = StringToDouble(JsonValue(cmdJson,"new_tp"));
+
+   Print("[V9 PENDING MODIFY REQ] req=",reqId," ticket=",ticket,
+         " newEntry=",DoubleToString(newEntry,5),
+         " newSL=",DoubleToString(newSl,5),
+         " newTP=",DoubleToString(newTp,5));
+
+   ulong tk=(ulong)StringToInteger(ticket);
+   bool ok=false;
+   string detail="";
+
+   if(!OrderSelect(tk))
+   {
+      detail="Pending order not found for ticket";
+   }
+   else
+   {
+      string sym = OrderGetString(ORDER_SYMBOL);
+      int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+
+      double curPrice = OrderGetDouble(ORDER_PRICE_OPEN);
+      double curSl    = OrderGetDouble(ORDER_SL);
+      double curTp    = OrderGetDouble(ORDER_TP);
+
+      double price = NormalizeDouble(newEntry > 0 ? newEntry : curPrice, digits);
+      double sl    = NormalizeDouble(newSl   > 0 ? newSl   : curSl,    digits);
+      double tp    = NormalizeDouble(newTp   > 0 ? newTp   : curTp,    digits);
+
+      datetime expiration = (datetime)OrderGetInteger(ORDER_TIME_EXPIRATION);
+      if(expiration == 0) expiration = 0;
+
+      trade.SetExpertMagicNumber(MagicNumber);
+      trade.SetDeviationInPoints(SlippagePoints);
+      trade.SetTypeFilling(PickFilling(sym));
+      trade.SetAsyncMode(false);
+
+      if(trade.OrderModify(tk, price, sl, tp, ORDER_TIME_GTC, expiration, OrderComment))
+      {
+         ok=true;
+         detail=StringFormat("Pending modified Entry=%.*f SL=%.*f TP=%.*f",
+                             digits, price, digits, sl, digits, tp);
+         Print("[V9 PENDING MODIFY OK] ",detail);
+      }
+      else
+      {
+         detail=StringFormat("OrderModify failed retcode=%d (%s)",
+            trade.ResultRetcode(), trade.ResultRetcodeDescription());
+         Print("[V9 PENDING MODIFY FAIL] ticket=",ticket," ",detail);
+      }
+   }
+
+   MarkProcessedPendingModify(reqId);
+   AckPendingModify(reqId, ticket, ok, detail);
+
+   if(ok) SendAccountSnapshot();
+}
+
+void PollPendingModifyRequests()
+{
+   string response; int status;
+   if(!Request("GET","/api/mt5/pending-modify-requests","",response,status))
+      return;
+   string arr=JsonArrayValue(response,"pending_modify_requests");
+   if(arr=="") return;
+   string items[];
+   ExtractTopLevelObjects(arr,items);
+   for(int i=0;i<ArraySize(items);i++)
+      ExecutePendingModify(items[i]);
+}
+
 //--- Poll signal ---------------------------------------------------
 void PollServer()
 {
@@ -816,7 +926,6 @@ void PollServer()
    if(obj=="") return;
 
    string id        = JsonValue(obj,"id");
-   
    string symbol    = JsonValue(obj,"symbol");
    string tf        = JsonValue(obj,"timeframe");
    string direction = JsonValue(obj,"direction");
@@ -1010,7 +1119,7 @@ int OnInit()
 
    trade.SetExpertMagicNumber(MagicNumber);
    EventSetTimer(1);
-   Print("[V9] Started v3.00 in REAL mode. magic=",MagicNumber);
+   Print("[V9] Started v3.01 in REAL mode. magic=",MagicNumber);
    return INIT_SUCCEEDED;
 }
 
@@ -1041,6 +1150,13 @@ void OnTimer()
    {
       lastSltpPollMs=nowMs;
       PollSltpRequests();
+   }
+
+   if(lastPendingModifyPollMs==0 ||
+      (uint)(nowMs-lastPendingModifyPollMs)>=(uint)(PollSeconds*1000))
+   {
+      lastPendingModifyPollMs=nowMs;
+      PollPendingModifyRequests();
    }
 
    if(lastPositionsSyncMs==0 ||
