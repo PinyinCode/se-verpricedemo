@@ -750,7 +750,7 @@ renderSignals(data.signals||[],bars);renderRsiDivergences(data.signals||[],bars)
 
 let chartOpenPositions=[],chartPendingOrders=[],positionLines=[],positionSignature='',closingIds=new Set(),cancelingIds=new Set();
 function getPositionId(p){return p&&(p.id??p.ticket??p.position_id??p.order_id??p.deal_id??'')}
-function getPendingId(o){return o&&(o.order_id??o.ticket??o.id??o.position_id??'')}
+function getPendingId(o){return o&&(o.id??o.position_id??o.ticket??o.order_id??'')}
 function extractPendingOrders(data){
  const keys=['pending_orders','mt5_pending_orders','limit_orders','pending_positions','orders','paper_pending_orders'];
  for(const k of keys){
@@ -801,35 +801,46 @@ async function closePosition(posId,btn){
 }
 async function cancelPendingOrder(orderId,btn){
  const idStr=String(orderId??'').trim();
- if(!idStr){$('positionsUpdated').textContent='Không tìm thấy ID/Ticket của vị thế chờ để hủy.';return}
+ if(!idStr){$('positionsUpdated').textContent='Không tìm thấy ID của lệnh chờ.';return}
  const ord=chartPendingOrders.find(x=>String(getPendingId(x))===idStr);
- const kind=formatOrderKind(ord).label;
- const label=ord?((ord.symbol||'')+' '+kind+' '+(ord.volume??ord.lots??ord.lot??'')+' lot').trim():('#'+idStr);
- if(!window.confirm('Xác nhận hủy vị thế chờ '+label+'?'))return;
- cancelingIds.add(idStr);
- if(btn)btn.disabled=true;
- $('positionsUpdated').textContent='Đang gửi yêu cầu hủy vị thế chờ '+label+'...';
- const payload={id:ord?.id??idStr,ticket:ord?.ticket??idStr,order_id:ord?.order_id??idStr,symbol:ord?.symbol||'',order_type:ord?.order_type||kind,source:'web-chart'};
- const endpoints=['/api/chart/cancel','/api/orders/cancel','/api/pending/cancel','/api/paper/cancel'];
- let ok=false,lastErr='Không có phản hồi từ server';
- for(const url of endpoints){
-  try{
-   const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-   if(r.status===404||r.status===405)continue;
-   const d=await r.json().catch(()=>({}));
-   if(!r.ok)throw new Error(d.detail||d.message||('HTTP '+r.status));
-   ok=true;
-   $('positionsUpdated').textContent='Đã gửi yêu cầu hủy vị thế chờ '+label+(d.status?' · '+d.status:'');
-   break;
-  }catch(e){lastErr=e.message}
- }
- cancelingIds.delete(idStr);
- if(!ok){
-  if(btn)btn.disabled=false;
-  $('positionsUpdated').textContent='Không hủy được vị thế chờ '+label+': '+lastErr;
+ if(!ord){$('positionsUpdated').textContent='Không tìm thấy lệnh chờ trong danh sách đã đồng bộ.';return}
+ if(ord.read_only||!ord.is_paper){
+  $('positionsUpdated').textContent='Lệnh MT5 ngoài luồng PAPER chỉ được hiển thị, không thể hủy từ giao diện này.';
   return;
  }
- await refreshChartPositions();
+ const kind=formatOrderKind(ord).label;
+ const label=((ord.symbol||'')+' '+kind+' '+(ord.volume??ord.lots??ord.lot??'')+' lot').trim();
+ if(!window.confirm('Xác nhận hủy lệnh chờ PAPER '+label+'?'))return;
+ cancelingIds.add(idStr);
+ if(btn)btn.disabled=true;
+ $('positionsUpdated').textContent='Đang gửi yêu cầu hủy lệnh PAPER '+label+'...';
+ const payload={
+  id:ord.id??idStr,
+  position_id:ord.id??ord.position_id??idStr,
+  ticket:ord.ticket??ord.id??idStr,
+  symbol:ord.symbol||'',
+  direction:ord.direction||'',
+  source:'web-chart',
+  is_pending:true
+ };
+ try{
+  const r=await fetch('/api/chart/cancel',{
+   method:'POST',
+   headers:{'Content-Type':'application/json'},
+   body:JSON.stringify(payload)
+  });
+  const d=await r.json().catch(()=>({}));
+  if(!r.ok||d.ok!==true||!d.request_id){
+   throw new Error(d.detail||d.message||('Server không tạo yêu cầu hủy (HTTP '+r.status+')'));
+  }
+  cancelingIds.delete(idStr);
+  await refreshChartPositions();
+  $('positionsUpdated').textContent='Đã đưa yêu cầu hủy '+label+' vào hàng đợi PAPER · đang chờ EA xác nhận';
+ }catch(e){
+  cancelingIds.delete(idStr);
+  if(btn)btn.disabled=false;
+  $('positionsUpdated').textContent='Không gửi được yêu cầu hủy '+label+': '+e.message;
+ }
 }
 function renderChartPositions(positions,pendingOrders=[]){
  const rows=Array.isArray(positions)?positions:[];
@@ -883,7 +894,7 @@ function renderChartPositions(positions,pendingOrders=[]){
   const statusText=o.status??o.state??'Đang chờ khớp';
   const originLabel=o.read_only?(o.origin==='TRADE_V9'?'MT5 · Trade V9':'MT5 · ngoài server'):'';
   const statusLabel=originLabel?statusText+' · '+originLabel:statusText;
-  const action=o.read_only?'<span class="small">Chỉ xem</span>':'<button type="button" class="btn-close-pos" data-cancel-id="'+esc(oid)+'"'+(busy?' disabled':'')+'>'+(busy?'Đang hủy...':'Hủy')+'</button>';
+  const action=(o.read_only||!o.is_paper)?'<span class="small">Chỉ xem</span>':'<button type="button" class="btn-close-pos" data-cancel-id="'+esc(oid)+'"'+(busy?' disabled':'')+'>'+(busy?'Đang hủy...':'Hủy')+'</button>';
   return '<tr><td>'+esc(o.symbol||'—')+'</td><td>'+esc(o.timeframe||'—')+'</td><td class="'+kind.cls+'">'+esc(kind.label)+'</td><td>'+(priceVal>0?fmt(priceVal):'—')+'</td><td>'+(Number(o.sl)>0?fmt(o.sl):'—')+'</td><td>'+(Number(o.tp)>0?fmt(o.tp):'—')+'</td><td>'+(volVal>0?fmt(volVal):'—')+'</td><td class="pending-badge">'+esc(statusLabel)+'</td><td>'+action+'</td></tr>';
  }).join(''):'<tr><td colspan="9" class="empty">Chưa có vị thế chờ</td></tr>';
  $('chartPendingOrders').querySelectorAll('[data-cancel-id]').forEach(btn=>btn.addEventListener('click',()=>cancelPendingOrder(btn.dataset.cancelId,btn)));
@@ -899,7 +910,7 @@ async function refreshChartPositions(){
   const openList=Array.from(mergedOpen.values());
   const mergedPending=new Map();
   (Array.isArray(d.mt5_pending_orders)?d.mt5_pending_orders:[]).forEach(o=>mergedPending.set(String(getPendingId(o)),o));
-  (Array.isArray(d.paper_pending_orders)?d.paper_pending_orders:[]).forEach(o=>mergedPending.set(String(getPendingId(o)),o));
+  (Array.isArray(d.paper_pending_orders)?d.paper_pending_orders:[]).forEach(o=>mergedPending.set(String(getPendingId(o)),{...o,is_paper:true}));
   const pendingList=Array.from(mergedPending.values());
   const snapshotAge=d.mt5_snapshot_updated_at?Math.max(0,Math.round((Date.now()-Date.parse(d.mt5_snapshot_updated_at))/1000)):null;
   renderChartPositions(openList,pendingList);
