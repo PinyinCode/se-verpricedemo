@@ -15,7 +15,7 @@ button{cursor:pointer}button.active{border-color:#36bd91;color:#62dfb3}
 .panel-head{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;border-bottom:1px solid var(--line);gap:8px;flex-wrap:wrap}
 #priceChart{height:490px;width:100%;position:relative}#rsiChart{position:relative}#rsiChart:before{content:'RSI 14';position:absolute;z-index:3;top:5px;left:9px;color:#a78bfa;font-size:10px;font-weight:700;pointer-events:none;letter-spacing:.3px}.drag-overlay{position:absolute;inset:0;pointer-events:none;z-index:5}.drag-line{position:absolute;left:0;right:0;height:2px;cursor:ns-resize;pointer-events:auto;touch-action:none}.drag-line span{position:absolute;left:8px;top:-18px;padding:1px 6px;border-radius:4px;background:#17253a;font-size:11px;font-weight:700}.drag-line.entry{background:#60a5fa}.drag-line.sl{background:#f06478}.drag-line.tp{background:#22c58b}#rsiChart{height:150px;width:100%;border-top:1px solid var(--line)}
 .side{padding:12px}.side h3{font-size:13px;margin:0 0 10px}.signal{padding:10px 0;border-bottom:1px solid var(--line)}.signal:last-child{border:0}
-.buy{color:var(--green)}.sell{color:var(--red)}.small{font-size:11px;color:var(--muted)}.empty{padding:24px;text-align:center;color:var(--muted)}
+.buy{color:var(--green)}.sell{color:var(--red)}.pending-badge{color:#fbbf24;font-weight:700}.small{font-size:11px;color:var(--muted)}.empty{padding:24px;text-align:center;color:var(--muted)}
 table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:8px;border-bottom:1px solid var(--line);font-size:11px}th{color:var(--muted);font-weight:600}
 #signalTable{max-height:240px;overflow:auto}.level-toggles{display:flex;gap:12px;align-items:center;flex-wrap:wrap}.level-toggles label{display:inline-flex;gap:5px;align-items:center;color:var(--muted);font-size:12px}.level-toggles input{accent-color:#60a5fa}.lot-value{font-size:22px;font-weight:800;color:#62dfb3;margin:8px 0}.mode-label{display:inline-flex;align-items:center;gap:6px}.statusline{padding:9px 12px;color:var(--muted);font-size:11px;border-top:1px solid var(--line)}
 .btn-close-pos{padding:4px 8px;font-size:11px;border-radius:6px;background:rgba(240,107,126,.14);border:1px solid #9c4254;color:#ff9aaa;white-space:nowrap}
@@ -271,13 +271,17 @@ body.trade-fullscreen .chart-workspace{min-height:0}
   body.trade-fullscreen .chart-workspace .request-state{grid-column:auto;text-align:right}
 }
 
-.positions-dialog{width:min(960px,calc(100vw - 24px));max-width:960px;max-height:min(78dvh,700px);padding:0;border:1px solid #354963;border-radius:14px;background:#101b2c;color:#e8eef7;box-shadow:0 24px 80px rgba(0,0,0,.55)}
+.positions-dialog{width:min(980px,calc(100vw - 24px));max-width:980px;max-height:min(82dvh,760px);padding:0;border:1px solid #354963;border-radius:14px;background:#101b2c;color:#e8eef7;box-shadow:0 24px 80px rgba(0,0,0,.55)}
 .positions-dialog::backdrop{background:rgba(3,8,16,.72);backdrop-filter:blur(4px)}
 .positions-dialog-head{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;border-bottom:1px solid #293a52;background:#142239}
 .positions-dialog-head strong{font-size:13px;letter-spacing:.4px}
 .positions-dialog-head button{padding:5px 10px}
-.positions-dialog-body{padding:12px 16px 16px}
-.positions-table-wrap{overflow:auto;max-height:55dvh;margin-top:8px}
+.positions-dialog-body{padding:12px 16px 16px;overflow:auto;max-height:calc(82dvh - 60px)}
+.positions-section{margin-top:12px;border:1px solid #293a52;border-radius:10px;overflow:hidden}
+.positions-section:first-of-type{margin-top:8px}
+.positions-section-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 12px;background:#142239;border-bottom:1px solid #293a52}
+.positions-section-head strong{font-size:11px;letter-spacing:.35px}
+.positions-table-wrap{overflow:auto;max-height:34dvh}
 .positions-dialog table{min-width:720px}
 .positions-dialog td,.positions-dialog th{padding:9px 8px;font-size:12px}
 #positionsButton{white-space:nowrap}
@@ -531,7 +535,7 @@ body.trade-fullscreen .chart-overlay-bottom .trade-footer{max-height:none!import
 <div id="rsiChart"></div>
 <div class="chart-overlay-top"><div class="panel-head chart-head">
 <div class="chart-pickers"><strong id="chartTitle">EURUSD · M15</strong><select id="symbol"><option>EURUSD</option><option>GBPUSD</option><option>USDJPY</option><option>XAUUSD</option><option>BTCUSD</option><option>USDCAD</option><option>NZDUSD</option><option>USDCHF</option></select><select id="tf"><option>M15</option><option>H1</option></select></div>
-<div class="chart-actions"><span class="small" id="feedState">Đang kết nối dữ liệu...</span><button id="settingsButton" type="button" aria-label="Cài đặt" title="Cài đặt chế độ, Risk và Entry">⚙</button><button id="positionsButton" type="button" aria-label="Vị thế đang mở" title="Xem các vị thế đang mở">▣<span id="positionCount">0</span></button><button id="statsButton" type="button" aria-label="Thống kê" title="Thống kê tín hiệu và lịch sử giao dịch thật">▤</button><button id="fitChart" aria-label="Vừa khung" title="Vừa khung biểu đồ">⤢</button><button id="refresh" title="Làm mới dữ liệu">↻</button><button id="fullscreenToggle" type="button" aria-label="Toàn màn hình" title="Bật/tắt toàn màn hình">⛶</button></div>
+<div class="chart-actions"><span class="small" id="feedState">Đang kết nối dữ liệu...</span><button id="settingsButton" type="button" aria-label="Cài đặt" title="Cài đặt chế độ, Risk và Entry">⚙</button><button id="positionsButton" type="button" aria-label="Vị thế đang mở và lệnh chờ" title="Xem vị thế đang mở và vị thế chờ">▣<span id="positionCount">0</span></button><button id="statsButton" type="button" aria-label="Thống kê" title="Thống kê tín hiệu và lịch sử giao dịch thật">▤</button><button id="fitChart" aria-label="Vừa khung" title="Vừa khung biểu đồ">⤢</button><button id="refresh" title="Làm mới dữ liệu">↻</button><button id="fullscreenToggle" type="button" aria-label="Toàn màn hình" title="Bật/tắt toàn màn hình">⛶</button></div>
 </div>
 <div class="status-strip" id="telemetryBar"><span id="clockGMT7">--:--:--</span><span class="server-state" id="serverState" title="Đang kiểm tra"><i></i><span>--</span></span></div>
 <div class="ohlc-strip" id="ohlcLegend"><b>O —</b><span>H —</span><span>L —</span><span>C —</span><span class="ohlc-change">—</span></div>
@@ -567,12 +571,22 @@ body.trade-fullscreen .chart-overlay-bottom .trade-footer{max-height:none!import
 </dialog>
 
 <dialog id="positionsDialog" class="positions-dialog">
- <div class="positions-dialog-head"><div><strong>VỊ THẾ ĐANG MỞ</strong><div class="small">Đồng bộ từ MT5 / Trade V9 · hỗ trợ đóng vị thế</div></div><button type="button" id="closePositionsDialog" aria-label="Đóng">✕</button></div>
- <div class="positions-dialog-body"><div id="positionsUpdated" class="small">Đang đồng bộ...</div><div class="positions-table-wrap"><table><thead><tr><th>Mã</th><th>TF</th><th>Hướng</th><th>Entry</th><th>SL</th><th>TP</th><th>Lot</th><th>P/L</th><th>Thao tác</th></tr></thead><tbody id="chartPositions"><tr><td colspan="9" class="empty">Đang tải vị thế...</td></tr></tbody></table></div></div>
+ <div class="positions-dialog-head"><div><strong>VỊ THẾ ĐANG MỞ &amp; VỊ THẾ CHỜ</strong><div class="small">Đồng bộ từ MT5 / Trade V9 · hỗ trợ đóng vị thế &amp; hủy lệnh chờ</div></div><button type="button" id="closePositionsDialog" aria-label="Đóng">✕</button></div>
+ <div class="positions-dialog-body">
+  <div id="positionsUpdated" class="small">Đang đồng bộ...</div>
+  <section class="positions-section">
+   <div class="positions-section-head"><strong>VỊ THẾ ĐANG MỞ</strong><span id="openPositionsMeta" class="small">0 vị thế</span></div>
+   <div class="positions-table-wrap"><table><thead><tr><th>Mã</th><th>TF</th><th>Hướng</th><th>Entry</th><th>SL</th><th>TP</th><th>Lot</th><th>P/L</th><th>Thao tác</th></tr></thead><tbody id="chartPositions"><tr><td colspan="9" class="empty">Đang tải vị thế...</td></tr></tbody></table></div>
+  </section>
+  <section class="positions-section">
+   <div class="positions-section-head"><strong>VỊ THẾ CHỜ (PENDING)</strong><span id="pendingOrdersMeta" class="small">0 lệnh chờ</span></div>
+   <div class="positions-table-wrap"><table><thead><tr><th>Mã</th><th>TF</th><th>Loại lệnh</th><th>Giá chờ</th><th>SL</th><th>TP</th><th>Lot</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody id="chartPendingOrders"><tr><td colspan="9" class="empty">Đang tải vị thế chờ...</td></tr></tbody></table></div>
+  </section>
+ </div>
 </dialog>
 
 <dialog id="statsDialog" class="positions-dialog stats-dialog">
- <div class="positions-dialog-head"><div><strong>THỐNG KÊ & LỊCH SỬ THẬT</strong><div class="small">Tín hiệu hôm nay · Lịch sử giao dịch thật (MT5 / Trade V9)</div></div><button type="button" id="closeStatsDialog" aria-label="Đóng">✕</button></div>
+ <div class="positions-dialog-head"><div><strong>THỐNG KÊ &amp; LỊCH SỬ THẬT</strong><div class="small">Tín hiệu hôm nay · Lịch sử giao dịch thật (MT5 / Trade V9)</div></div><button type="button" id="closeStatsDialog" aria-label="Đóng">✕</button></div>
  <div class="stats-body">
   <div class="stats-kpis">
    <div class="stats-kpi"><span>Tín hiệu hôm nay</span><strong id="statsSignalCount">—</strong></div>
@@ -734,8 +748,26 @@ if(signature!==lastBarsSignature){
 }
 renderSignals(data.signals||[],bars);renderRsiDivergences(data.signals||[],bars);if(bars.length){const symbolChanged=lastLoadedSymbol!==symbol;if(symbolChanged){const base=Number(bars[bars.length-1].close),gap=defaultGap(base);latestMarketPrice=base;if($('orderMode').value==='PENDING'){applyLimitDefaults(base,pendingOrderType)}else{$('entryPrice').value=base.toFixed(mt5Digits);if(autoDirection==='BUY'){$('slPrice').value=(base-gap).toFixed(mt5Digits);$('tpPrice').value=(base+gap).toFixed(mt5Digits)}else{$('slPrice').value=(base+gap).toFixed(mt5Digits);$('tpPrice').value=(base-gap).toFixed(mt5Digits)}}lastLoadedSymbol=symbol}if($('orderMode').value==='MARKET')$('entryPrice').value=Number(bars[bars.length-1].close).toFixed(mt5Digits);if(firstLoad){priceChart.timeScale().fitContent();priceChart.timeScale().applyOptions({rightOffset:10});rsiChart.timeScale().applyOptions({rightOffset:10});firstLoad=false}else if(oldRange){priceChart.timeScale().setVisibleLogicalRange(oldRange)}calcLot();$('feedState').textContent=bars.length+' nến · cập nhật '+new Date().toLocaleTimeString()}else{$('feedState').textContent='Chưa có nến MT5 được gửi lên server';$('signalDetails').textContent='API đã kết nối, đang chờ MT5 gửi dữ liệu OHLC.'} }catch(e){$('feedState').textContent='Lỗi tải dữ liệu: '+e.message}}
 
-let chartOpenPositions=[],positionLines=[],positionSignature='',closingIds=new Set();
+let chartOpenPositions=[],chartPendingOrders=[],positionLines=[],positionSignature='',closingIds=new Set(),cancelingIds=new Set();
 function getPositionId(p){return p&&(p.id??p.ticket??p.position_id??p.order_id??p.deal_id??'')}
+function getPendingId(o){return o&&(o.order_id??o.ticket??o.id??o.position_id??'')}
+function extractPendingOrders(data){
+ const keys=['pending_orders','mt5_pending_orders','limit_orders','pending_positions','orders','paper_pending_orders'];
+ for(const k of keys){
+  if(Array.isArray(data[k]))return data[k];
+ }
+ return [];
+}
+function formatOrderKind(o){
+ const raw=String(o?.order_type??o?.type??o?.direction??'').toUpperCase().replace(/\s+/g,'_');
+ if(raw.includes('BUY_LIMIT')||raw==='BUYLIMIT')return {label:'BUY LIMIT',cls:'buy'};
+ if(raw.includes('SELL_LIMIT')||raw==='SELLLIMIT')return {label:'SELL LIMIT',cls:'sell'};
+ if(raw.includes('BUY_STOP')||raw==='BUYSTOP')return {label:'BUY STOP',cls:'buy'};
+ if(raw.includes('SELL_STOP')||raw==='SELLSTOP')return {label:'SELL STOP',cls:'sell'};
+ if(raw.includes('BUY'))return {label:'BUY LIMIT',cls:'buy'};
+ if(raw.includes('SELL'))return {label:'SELL LIMIT',cls:'sell'};
+ return {label:raw||'LIMIT',cls:'pending-badge'};
+}
 async function closePosition(posId,btn){
  const idStr=String(posId??'').trim();
  if(!idStr){$('positionsUpdated').textContent='Không tìm thấy ID/Ticket của vị thế để đóng.';return}
@@ -767,21 +799,70 @@ async function closePosition(posId,btn){
  }
  await refreshChartPositions();
 }
-function renderChartPositions(positions){
+async function cancelPendingOrder(orderId,btn){
+ const idStr=String(orderId??'').trim();
+ if(!idStr){$('positionsUpdated').textContent='Không tìm thấy ID/Ticket của vị thế chờ để hủy.';return}
+ const ord=chartPendingOrders.find(x=>String(getPendingId(x))===idStr);
+ const kind=formatOrderKind(ord).label;
+ const label=ord?((ord.symbol||'')+' '+kind+' '+(ord.volume??ord.lots??ord.lot??'')+' lot').trim():('#'+idStr);
+ if(!window.confirm('Xác nhận hủy vị thế chờ '+label+'?'))return;
+ cancelingIds.add(idStr);
+ if(btn)btn.disabled=true;
+ $('positionsUpdated').textContent='Đang gửi yêu cầu hủy vị thế chờ '+label+'...';
+ const payload={id:ord?.id??idStr,ticket:ord?.ticket??idStr,order_id:ord?.order_id??idStr,symbol:ord?.symbol||'',order_type:ord?.order_type||kind,source:'web-chart'};
+ const endpoints=['/api/chart/cancel','/api/orders/cancel','/api/pending/cancel','/api/paper/cancel'];
+ let ok=false,lastErr='Không có phản hồi từ server';
+ for(const url of endpoints){
+  try{
+   const r=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+   if(r.status===404||r.status===405)continue;
+   const d=await r.json().catch(()=>({}));
+   if(!r.ok)throw new Error(d.detail||d.message||('HTTP '+r.status));
+   ok=true;
+   $('positionsUpdated').textContent='Đã gửi yêu cầu hủy vị thế chờ '+label+(d.status?' · '+d.status:'');
+   break;
+  }catch(e){lastErr=e.message}
+ }
+ cancelingIds.delete(idStr);
+ if(!ok){
+  if(btn)btn.disabled=false;
+  $('positionsUpdated').textContent='Không hủy được vị thế chờ '+label+': '+lastErr;
+  return;
+ }
+ await refreshChartPositions();
+}
+function renderChartPositions(positions,pendingOrders=[]){
  const rows=Array.isArray(positions)?positions:[];
+ const pendingRows=Array.isArray(pendingOrders)?pendingOrders:[];
  chartOpenPositions=rows;
- $('positionCount').textContent=String(rows.length);
- if(!closingIds.size)$('positionsUpdated').textContent='Đồng bộ '+new Date().toLocaleTimeString('vi-VN')+' · '+rows.length+' vị thế';
- const visible=rows.filter(p=>String(p.symbol||'').toUpperCase()===String($('symbol').value).toUpperCase());
- const signature=JSON.stringify(visible.map(p=>[getPositionId(p),p.symbol,p.direction,p.entry,p.sl,p.tp,p.volume,p.profit]));
+ chartPendingOrders=pendingRows;
+ $('positionCount').textContent=String(rows.length+pendingRows.length);
+ $('openPositionsMeta').textContent=rows.length+' vị thế';
+ $('pendingOrdersMeta').textContent=pendingRows.length+' lệnh chờ';
+ if(!closingIds.size&&!cancelingIds.size){
+  $('positionsUpdated').textContent='Đồng bộ '+new Date().toLocaleTimeString('vi-VN')+' · '+rows.length+' vị thế mở · '+pendingRows.length+' lệnh chờ';
+ }
+ const curSym=String($('symbol').value).toUpperCase();
+ const visibleOpen=rows.filter(p=>String(p.symbol||'').toUpperCase()===curSym);
+ const visiblePending=pendingRows.filter(o=>String(o.symbol||'').toUpperCase()===curSym);
+ const signature=JSON.stringify([
+  visibleOpen.map(p=>[getPositionId(p),p.symbol,p.direction,p.entry,p.sl,p.tp,p.volume,p.profit]),
+  visiblePending.map(o=>[getPendingId(o),o.symbol,o.order_type??o.type??o.direction,o.entry??o.price??o.open_price,o.sl,o.tp,o.volume??o.lots??o.lot])
+ ]);
  if(signature!==positionSignature){
   positionLines.forEach(x=>{try{candleSeries.removePriceLine(x)}catch(_){}});positionLines=[];positionSignature=signature;
-  visible.forEach(p=>{
+  visibleOpen.forEach(p=>{
    const buy=String(p.direction||'').toUpperCase()==='BUY';
    [['ENTRY',Number(p.entry),buy?'#60a5fa':'#fbbf24'],['SL',Number(p.sl),'#f06478'],['TP',Number(p.tp),'#22c58b']].forEach(([label,value,color])=>{
     if(!(value>0))return;
     positionLines.push(candleSeries.createPriceLine({price:value,color,lineWidth:1,lineStyle:2,axisLabelVisible:true,title:(buy?'BUY':'SELL')+' '+label}));
    });
+  });
+  visiblePending.forEach(o=>{
+   const kind=formatOrderKind(o);
+   const entryVal=Number(o.entry??o.price??o.open_price??0);
+   if(!(entryVal>0))return;
+   positionLines.push(candleSeries.createPriceLine({price:entryVal,color:kind.cls==='buy'?'#34d399':'#fb7185',lineWidth:1,lineStyle:1,axisLabelVisible:true,title:kind.label+' @ '+entryVal.toFixed(mt5Digits)}));
   });
  }
  $('chartPositions').innerHTML=rows.length?rows.map(p=>{
@@ -790,9 +871,20 @@ function renderChartPositions(positions){
   return '<tr><td>'+esc(p.symbol)+'</td><td>'+esc(p.timeframe||'—')+'</td><td class="'+(String(p.direction).toUpperCase()==='BUY'?'buy':'sell')+'">'+esc(p.direction)+'</td><td>'+fmt(p.entry)+'</td><td>'+(Number(p.sl)>0?fmt(p.sl):'—')+'</td><td>'+(Number(p.tp)>0?fmt(p.tp):'—')+'</td><td>'+fmt(p.volume)+'</td><td style="font-weight:700;color:'+(Number(p.profit)>=0?'#27c995':'#f06b7e')+'">'+fmt(p.profit)+'</td><td><button type="button" class="btn-close-pos" data-close-id="'+esc(pid)+'"'+(busy?' disabled':'')+'>'+(busy?'Đang đóng...':'Đóng')+'</button></td></tr>';
  }).join(''):'<tr><td colspan="9" class="empty">Chưa có vị thế đang mở</td></tr>';
  $('chartPositions').querySelectorAll('[data-close-id]').forEach(btn=>btn.addEventListener('click',()=>closePosition(btn.dataset.closeId,btn)));
+
+ $('chartPendingOrders').innerHTML=pendingRows.length?pendingRows.map(o=>{
+  const oid=String(getPendingId(o));
+  const busy=cancelingIds.has(oid);
+  const kind=formatOrderKind(o);
+  const priceVal=Number(o.entry??o.price??o.open_price??0);
+  const volVal=Number(o.volume??o.lots??o.lot??0);
+  const statusText=o.status??o.state??'Đang chờ khớp';
+  return '<tr><td>'+esc(o.symbol||'—')+'</td><td>'+esc(o.timeframe||'—')+'</td><td class="'+kind.cls+'">'+esc(kind.label)+'</td><td>'+(priceVal>0?fmt(priceVal):'—')+'</td><td>'+(Number(o.sl)>0?fmt(o.sl):'—')+'</td><td>'+(Number(o.tp)>0?fmt(o.tp):'—')+'</td><td>'+(volVal>0?fmt(volVal):'—')+'</td><td class="pending-badge">'+esc(statusText)+'</td><td><button type="button" class="btn-close-pos" data-cancel-id="'+esc(oid)+'"'+(busy?' disabled':'')+'>'+(busy?'Đang hủy...':'Hủy')+'</button></td></tr>';
+ }).join(''):'<tr><td colspan="9" class="empty">Chưa có vị thế chờ</td></tr>';
+ $('chartPendingOrders').querySelectorAll('[data-cancel-id]').forEach(btn=>btn.addEventListener('click',()=>cancelPendingOrder(btn.dataset.cancelId,btn)));
 }
 async function refreshChartPositions(){
- try{const r=await fetch('/api/dashboard',{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();const openList=Array.isArray(d.mt5_positions)&&d.mt5_positions.length?d.mt5_positions:(Array.isArray(d.open_positions)?d.open_positions:(d.paper_positions||[]));renderChartPositions(openList)}
+ try{const r=await fetch('/api/dashboard',{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();const openList=Array.isArray(d.mt5_positions)&&d.mt5_positions.length?d.mt5_positions:(Array.isArray(d.open_positions)?d.open_positions:(d.paper_positions||[]));const pendingList=extractPendingOrders(d);renderChartPositions(openList,pendingList)}
  catch(e){$('positionsUpdated').textContent='Không thể đồng bộ vị thế: '+e.message}
 }
 $('settingsButton').addEventListener('click',()=>$('tradeSettingsDialog').showModal());
@@ -919,13 +1011,14 @@ function updateDirectionFromSL(){
   }
   autoDirection=pendingOrderType==='BUY_LIMIT'?'BUY':'SELL';
   syncPresetButtons();
+  const isBuyLimit=pendingOrderType==='BUY_LIMIT';
   const info=getLimitValidation();
   $('sendBuy').textContent='BUY LIMIT';
   $('sendSell').textContent='SELL LIMIT';
-  $('sendBuy').style.display='';
-  $('sendSell').style.display='';
-  $('sendBuy').classList.toggle('active',pendingOrderType==='BUY_LIMIT');
-  $('sendSell').classList.toggle('active',pendingOrderType==='SELL_LIMIT');
+  $('sendBuy').style.display=isBuyLimit?'':'none';
+  $('sendSell').style.display=isBuyLimit?'none':'';
+  $('sendBuy').classList.toggle('active',isBuyLimit);
+  $('sendSell').classList.toggle('active',!isBuyLimit);
   $('requestState').textContent=info.valid
    ?('Sẵn sàng gửi '+pendingOrderType.replace('_',' ')+' · Entry '+Number($('entryPrice').value).toFixed(mt5Digits)+' · SL '+Number($('slPrice').value).toFixed(mt5Digits))
    :('Limit: '+info.reason);
