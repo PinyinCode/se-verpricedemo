@@ -2193,7 +2193,7 @@ async function refreshChartPositions() {
   }
 }
 
-$('settingsButton').addEventListener('click', () => { refreshApiKeyBox(); $('tradeSettingsDialog').showModal(); });
+$('settingsButton').addEventListener('click', () => { refreshApiKeyBox(); calcLot(); $('tradeSettingsDialog').showModal(); });
 
 const tradePanel = document.querySelector('.chart-overlay-bottom');
 const tradePanelToggle = $('tradePanelToggle');
