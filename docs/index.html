@@ -505,6 +505,12 @@ th{color:var(--muted);font-weight:600}
 .api-key-settings button{flex:0 0 auto}
 #apiKeyStatus.ok{color:var(--green)}
 #apiKeyStatus.err{color:var(--red)}
+.api-auth-warning{display:none;margin:10px 12px 0;padding:9px 11px;border:1px solid #9b6b25;border-left:4px solid var(--amber);border-radius:8px;background:rgba(251,191,36,.10);color:#fcd985;font-size:11px;line-height:1.5}
+.api-auth-warning.show{display:block}
+.api-auth-warning.error{border-color:#984253;border-left-color:var(--red);background:rgba(240,107,126,.10);color:#ffb0bc}
+#tradePanelToggle{white-space:nowrap;border-color:#47708f;color:#b8dcff;background:rgba(96,165,250,.10)}
+.chart-overlay-bottom.trade-panel-collapsed{height:0;min-height:0;flex:0 0 0;border:0;overflow:hidden}
+.chart-overlay-bottom.trade-panel-collapsed>*{display:none!important}
 
 .stats-dialog{width:min(1120px,calc(100vw - 20px));max-height:88dvh}
 .stats-body{padding:12px 16px 16px;overflow:auto;max-height:calc(88dvh - 58px)}
@@ -756,6 +762,7 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:10px}
                 <button id="settingsButton" type="button" aria-label="Cài đặt" title="Cài đặt API key, Risk, Entry">⚙</button>
                 <button id="positionsButton" type="button" aria-label="Vị thế đang mở và lệnh chờ" title="Xem vị thế đang mở và vị thế chờ">▣<span id="positionCount">0</span></button>
                 <button id="statsButton" type="button" aria-label="Thống kê" title="Thống kê tín hiệu và lịch sử giao dịch">▤</button>
+                <button id="tradePanelToggle" type="button" aria-expanded="false" title="Hiện/ẩn khu vực giao dịch">Mở giao dịch</button>
                 <button id="fitChart" type="button" aria-label="Vừa khung" title="Vừa khung biểu đồ">⤢</button>
                 <button id="refresh" type="button" title="Làm mới dữ liệu">↻</button>
               </div>
@@ -1006,10 +1013,38 @@ function maskKey(k) {
   if (!k) return '(trống)';
   return k.length <= 4 ? '****' : k.slice(0, 2) + '****' + k.slice(-2);
 }
+function ensureApiAuthWarnings() {
+  document.querySelectorAll('dialog').forEach(dialog => {
+    if (dialog.querySelector('.api-auth-warning')) return;
+    const banner = document.createElement('div');
+    banner.className = 'api-auth-warning';
+    banner.setAttribute('role', 'alert');
+    banner.setAttribute('aria-live', 'polite');
+    dialog.insertBefore(banner, dialog.firstChild);
+  });
+}
+function setApiAuthWarning(kind, message) {
+  ensureApiAuthWarnings();
+  document.querySelectorAll('dialog .api-auth-warning').forEach(banner => {
+    banner.textContent = message || '';
+    banner.classList.toggle('show', !!message);
+    banner.classList.toggle('error', kind === 'error');
+  });
+}
 async function apiFetch(url, options = {}) {
   const opts = { ...options, headers: { ...(options.headers || {}) } };
   if (chartApiKey) opts.headers['X-API-Key'] = chartApiKey;
-  return fetch(url, opts);
+  const response = await fetch(url, opts);
+  if (response.status === 401) {
+    setApiAuthWarning('error', chartApiKey
+      ? 'API Key không hợp lệ hoặc không được máy chủ chấp nhận. Kiểm tra lại khóa trong Cài đặt.'
+      : 'Chưa nhập API Key. Mở Cài đặt để nhập khóa được cấp.');
+  } else if (response.status === 503) {
+    setApiAuthWarning('error', 'Render chưa cấu hình FOREX_API_KEY. Cần cấu hình biến môi trường này trên Render.');
+  } else if (response.ok && String(url).includes('/api/dashboard')) {
+    setApiAuthWarning('', '');
+  }
+  return response;
 }
 
 const fmt = n => Number(n).toLocaleString('en-US', { minimumFractionDigits: mt5Digits, maximumFractionDigits: mt5Digits });
@@ -2140,6 +2175,23 @@ async function refreshChartPositions() {
 }
 
 $('settingsButton').addEventListener('click', () => { refreshApiKeyBox(); $('tradeSettingsDialog').showModal(); });
+
+const tradePanel = document.querySelector('.chart-overlay-bottom');
+const tradePanelToggle = $('tradePanelToggle');
+function setTradePanelVisible(visible) {
+  tradePanel.classList.toggle('trade-panel-collapsed', !visible);
+  tradePanelToggle.textContent = visible ? 'Ẩn giao dịch' : 'Mở giao dịch';
+  tradePanelToggle.setAttribute('aria-expanded', visible ? 'true' : 'false');
+  tradePanelToggle.title = visible ? 'Thu gọn khu vực giao dịch' : 'Hiện khu vực giao dịch';
+  try { localStorage.setItem('chartTradePanelVisible', visible ? '1' : '0'); } catch (_) {}
+  requestAnimationFrame(applyChartDimensions);
+}
+let savedTradePanelVisible = false;
+try { savedTradePanelVisible = localStorage.getItem('chartTradePanelVisible') === '1'; } catch (_) {}
+setTradePanelVisible(savedTradePanelVisible);
+tradePanelToggle.addEventListener('click', () => {
+  setTradePanelVisible(tradePanel.classList.contains('trade-panel-collapsed'));
+});
 $('closeTradeSettings').addEventListener('click', () => $('tradeSettingsDialog').close());
 $('tradeSettingsDialog').addEventListener('click', e => { if (e.target === $('tradeSettingsDialog')) $('tradeSettingsDialog').close(); });
 $('positionsButton').addEventListener('click', () => { refreshChartPositions(); $('positionsDialog').showModal(); });
@@ -2540,6 +2592,8 @@ async function checkServerStatus() {
 }
 
 /* ================= INIT ================= */
+ensureApiAuthWarnings();
+if (!chartApiKey) setApiAuthWarning('error', 'Chưa nhập API Key. Mở Cài đặt để nhập khóa được cấp.');
 refreshApiKeyBox();
 syncRealLayerToggles();
 bindRealLayerToggles();
@@ -2547,11 +2601,13 @@ applyLockState();
 
 $('apiKeySave').addEventListener('click', () => {
   saveApiKey($('apiKeyInput').value);
+  setApiAuthWarning('', '');
   $('requestState').textContent = 'Đã lưu API key (' + maskKey(chartApiKey) + ').';
 });
 $('apiKeyInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') {
     saveApiKey($('apiKeyInput').value);
+    setApiAuthWarning('', '');
     $('apiKeyInput').blur();
     $('requestState').textContent = 'Đã lưu API key (' + maskKey(chartApiKey) + ').';
   }
