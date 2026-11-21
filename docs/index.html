@@ -1728,7 +1728,7 @@ function showRealtimeToast(s, count = 1) {
   const isBuy = s.direction === 'BUY';
   toast.innerHTML = '<div class="rt-toast-head"><span class="rt-toast-label">● REALTIME MỚI' + (count > 1 ? ' · +' + (count - 1) : '') + '</span><button type="button" class="rt-toast-close" aria-label="Ẩn">×</button></div>'
     + '<div class="rt-toast-main ' + (isBuy ? 'buy' : 'sell') + '">' + (isBuy ? '▲ BUY' : '▼ SELL') + ' · ' + esc(s.symbol) + ' · ' + esc(s.timeframe) + '</div>'
-    + '<div class="rt-toast-meta">' + esc(s.divergence) + ' · Entry điểm phân kỳ: ' + fmt(s.price2) + '</div>'
+    + '<div class="rt-toast-meta">' + esc(s.divergence) + ' · Giá điểm phân kỳ: ' + fmt(s.price2) + '</div>'
     + '<div class="rt-toast-meta">' + esc(signalTimeText(s)) + '</div>'
     + '<div class="rt-toast-actions"><button type="button" class="rt-detail-btn">Xem chi tiết</button></div>';
   toast.classList.add('show');
@@ -1745,7 +1745,7 @@ function openRealtimeDetails(s) {
     + '<div class="rt-dialog-cell"><span>Giá điểm 2</span><b>' + fmt(s.price2) + '</b></div>'
     + '<div class="rt-dialog-cell"><span>RSI điểm 1</span><b>' + fmt(s.rsi1) + '</b></div>'
     + '<div class="rt-dialog-cell"><span>RSI điểm 2</span><b>' + fmt(s.rsi2) + '</b></div>'
-    + '<div class="rt-dialog-cell"><span>Thời gian phát hiện</span><b>' + esc(signalTimeText(s)) + '</b></div>'
+    + '<div class="rt-dialog-cell"><span>Thời điểm pivot 2</span><b>' + esc(signalTimeText(s)) + '</b></div>'
     + '<div class="rt-dialog-cell"><span>Loại tín hiệu</span><b>RT · Realtime</b></div></div>'
     + '<div class="rt-dialog-note">Đây là tín hiệu phân kỳ từ AI OOP V8, không phải xác nhận lệnh đã được mở.</div>';
   if (!$('rtSignalDialog').open) $('rtSignalDialog').showModal();
