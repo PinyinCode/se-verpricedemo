@@ -21,6 +21,13 @@ table{width:100%;border-collapse:collapse}td,th{text-align:left;padding:8px;bord
 .btn-close-pos{padding:4px 8px;font-size:11px;border-radius:6px;background:rgba(240,107,126,.14);border:1px solid #9c4254;color:#ff9aaa;white-space:nowrap}
 .btn-close-pos:hover:not(:disabled){background:rgba(240,107,126,.26);border-color:#f06b7e;color:#fff}
 .btn-close-pos:disabled{opacity:.5;cursor:not-allowed}
+.limit-preset-bar{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.btn-limit-preset{padding:4px 8px;font-size:10px;font-weight:700;border-radius:6px;background:#162438;border-color:#3a5273}
+.btn-limit-preset.buy-preset{border-color:#237a60;color:#6de3b8}
+.btn-limit-preset.buy-preset.selected{background:rgba(39,201,149,.18);border-color:#27c995}
+.btn-limit-preset.sell-preset{border-color:#8c4050;color:#ff9aaa}
+.btn-limit-preset.sell-preset.selected{background:rgba(240,107,126,.2);border-color:#f06b7e}
+.btn-limit-preset.mkt-preset.selected{background:rgba(96,165,250,.18);border-color:#60a5fa;color:#93c5fd}
 @media(max-width:900px){.layout{grid-template-columns:1fr}#priceChart{height:390px}}
 body.trade-fullscreen{overflow:hidden}
 body.trade-fullscreen header{display:none}
@@ -70,13 +77,13 @@ body.trade-fullscreen .drag-line{z-index:8}
 .trade-fields label{display:flex;flex-direction:column;gap:3px;color:var(--muted);font-size:10px;font-weight:650}
 .trade-fields input,.trade-fields select{width:112px;min-width:0;padding:6px 8px;font-size:12px}
 .trade-fields #entryWrap input{width:125px}
-.lot-controls{display:flex;align-items:center;gap:10px;margin-top:5px;flex-wrap:wrap}
+.lot-controls{display:flex;align-items:center;gap:10px;margin-top:6px;flex-wrap:wrap}
 .lot-controls .level-toggles{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .lot-controls .level-toggles label{display:inline-flex;align-items:center;gap:3px;color:var(--muted);font-size:10px}
 .lot-controls button{padding:4px 9px;font-size:10px}
 .trade-footer{display:grid;grid-template-columns:minmax(220px,1fr) auto minmax(170px, .8fr);gap:12px;align-items:center;padding:7px 10px;background:#101d2e;border-top:1px solid var(--line)}
 .lot-block{min-width:0}.lot-block #lotResult{margin-top:1px}.lot-block .lot-value{display:inline-block;font-size:20px;margin:0 8px 0 0}
-.trade-submit{display:flex;gap:7px}.trade-submit button{min-width:116px;font-weight:750;padding:8px 12px;white-space:nowrap}
+.trade-submit{display:flex;gap:7px}.trade-submit button{min-width:110px;font-weight:750;padding:8px 12px;white-space:nowrap}
 .request-state{text-align:right;line-height:1.35}
 .chart-tools{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 10px;background:#0c1727;border-bottom:1px solid var(--line)}
 .quick-tf,.chart-style{display:flex;align-items:center;gap:3px;flex-wrap:wrap}
@@ -149,7 +156,7 @@ button.sell.active{background:rgba(240,107,126,.14);border-color:#f06b7e;color:#
 .trade-options{margin-top:8px}
 .trade-options .level-toggles label{color:#aebdd0}
 .trade-footer{background:linear-gradient(180deg,#101e31,#0d1929);border-top-color:#2a3b53;padding:9px 11px}
-.trade-submit button{min-width:118px;border-radius:8px}
+.trade-submit button{min-width:110px;border-radius:8px}
 #sendBuy{background:rgba(39,201,149,.12);border-color:#217c62;color:#6de3b8}
 #sendSell{background:rgba(240,107,126,.1);border-color:#8c4050;color:#ff9aaa}
 #requestState{max-width:280px}
@@ -530,7 +537,7 @@ body.trade-fullscreen .chart-overlay-bottom .trade-footer{max-height:none!import
 <div class="ohlc-strip" id="ohlcLegend"><b>O —</b><span>H —</span><span>L —</span><span>C —</span><span class="ohlc-change">—</span></div>
 </div>
 <div class="chart-overlay-bottom">
-<div id="lotResizeHandle" role="separator" aria-label="Kéo để thay đổi chiều cao ô khối lượng" title="Kéo để thay đổi chiều cao ô khối lượng"></div><div class="trade-footer"><div class="lot-block"><div id="lotResult" class="small">Đang chờ dữ liệu MT5 để tính lot.</div><div id="contractMeta" class="small">Đang chờ thông số hợp đồng từ MT5...</div><div class="lot-controls"><div class="level-toggles"><label><input id="showEntry" type="checkbox"> Entry (Limit)</label><label><input id="showSL" type="checkbox" checked> SL</label><label><input id="showTP" type="checkbox" checked> TP</label></div></div></div>
+<div id="lotResizeHandle" role="separator" aria-label="Kéo để thay đổi chiều cao ô khối lượng" title="Kéo để thay đổi chiều cao ô khối lượng"></div><div class="trade-footer"><div class="lot-block"><div id="lotResult" class="small">Đang chờ dữ liệu MT5 để tính lot.</div><div id="contractMeta" class="small">Đang chờ thông số hợp đồng từ MT5...</div><div class="lot-controls"><div class="limit-preset-bar"><button type="button" id="presetMarket" class="btn-limit-preset mkt-preset selected">MARKET</button><button type="button" id="presetBuyLimit" class="btn-limit-preset buy-preset">+ BUY LIMIT</button><button type="button" id="presetSellLimit" class="btn-limit-preset sell-preset">+ SELL LIMIT</button></div><div class="level-toggles"><label><input id="showEntry" type="checkbox"> Entry (Limit)</label><label><input id="showSL" type="checkbox" checked> SL</label><label><input id="showTP" type="checkbox" checked> TP</label></div></div></div>
 <div class="trade-submit"><button id="sendBuy" class="active">BUY</button><button id="sendSell" class="sell">SELL</button></div>
 <div id="requestState" class="small request-state">Chỉ gửi yêu cầu vào hàng đợi PAPER · không đặt lệnh broker.</div></div>
 </div>
@@ -556,7 +563,7 @@ body.trade-fullscreen .chart-overlay-bottom .trade-footer{max-height:none!import
   <label id="entryWrap">Entry (Limit)<input id="entryPrice" type="number" step="any"></label>
    <label>SL<input id="slPrice" type="number" step="any"></label>
    <label>TP<input id="tpPrice" type="number" step="any"></label>
- </div><p class="small">Khi bật Entry (Pending), chỉ dùng BUY LIMIT (Entry &lt; giá hiện tại) và SELL LIMIT (Entry &gt; giá hiện tại), không dùng Stop.</p></div>
+ </div><p class="small">BUY LIMIT: Entry &lt; giá hiện tại và SL &lt; Entry. Kéo SL lên trên Entry sẽ tự chuyển sang SELL LIMIT.</p></div>
 </dialog>
 
 <dialog id="positionsDialog" class="positions-dialog">
@@ -605,7 +612,15 @@ for(const key of ['entry','sl','tp']){
  const line=document.createElement('div');line.className='drag-line '+key;
  const tag=document.createElement('span');line.appendChild(tag);dragOverlay.appendChild(line);dragLevels[key]=line;
  line.addEventListener('pointerdown',ev=>{if(line.style.display==='none')return;ev.preventDefault();line.setPointerCapture(ev.pointerId);line.dataset.drag='1'});
- line.addEventListener('pointermove',ev=>{if(line.dataset.drag!=='1')return;const rect=$('priceChart').getBoundingClientRect();const p=candleSeries.coordinateToPrice(ev.clientY-rect.top);if(p==null||!Number.isFinite(p))return;const id=key==='entry'?'entryPrice':key==='sl'?'slPrice':'tpPrice';$(id).value=Number(p).toFixed(mt5Digits);calcLot()});
+ line.addEventListener('pointermove',ev=>{
+  if(line.dataset.drag!=='1')return;
+  const rect=$('priceChart').getBoundingClientRect();
+  const p=candleSeries.coordinateToPrice(ev.clientY-rect.top);
+  if(p==null||!Number.isFinite(p))return;
+  const id=key==='entry'?'entryPrice':key==='sl'?'slPrice':'tpPrice';
+  $(id).value=Number(p).toFixed(mt5Digits);
+  handleLevelAdjusted(key);
+ });
  const stop=()=>line.dataset.drag='0';line.addEventListener('pointerup',stop);line.addEventListener('pointercancel',stop);
 }
 priceChart.timeScale().subscribeVisibleLogicalRangeChange(range=>{if(syncing||!range)return;syncing=true;rsiChart.timeScale().setVisibleLogicalRange(range);syncing=false;setLevelLines()});
@@ -630,7 +645,8 @@ function defaultGap(ref){
 function applyLimitDefaults(ref,limitType='BUY_LIMIT'){
  const base=Number(ref),gap=defaultGap(base);
  if(!(base>0))return;
- if(limitType==='SELL_LIMIT'){
+ pendingOrderType=limitType==='SELL_LIMIT'?'SELL_LIMIT':'BUY_LIMIT';
+ if(pendingOrderType==='SELL_LIMIT'){
   const entry=base+gap;
   $('entryPrice').value=entry.toFixed(mt5Digits);
   $('slPrice').value=(entry+gap).toFixed(mt5Digits);
@@ -641,6 +657,73 @@ function applyLimitDefaults(ref,limitType='BUY_LIMIT'){
   $('slPrice').value=(entry-gap).toFixed(mt5Digits);
   $('tpPrice').value=(entry+gap).toFixed(mt5Digits);
  }
+}
+function syncPresetButtons(){
+ const isPending=$('orderMode').value==='PENDING';
+ $('presetMarket').classList.toggle('selected',!isPending);
+ $('presetBuyLimit').classList.toggle('selected',isPending&&pendingOrderType==='BUY_LIMIT');
+ $('presetSellLimit').classList.toggle('selected',isPending&&pendingOrderType==='SELL_LIMIT');
+}
+function handleLevelAdjusted(changedKey){
+ const mode=$('orderMode').value;
+ const entry=Number($('entryPrice').value);
+ const sl=Number($('slPrice').value);
+ const ref=Number(latestMarketPrice);
+ if(mode==='PENDING'&&entry>0&&sl>0&&entry!==sl){
+  // BUY LIMIT: SL phải nằm dưới Entry (sl < entry). Nếu SL nằm trên Entry (sl > entry) -> tự chuyển SELL LIMIT.
+  const nextType=sl>entry?'SELL_LIMIT':'BUY_LIMIT';
+  if(nextType!==pendingOrderType){
+   pendingOrderType=nextType;
+   const gap=defaultGap(entry);
+   if(nextType==='SELL_LIMIT'){
+    if(ref>0&&entry<=ref){
+     const newEntry=ref+gap;
+     $('entryPrice').value=newEntry.toFixed(mt5Digits);
+     if(Number($('slPrice').value)<=newEntry)$('slPrice').value=(newEntry+gap).toFixed(mt5Digits);
+     $('tpPrice').value=(newEntry-gap).toFixed(mt5Digits);
+    }else if(Number($('tpPrice').value)>=entry){
+     $('tpPrice').value=(entry-gap).toFixed(mt5Digits);
+    }
+   }else{
+    if(ref>0&&entry>=ref){
+     const newEntry=ref-gap;
+     $('entryPrice').value=newEntry.toFixed(mt5Digits);
+     if(Number($('slPrice').value)>=newEntry)$('slPrice').value=(newEntry-gap).toFixed(mt5Digits);
+     $('tpPrice').value=(newEntry+gap).toFixed(mt5Digits);
+    }else if(Number($('tpPrice').value)<=entry){
+     $('tpPrice').value=(entry+gap).toFixed(mt5Digits);
+    }
+   }
+  }
+ }
+ calcLot();
+}
+function activateLimitPreset(limitType){
+ $('orderMode').value='PENDING';
+ $('showEntry').checked=true;
+ $('showSL').checked=true;
+ $('showTP').checked=true;
+ $('entryWrap').style.opacity='1';
+ $('entryPrice').readOnly=false;
+ if(latestMarketPrice>0)applyLimitDefaults(latestMarketPrice,limitType);
+ syncPresetButtons();
+ setLevelLines();
+ calcLot();
+}
+function activateMarketPreset(){
+ $('orderMode').value='MARKET';
+ $('showEntry').checked=false;
+ $('entryWrap').style.opacity='.65';
+ $('entryPrice').readOnly=true;
+ if(latestMarketPrice>0){
+  const base=Number(latestMarketPrice),gap=defaultGap(base);
+  $('entryPrice').value=base.toFixed(mt5Digits);
+  if(autoDirection==='BUY'){$('slPrice').value=(base-gap).toFixed(mt5Digits);$('tpPrice').value=(base+gap).toFixed(mt5Digits)}
+  else{$('slPrice').value=(base+gap).toFixed(mt5Digits);$('tpPrice').value=(base-gap).toFixed(mt5Digits)}
+ }
+ syncPresetButtons();
+ setLevelLines();
+ calcLot();
 }
 async function load(){const symbol=$('symbol').value,tf=$('tf').value;$('chartTitle').textContent=symbol+' · '+tf;$('feedState').textContent='Đang tải...';try{const res=await fetch('/api/chart/data?symbol='+encodeURIComponent(symbol)+'&timeframe='+encodeURIComponent(tf)+'&limit=1000',{cache:'no-store'});if(!res.ok)throw new Error('HTTP '+res.status);const data=await res.json();mt5Digits=Math.max(0,Math.min(10,Number(data.digits??5)));mt5TickSize=Number(data.tick_size??0.00001);mt5TickValue=Number(data.tick_value??0);mt5VolumeMin=Number(data.volume_min??0);mt5VolumeMax=Number(data.volume_max??0);mt5VolumeStep=Number(data.volume_step??0);candleSeries.applyOptions({priceFormat:{type:'price',precision:mt5Digits,minMove:mt5TickSize>0?mt5TickSize:Math.pow(10,-mt5Digits)}});for(const id of ['entryPrice','slPrice','tpPrice'])if($(id).value!==''&&Number.isFinite(Number($(id).value)))$(id).value=Number($(id).value).toFixed(mt5Digits);$('contractMeta').textContent='Tick '+mt5TickSize.toFixed(mt5Digits)+' · Tick value loss/lot '+mt5TickValue+' · Lot min/max/step '+mt5VolumeMin+'/'+mt5VolumeMax+'/'+mt5VolumeStep;const bars=(data.candles||[]).map(c=>({time:Number(c.time),open:Number(c.open),high:Number(c.high),low:Number(c.low),close:Number(c.close),volume:Number(c.volume??0)}));if(bars.length)latestMarketPrice=bars[bars.length-1].close;const oldRange=firstLoad?null:priceChart.timeScale().getVisibleLogicalRange();const signature=JSON.stringify(bars);
 if(signature!==lastBarsSignature){
@@ -791,63 +874,35 @@ function setLevelLines(){
  }
 }
 
-function getLimitValidation(){
+function getLimitValidation(forcedType=null){
  const entry=Number($('entryPrice').value);
  const sl=Number($('slPrice').value);
  const tp=Number($('tpPrice').value);
  const ref=Number(latestMarketPrice);
- if(!(entry>0)||!(ref>0)){
-  return {
-   pendingType:pendingOrderType,
-   direction:pendingOrderType==='SELL_LIMIT'?'SELL':'BUY',
-   valid:false,
-   reason:'Chờ giá thị trường và mức Entry Limit hợp lệ.'
-  };
- }
- const pendingType=entry<ref?'BUY_LIMIT':'SELL_LIMIT';
+ const pendingType=forcedType||((entry>0&&sl>0&&entry!==sl)?(sl>entry?'SELL_LIMIT':'BUY_LIMIT'):pendingOrderType);
  const direction=pendingType==='BUY_LIMIT'?'BUY':'SELL';
- if(entry===ref){
-  return {
-   pendingType,
-   direction,
-   valid:false,
-   reason:'Entry Limit phải khác giá hiện tại ('+fmt(ref)+').'
-  };
+ if(!(entry>0)||!(sl>0)||entry===sl){
+  return {pendingType,direction,valid:false,reason:'Cần Entry và SL hợp lệ và khác nhau.'};
  }
- if(sl>0){
-  if(pendingType==='BUY_LIMIT'&&sl>=entry){
-   return {
-    pendingType,
-    direction,
-    valid:false,
-    reason:'BUY LIMIT yêu cầu SL < Entry Limit ('+fmt(entry)+').'
-   };
+ if(pendingType==='BUY_LIMIT'){
+  if(sl>=entry){
+   return {pendingType,direction,valid:false,reason:'BUY LIMIT yêu cầu SL < Entry ('+fmt(entry)+').'};
   }
-  if(pendingType==='SELL_LIMIT'&&sl<=entry){
-   return {
-    pendingType,
-    direction,
-    valid:false,
-    reason:'SELL LIMIT yêu cầu SL > Entry Limit ('+fmt(entry)+').'
-   };
+  if(ref>0&&entry>=ref){
+   return {pendingType,direction,valid:false,reason:'BUY LIMIT yêu cầu Entry ('+fmt(entry)+') < giá hiện tại ('+fmt(ref)+').'};
   }
- }
- if(tp>0){
-  if(pendingType==='BUY_LIMIT'&&tp<=entry){
-   return {
-    pendingType,
-    direction,
-    valid:false,
-    reason:'BUY LIMIT yêu cầu TP > Entry Limit ('+fmt(entry)+').'
-   };
+  if(tp>0&&tp<=entry){
+   return {pendingType,direction,valid:false,reason:'BUY LIMIT yêu cầu TP > Entry ('+fmt(entry)+').'};
   }
-  if(pendingType==='SELL_LIMIT'&&tp>=entry){
-   return {
-    pendingType,
-    direction,
-    valid:false,
-    reason:'SELL LIMIT yêu cầu TP < Entry Limit ('+fmt(entry)+').'
-   };
+ }else{
+  if(sl<=entry){
+   return {pendingType,direction,valid:false,reason:'SELL LIMIT yêu cầu SL > Entry ('+fmt(entry)+').'};
+  }
+  if(ref>0&&entry<=ref){
+   return {pendingType,direction,valid:false,reason:'SELL LIMIT yêu cầu Entry ('+fmt(entry)+') > giá hiện tại ('+fmt(ref)+').'};
+  }
+  if(tp>0&&tp>=entry){
+   return {pendingType,direction,valid:false,reason:'SELL LIMIT yêu cầu TP < Entry ('+fmt(entry)+').'};
   }
  }
  return {pendingType,direction,valid:true,reason:''};
@@ -855,27 +910,33 @@ function getLimitValidation(){
 
 function updateDirectionFromSL(){
  const mode=$('orderMode').value;
+ syncPresetButtons();
  if(mode==='PENDING'){
+  const entry=Number($('entryPrice').value);
+  const sl=Number($('slPrice').value);
+  if(entry>0&&sl>0&&entry!==sl){
+   pendingOrderType=sl>entry?'SELL_LIMIT':'BUY_LIMIT';
+  }
+  autoDirection=pendingOrderType==='BUY_LIMIT'?'BUY':'SELL';
+  syncPresetButtons();
   const info=getLimitValidation();
-  pendingOrderType=info.pendingType;
-  autoDirection=info.direction;
-  const isBuyLimit=pendingOrderType==='BUY_LIMIT';
   $('sendBuy').textContent='BUY LIMIT';
   $('sendSell').textContent='SELL LIMIT';
-  $('sendBuy').classList.toggle('active',isBuyLimit);
-  $('sendSell').classList.toggle('active',!isBuyLimit);
-  $('sendBuy').style.display=isBuyLimit?'':'none';
-  $('sendSell').style.display=!isBuyLimit?'':'none';
+  $('sendBuy').style.display='';
+  $('sendSell').style.display='';
+  $('sendBuy').classList.toggle('active',pendingOrderType==='BUY_LIMIT');
+  $('sendSell').classList.toggle('active',pendingOrderType==='SELL_LIMIT');
   $('requestState').textContent=info.valid
-   ?('Chế độ Limit: '+(isBuyLimit?'BUY LIMIT (Entry < giá hiện tại)':'SELL LIMIT (Entry > giá hiện tại)')+' · chỉ gửi PAPER.')
+   ?('Sẵn sàng gửi '+pendingOrderType.replace('_',' ')+' · Entry '+Number($('entryPrice').value).toFixed(mt5Digits)+' · SL '+Number($('slPrice').value).toFixed(mt5Digits))
    :('Limit: '+info.reason);
   return;
  }
 
  $('sendBuy').textContent='BUY';
  $('sendSell').textContent='SELL';
- const sl=Number($('slPrice').value),reference=Number(latestMarketPrice);
- if(sl>0&&reference>0&&sl!==reference)autoDirection=sl>reference?'SELL':'BUY';
+ const sl=Number($('slPrice').value),entry=Number($('entryPrice').value),reference=Number(latestMarketPrice);
+ const baseRef=entry>0?entry:reference;
+ if(sl>0&&baseRef>0&&sl!==baseRef)autoDirection=sl>baseRef?'SELL':'BUY';
  $('sendBuy').classList.toggle('active',autoDirection==='BUY');
  $('sendSell').classList.toggle('active',autoDirection==='SELL');
  $('sendBuy').style.display=autoDirection==='BUY'?'':'none';
@@ -905,7 +966,7 @@ function calcLot(){
  }
  const actualRisk=lot*lossPerLot;
  const modeTag=$('orderMode').value==='PENDING'?' · '+pendingOrderType.replace('_',' '):'';
- $('lotResult').innerHTML='<div class="lot-value">'+lot.toFixed(lotDigits)+' LOT</div><div>SL: '+distance.toFixed(mt5Digits)+' · Lỗ/lot: '+lossPerLot.toFixed(2)+' · Risk thực tế: '+actualRisk.toFixed(2)+' / '+risk.toFixed(2)+modeTag+'</div>';
+ $('lotResult').innerHTML='<div class="lot-value">'+lot.toFixed(lotDigits)+' LOT</div><div>|Entry - SL|: '+distance.toFixed(mt5Digits)+' · Lỗ/lot: '+lossPerLot.toFixed(2)+' · Risk: '+actualRisk.toFixed(2)+' / '+risk.toFixed(2)+modeTag+'</div>';
  return {risk,e,s:sl,lot,actualRisk};
 }
 $('fitChart').addEventListener('click',()=>{
@@ -927,13 +988,19 @@ function syncOrderModeFromEntry(){
    applyLimitDefaults(latestMarketPrice,pendingOrderType);
   }
  }
+ syncPresetButtons();
  setLevelLines();
  calcLot();
 }
+$('presetMarket').addEventListener('click',activateMarketPreset);
+$('presetBuyLimit').addEventListener('click',()=>activateLimitPreset('BUY_LIMIT'));
+$('presetSellLimit').addEventListener('click',()=>activateLimitPreset('SELL_LIMIT'));
 ['showEntry','showSL','showTP'].forEach(id=>$(id).addEventListener('change',()=>{if(id==='showEntry')syncOrderModeFromEntry();else{setLevelLines();calcLot()}}));
 $('orderMode').addEventListener('change',()=>{$('showEntry').checked=$('orderMode').value==='PENDING';syncOrderModeFromEntry()});
 $('showEntry').checked=false;$('entryPrice').readOnly=true;
-['entryPrice','slPrice','tpPrice','riskMoney'].forEach(id=>$(id).addEventListener('input',calcLot));
+$('entryPrice').addEventListener('input',()=>handleLevelAdjusted('entry'));
+$('slPrice').addEventListener('input',()=>handleLevelAdjusted('sl'));
+['tpPrice','riskMoney'].forEach(id=>$(id).addEventListener('input',calcLot));
 new ResizeObserver(()=>{setLevelLines();const w=$('priceChart').clientWidth;priceChart.applyOptions({width:w});rsiChart.applyOptions({width:w})}).observe($('priceChart'));
 async function toggleTradeFullscreen(){const on=!document.body.classList.contains('trade-fullscreen');document.body.classList.toggle('trade-fullscreen',on);$('fullscreenToggle').textContent='⛶';if(on&&document.fullscreenEnabled&&!document.fullscreenElement){try{await document.documentElement.requestFullscreen()}catch(e){}}else if(!on&&document.fullscreenElement){try{await document.exitFullscreen()}catch(e){}}requestAnimationFrame(()=>{const w=$('priceChart').clientWidth;priceChart.applyOptions({width:w,height:$('priceChart').clientHeight});rsiChart.applyOptions({width:$('rsiChart').clientWidth,height:$('rsiChart').clientHeight});setLevelLines()})}
 $('fullscreenToggle').addEventListener('click',toggleTradeFullscreen);
@@ -951,9 +1018,9 @@ async function sendPaper(direction){
  const mode=$('orderMode').value;
  const tp=Number($('tpPrice').value)||0;
  if(mode==='PENDING'){
-  const info=getLimitValidation();
+  const requestedLimitType=direction==='BUY'?'BUY_LIMIT':'SELL_LIMIT';
+  const info=getLimitValidation(requestedLimitType);
   if(!info.valid){$('requestState').textContent=info.reason;return;}
-  if(info.direction!==direction){$('requestState').textContent='Vị trí Entry Limit hiện tại thuộc về '+info.pendingType.replace('_',' ')+'.';return;}
   const orderType=info.pendingType;
   const limitLabel=orderType.replace('_',' ');
   const summary=`XÁC NHẬN YÊU CẦU PAPER (${limitLabel})\n\nLoại lệnh: ${limitLabel}\nSymbol: ${$('symbol').value} / ${$('tf').value}\nGiá hiện tại: ${fmt(latestMarketPrice)}\nEntry Limit: ${c.e.toFixed(mt5Digits)}\nSL: ${c.s.toFixed(mt5Digits)}\nTP hiển thị: ${tp>0?tp.toFixed(mt5Digits):'Chưa đặt'}\nLot MT5: ${c.lot.toFixed(volumeDigits(mt5VolumeStep))}\nRisk dự kiến tại SL: ${c.actualRisk.toFixed(2)} / ${c.risk.toFixed(2)}\n\nChỉ gửi yêu cầu ${limitLabel} vào hàng đợi PAPER; không đặt lệnh broker. Tiếp tục?`;
