@@ -768,7 +768,6 @@ def _enqueue_close_position(payload: ClosePositionIn, kind: Literal["close", "ca
 
     now = utc_now()
     with db() as conn:
-        # Tìm trong paper_positions trước, sau đó tìm trong mt5_account_items
         row = _find_matching_item(conn, "paper_positions", pos_id, want_pending, payload.symbol, payload.direction)
         if row is None:
             row = _find_matching_item(conn, "mt5_account_items", pos_id, want_pending, payload.symbol, payload.direction)
@@ -1103,12 +1102,14 @@ def dashboard_data():
             "SELECT id,ticket,symbol,timeframe,direction,entry,sl,tp,volume,profit,opened_at,"
             "is_pending,order_type,magic,comment,source,updated_at "
             "FROM mt5_account_items ORDER BY opened_at DESC").fetchall()]
+        # SỬA: Đổi read_only thành False để hiển thị nút Đóng/Hủy
         mt5_positions = [
-            {**p, "read_only": True, "origin": p["source"]}
+            {**p, "read_only": False, "origin": p["source"]}
             for p in mt5_account_items if not p["is_pending"]
         ]
+        # SỬA: Đổi read_only thành False để hiển thị nút Đóng/Hủy
         mt5_pending_orders = [
-            {**p, "read_only": True, "origin": p["source"],
+            {**p, "read_only": False, "origin": p["source"],
              "status": "Đang chờ trên MT5"}
             for p in mt5_account_items if p["is_pending"]
         ]
