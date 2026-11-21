@@ -1133,7 +1133,11 @@ const rsiChart = LightweightCharts.createChart($('rsiChart'), {
   grid: { vertLines: { color: '#1c2a3e' }, horzLines: { color: '#1c2a3e' } },
   rightPriceScale: { borderColor: '#34445c', scaleMargins: { top: 0.04, bottom: 0.04 }, autoScale: true },
   timeScale: { visible: false, borderVisible: false, ticksVisible: false, borderColor: 'transparent', rightOffset: 10, barSpacing: 8, minBarSpacing: 2 },
-  crosshair: { mode: LightweightCharts.CrosshairMode.Normal, vertLine: { visible: false, labelVisible: false }, horzLine: { visible: false, labelVisible: false } },
+  crosshair: {
+    mode: LightweightCharts.CrosshairMode.Normal,
+    vertLine: { visible: false, labelVisible: false },
+    horzLine: { visible: true, labelVisible: true, color: '#a78bfa', width: 1, style: LightweightCharts.LineStyle.Dotted },
+  },
   height: 150,
 });
 const rsiSeries = rsiChart.addLineSeries({
@@ -2482,6 +2486,17 @@ function syncOrderModeFromEntry() {
   setLevelLines();
   calcLot();
 }
+
+// Nhấp đúp vào cột giá bên phải để tự động cân lại thang giá.
+$('priceChart').addEventListener('dblclick', event => {
+  const rect = $('priceChart').getBoundingClientRect();
+  if (event.clientX < rect.right - 90 || event.clientX > rect.right) return;
+  event.preventDefault();
+  event.stopPropagation();
+  priceChart.priceScale('right').applyOptions({ autoScale: true });
+  candleSeries.applyOptions({ autoscaleInfoProvider: undefined });
+  requestAnimationFrame(() => priceChart.applyOptions({}));
+}, true);
 
 $('fitChart').addEventListener('click', () => {
   priceChart.timeScale().fitContent();
