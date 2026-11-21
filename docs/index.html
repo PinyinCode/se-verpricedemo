@@ -212,7 +212,7 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
 .drag-line.tp{background:var(--green)}
 .drag-line.locked{cursor:not-allowed;opacity:.55}
 
-/* Lớp lệnh thật */
+/* Lớp vị thế tài khoản */
 .real-line{position:absolute;left:0;right:0;height:2px;pointer-events:auto;touch-action:none;cursor:ns-resize;z-index:6}
 .real-line.draggable{cursor:ns-resize}
 .real-line.locked{cursor:not-allowed;opacity:.6}
@@ -284,7 +284,7 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
   cursor:pointer;
 }
 
-/* Popup thông tin lệnh thật */
+/* Popup thông tin vị thế tài khoản */
 .real-popup{
   position:absolute;
   z-index:70;
@@ -776,7 +776,7 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:10px}
               </div>
               <div class="chart-actions">
                 <span class="small" id="feedState">Đang kết nối dữ liệu...</span>
-                <button id="lockButton" type="button" aria-label="Khoá/mở kéo SL/TP lệnh thật" title="Khoá/mở kéo SL/TP lệnh thật">🔓</button>
+                <button id="lockButton" type="button" aria-label="Khóa/mở kéo các mức SL/TP" title="Khóa/mở kéo các mức SL/TP">🔓</button>
                 <button id="settingsButton" type="button" aria-label="Cài đặt" title="Cài đặt API key, Risk, Entry">⚙</button>
                 <button id="positionsButton" type="button" aria-label="Vị thế đang mở và lệnh chờ" title="Xem vị thế đang mở và vị thế chờ">▣<span id="positionCount">0</span></button>
                 <button id="statsButton" type="button" aria-label="Thống kê" title="Thống kê tín hiệu và lịch sử giao dịch">▤</button>
@@ -828,7 +828,7 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:10px}
         <div class="chart-overlay-bottom">
           <div id="lotResizeHandle" role="separator" aria-label="Kéo để thay đổi chiều cao ô khối lượng" title="Kéo để thay đổi chiều cao ô khối lượng"></div>
           <div class="real-layer-toggles">
-            <span class="real-layer-title">Lệnh thật:</span>
+            <span class="real-layer-title">Dữ liệu tài khoản MT5:</span>
             <label><input id="showRealLayer" type="checkbox" checked> Hiện</label>
             <label><input id="showRealEntry" type="checkbox" checked> Entry</label>
             <label><input id="showRealSl" type="checkbox" checked> SL</label>
@@ -836,7 +836,7 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:10px}
           </div>
           <div class="trade-footer">
             <div class="lot-block">
-              <div id="lotResult" class="small">Đang chờ dữ liệu MT5 để tính lot.</div>
+              <div id="lotResult" class="small">Đang chờ dữ liệu MT5 để tính khối lượng.</div>
               <div id="contractMeta" class="small">Đang chờ thông số hợp đồng từ MT5...</div>
               <div class="lot-controls">
                 <div class="limit-preset-bar">
@@ -904,7 +904,7 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:10px}
       <label>Risk ($)<input id="riskMoney" type="number" min="0.01" step="1" value="25"></label>
       <label id="entryWrap">Entry (Limit)<input id="entryPrice" type="number" step="any"></label>
       <label>SL<input id="slPrice" type="number" step="any"></label>
-      <div id="modalLotStatus" class="small" role="status">Chưa đủ điều kiện tính lot.</div>
+      <div id="modalLotStatus" class="small" role="status">Chưa đủ điều kiện tính khối lượng.</div>
       <label>TP<input id="tpPrice" type="number" step="any"></label>
     </div>
     <p class="small">BUY LIMIT: Entry &lt; giá hiện tại và SL &lt; Entry. SELL LIMIT: Entry &gt; giá hiện tại và SL &gt; Entry.</p>
@@ -1069,7 +1069,7 @@ async function apiFetch(url, options = {}) {
 const fmt = n => Number(n).toLocaleString('en-US', { minimumFractionDigits: mt5Digits, maximumFractionDigits: mt5Digits });
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-/* ================= LOCK STATE (chỉ lệnh thật) ================= */
+/* ================= LOCK STATE (chỉ vị thế tài khoản) ================= */
 const LOCK_STORAGE = 'chartRealSltpLocked';
 let realSltpLocked = (() => {
   try { return localStorage.getItem(LOCK_STORAGE) === '1'; } catch { return false; }
@@ -1079,7 +1079,7 @@ function applyLockState() {
   if (!btn) return;
   btn.textContent = realSltpLocked ? '🔒' : '🔓';
   btn.classList.toggle('locked', realSltpLocked);
-  btn.title = realSltpLocked ? 'Đang khoá kéo SL/TP lệnh thật (bấm để mở)' : 'Đang mở kéo SL/TP lệnh thật (bấm để khoá)';
+  btn.title = realSltpLocked ? 'Đang khóa kéo các mức SL/TP (chọn để mở khóa)' : 'Đang mở khóa kéo các mức SL/TP (chọn để khóa)';
   document.querySelectorAll('.real-line').forEach(el => {
     el.classList.toggle('locked', realSltpLocked);
   });
@@ -1510,7 +1510,7 @@ function renderRealLines() {
     realLineEls.push({ el, type, key });
   };
 
-  // Mũi tên entry nằm trong lớp Lệnh thật; bấm vào chỉ mở thông tin dạng đọc.
+  // Mũi tên entry nằm trong lớp Vị thế tài khoản; bấm vào chỉ mở thông tin dạng đọc.
   const makeEntryMarker = (data, kind, entry, direction, index) => {
     const y = candleSeries.priceToCoordinate(entry);
     if (y == null) return;
@@ -1710,14 +1710,14 @@ function openRealPopup(payload, clientX, clientY, readOnly = false) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'btn-close-pos';
-      btn.textContent = 'Huỷ lệnh';
+      btn.textContent = 'Hủy lệnh chờ';
       btn.addEventListener('click', () => { closeRealPopup(); cancelPendingOrder(ticket, btn); });
       actions.appendChild(btn);
     } else {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'btn-close-pos';
-      btn.textContent = 'Đóng lệnh';
+      btn.textContent = 'Đóng vị thế';
       btn.addEventListener('click', () => { closeRealPopup(); closePosition(ticket, btn); });
       actions.appendChild(btn);
     }
@@ -2204,15 +2204,14 @@ const tradePanel = document.querySelector('.chart-overlay-bottom');
 const tradePanelToggle = $('tradePanelToggle');
 function setTradePanelVisible(visible) {
   tradePanel.classList.toggle('trade-panel-collapsed', !visible);
-  tradePanelToggle.textContent = visible ? 'Ẩn giao dịch' : 'Mở giao dịch';
+  tradePanelToggle.textContent = visible ? 'Thu gọn bảng lệnh' : 'Hiện bảng lệnh';
   tradePanelToggle.setAttribute('aria-expanded', visible ? 'true' : 'false');
-  tradePanelToggle.title = visible ? 'Thu gọn khu vực giao dịch' : 'Hiện khu vực giao dịch';
+  tradePanelToggle.title = visible ? 'Thu gọn bảng lệnh' : 'Hiện bảng lệnh';
   try { localStorage.setItem('chartTradePanelVisible', visible ? '1' : '0'); } catch (_) {}
   requestAnimationFrame(applyChartDimensions);
 }
-let savedTradePanelVisible = false;
-try { savedTradePanelVisible = localStorage.getItem('chartTradePanelVisible') === '1'; } catch (_) {}
-setTradePanelVisible(savedTradePanelVisible);
+// Luôn thu gọn bảng lệnh khi tải trang; người dùng có thể chủ động mở lại.
+setTradePanelVisible(false);
 tradePanelToggle.addEventListener('click', () => {
   setTradePanelVisible(tradePanel.classList.contains('trade-panel-collapsed'));
 });
@@ -2296,8 +2295,8 @@ $('statsDialog').addEventListener('click', e => { if (e.target === $('statsDialo
 
 function setLevelLines() {
   const mode = $('orderMode').value;
-  // Hai lớp loại trừ nhau: bật Lệnh thật thì chỉ hiển thị mức giá lấy từ MT5;
-  // tắt Lệnh thật mới hiển thị các mức giá đang nhập trong form.
+  // Hai lớp loại trừ nhau: bật Vị thế tài khoản thì chỉ hiển thị mức giá lấy từ MT5;
+  // tắt Vị thế tài khoản mới hiển thị các mức giá đang nhập trong form.
   const showFormLevels = !realLayerVisible;
   for (const key of ['entry', 'sl', 'tp']) {
     const id = key === 'entry' ? 'entryPrice' : key === 'sl' ? 'slPrice' : 'tpPrice';
@@ -2372,15 +2371,15 @@ function calcLot() {
   setLevelLines();
 
   if (!$('showSL').checked) {
-    setLotStatus('SL đang tắt — bật mục SL để tính lot.');
+    setLotStatus('SL đang tắt — bật mục SL để tính khối lượng.');
     return null;
   }
   if (!(sl > 0) || !Number.isFinite(sl)) {
-    setLotStatus('Chưa nhập SL hợp lệ — nhập mức SL để tính lot.');
+    setLotStatus('Chưa nhập SL hợp lệ — nhập mức SL để tính khối lượng.');
     return null;
   }
   if (!(e > 0) || !Number.isFinite(e)) {
-    setLotStatus('Chưa có Entry/giá hiện tại hợp lệ — chưa thể tính lot.');
+    setLotStatus('Chưa có Entry/giá hiện tại hợp lệ — chưa thể tính khối lượng.');
     return null;
   }
   if (e === sl) {
