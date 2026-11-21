@@ -853,14 +853,14 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
               <div id="contractMeta" class="small">Đang chờ thông số hợp đồng từ MT5...</div>
               <div class="lot-controls">
                 <div class="limit-preset-bar">
-                  <button type="button" id="presetMarket" class="btn-limit-preset mkt-preset selected">MARKET</button>
+                  <button type="button" id="presetMarket" class="btn-limit-preset mkt-preset">MARKET</button>
                   <button type="button" id="presetBuyLimit" class="btn-limit-preset buy-preset">+ BUY LIMIT</button>
                   <button type="button" id="presetSellLimit" class="btn-limit-preset sell-preset">+ SELL LIMIT</button>
                 </div>
                 <div class="level-toggles">
                   <label><input id="showEntry" type="checkbox"> Entry (form mới)</label>
-                  <label><input id="showSL" type="checkbox" checked> SL (form mới)</label>
-                  <label><input id="showTP" type="checkbox" checked> TP (form mới)</label>
+                  <label><input id="showSL" type="checkbox"> SL (form mới)</label>
+                  <label><input id="showTP" type="checkbox"> TP (form mới)</label>
                 </div>
               </div>
             </div>
@@ -1202,7 +1202,7 @@ function renderRsiDivergences(signals, bars) {
 
 let lastBarsSignature = '';
 let syncing = false, firstLoad = true, autoDirection = 'BUY', pendingOrderType = 'BUY_LIMIT', lastLoadedSymbol = '';
-let activePreset = 'MARKET';
+let activePreset = null;
 
 /* ================= FORM MỚI — DRAG OVERLAY ================= */
 const dragOverlay = document.createElement('div');
@@ -2245,7 +2245,6 @@ function setTradePanelVisible(visible) {
   tradePanelToggle.setAttribute('aria-expanded', visible ? 'true' : 'false');
   tradePanelToggle.title = visible ? 'Thu gọn bảng lệnh' : 'Hiện bảng lệnh';
   if (!visible) {
-    // Xóa kích thước inline để bảng lệnh thực sự nhường toàn bộ không gian cho chart.
     tradePanel.style.removeProperty('height');
     tradePanel.style.removeProperty('flex');
   } else {
@@ -2344,16 +2343,15 @@ $('statsDialog').addEventListener('click', e => { if (e.target === $('statsDialo
 
 function setLevelLines() {
   const mode = $('orderMode').value;
-  const showFormLevels = !realLayerVisible;
   for (const key of ['entry', 'sl', 'tp']) {
     const id = key === 'entry' ? 'entryPrice' : key === 'sl' ? 'slPrice' : 'tpPrice';
     const value = Number($(id).value);
     const toggle = $(key === 'entry' ? 'showEntry' : key === 'sl' ? 'showSL' : 'showTP');
     const y = value > 0 ? candleSeries.priceToCoordinate(value) : null;
     const line = dragLevels[key];
-    const allowed = key !== 'entry' || mode === 'PENDING';
-    line.style.display = showFormLevels && allowed && toggle.checked && y != null ? 'block' : 'none';
-    if (showFormLevels && allowed && toggle.checked && y != null) {
+    const allowed = activePreset !== null && (key !== 'entry' || mode === 'PENDING');
+    line.style.display = allowed && toggle.checked && y != null ? 'block' : 'none';
+    if (allowed && toggle.checked && y != null) {
       line.style.top = y + 'px';
       line.firstChild.textContent = key === 'entry'
         ? (pendingOrderType === 'BUY_LIMIT' ? 'BUY LIMIT' : 'SELL LIMIT') + ' ' + value.toFixed(mt5Digits)
@@ -2487,7 +2485,6 @@ function syncOrderModeFromEntry() {
   calcLot();
 }
 
-// Nhấp đúp vào cột giá bên phải để tự động cân lại thang giá.
 $('priceChart').addEventListener('dblclick', event => {
   const rect = $('priceChart').getBoundingClientRect();
   if (event.clientX < rect.right - 90 || event.clientX > rect.right) return;
@@ -2518,6 +2515,8 @@ $('orderMode').addEventListener('change', () => {
   syncOrderModeFromEntry();
 });
 $('showEntry').checked = false;
+$('showSL').checked = false;
+$('showTP').checked = false;
 $('entryPrice').readOnly = true;
 $('entryPrice').addEventListener('input', () => handleLevelAdjusted());
 $('slPrice').addEventListener('input', () => handleLevelAdjusted());
@@ -2642,7 +2641,6 @@ function setLotHeight(height) {
   const next = Math.max(84, Math.min(max, height));
   overlayBottom.style.setProperty('--lot-panel-h', String(Math.round(next)));
   try { localStorage.setItem('chartLotPanelHeight', String(Math.round(next))); } catch (_) {}
-  // Khi đang ẩn, chỉ lưu chiều cao để khôi phục; không chiếm chỗ của chart.
   if (overlayBottom.classList.contains('trade-panel-collapsed')) return;
   overlayBottom.style.setProperty('height', next + 'px', 'important');
   overlayBottom.style.setProperty('flex', `0 0 ${next}px`, 'important');
@@ -2727,6 +2725,7 @@ refreshApiKeyBox();
 syncRealLayerToggles();
 bindRealLayerToggles();
 applyLockState();
+syncPresetButtons();
 
 $('apiKeySave').addEventListener('click', () => {
   saveApiKey($('apiKeyInput').value);
