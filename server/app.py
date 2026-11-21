@@ -10,7 +10,8 @@ import sqlite3
 import threading
 import time
 from contextlib import asynccontextmanager, contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from urllib.request import Request, urlopen
 from pathlib import Path
 from typing import Literal
 
@@ -23,6 +24,8 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = Path(os.getenv("FOREX_DB_PATH", str(BASE_DIR / "forex_demo.db")))
 API_KEY = os.getenv("FOREX_API_KEY", "").strip()
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 STALE_SECONDS = int(os.getenv("SIGNAL_STALE_SECONDS", "300"))
 CLOSE_REQUEST_TTL = int(os.getenv("CLOSE_REQUEST_TTL_SECONDS", "45"))
 SLTP_REQUEST_TTL = int(os.getenv("SLTP_REQUEST_TTL_SECONDS", "60"))
@@ -36,6 +39,38 @@ _ACK_COOLDOWN = 10.0
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def send_telegram_rt_signal(item: "TodaySignalItem") -> bool:
+    """Send one newly inserted RT signal to Telegram; secrets stay in environment."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return False
+
+    local_time = datetime.fromtimestamp(
+        item.signal_time, timezone.utc
+    ).astimezone(timezone(timedelta(hours=7)))
+    direction = "▲ BUY" if item.direction == "BUY" else "▼ SELL"
+    div_name = "Regular" if item.divergence.lower() in ("reg", "regular") else "Hidden"
+    message = (
+        "🔔 AI OOP V8 · REALTIME\\n"
+        f"{item.symbol} · {item.timeframe}\\n"
+        f"{direction} · {div_name} Divergence\\n"
+        f"Giá điểm phân kỳ: {item.price2:.8f}\\n"
+        f"RSI: {item.rsi1:.1f} → {item.rsi2:.1f}\\n"
+        f"Thời gian: {local_time:%d/%m/%Y %H:%M} (GMT+7)"
+    )
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    body = json.dumps({"chat_id": TELEGRAM_CHAT_ID, "text": message}).encode("utf-8")
+    request = Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
+    try:
+        with urlopen(request, timeout=6) as response:
+            result = json.loads(response.read().decode("utf-8"))
+        if result.get("ok") is True:
+            return True
+        print("[TELEGRAM] Telegram API rejected an RT notification")
+    except Exception as exc:
+        print(f"[TELEGRAM] RT notification failed: {type(exc).__name__}")
+    return False
 
 
 def _get_conn() -> sqlite3.Connection:
@@ -1111,18 +1146,30 @@ def update_scans(payload: ScanUpdateIn):
 @app.post("/api/today-signals", dependencies=[Depends(require_key)])
 def update_today_signals(payload: TodaySignalsIn):
     now = utc_now()
+    new_rt_signals = []
     with db() as conn:
         for item in payload.signals:
             key = "|".join((item.symbol, item.timeframe, item.direction,
                             item.divergence, item.signal_type, str(item.signal_time)))
-            conn.execute(
-                "INSERT OR REPLACE INTO today_signals(signal_key,symbol,timeframe,direction,divergence,signal_type,"
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO today_signals(signal_key,symbol,timeframe,direction,divergence,signal_type,"
                 "signal_time,price1,price2,rsi1,rsi2,time1,time2,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (key, item.symbol, item.timeframe, item.direction, item.divergence,
                  item.signal_type, item.signal_time, item.price1, item.price2,
                  item.rsi1, item.rsi2, item.time1, item.time2, now),
             )
-    return {"ok": True, "count": len(payload.signals), "updated_at": now}
+            if cur.rowcount == 1 and item.signal_type == "RT":
+                new_rt_signals.append(item)
+
+    telegram_sent = sum(1 for item in new_rt_signals if send_telegram_rt_signal(item))
+    return {
+        "ok": True,
+        "count": len(payload.signals),
+        "new_realtime": len(new_rt_signals),
+        "telegram_sent": telegram_sent,
+        "telegram_configured": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
+        "updated_at": now,
+    }
 
 
 @app.post("/api/mt5/candles", dependencies=[Depends(require_key)])
