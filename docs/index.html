@@ -100,7 +100,6 @@ button.locked{background:rgba(251,191,36,.14);border-color:var(--amber);color:#f
 .chart-pickers select{min-width:80px;padding:6px 9px}
 .chart-actions{margin-left:auto}
 .chart-actions button{padding:6px 9px}
-/* Keep every chart toolbar button visible; progressively compress controls on narrow screens. */
 body.trade-fullscreen .chart-head{flex-wrap:nowrap;min-width:0;gap:5px}
 body.trade-fullscreen .chart-pickers{flex:0 1 auto;flex-wrap:nowrap;gap:4px}
 body.trade-fullscreen .chart-actions{flex:0 0 auto;flex-wrap:nowrap;gap:clamp(2px,.55vw,6px)}
@@ -212,7 +211,6 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
 .drag-line.tp{background:var(--green)}
 .drag-line.locked{cursor:not-allowed;opacity:.55}
 
-/* Lớp vị thế tài khoản */
 .real-line{position:absolute;left:0;right:0;height:2px;pointer-events:auto;touch-action:none;cursor:ns-resize;z-index:6}
 .real-line.draggable{cursor:ns-resize}
 .real-line.locked{cursor:not-allowed;opacity:.6}
@@ -237,7 +235,6 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
 .real-line.pend-sl{background:#fb7185}
 .real-line.pend-tp{background:#4ade80}
 
-/* Entry popup của form mới */
 .entry-popup{
   position:absolute;
   z-index:60;
@@ -284,7 +281,6 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
   cursor:pointer;
 }
 
-/* Popup thông tin vị thế tài khoản */
 .real-popup{
   position:absolute;
   z-index:70;
@@ -340,12 +336,12 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
   cursor:pointer;
 }
 
-/* Real layer toggles */
 .real-layer-toggles{
   display:flex;
   gap:10px;
   align-items:center;
   flex-wrap:wrap;
+  flex:0 0 auto;
   padding:5px 10px;
   background:#0d1929;
   border-bottom:1px solid var(--line-soft);
@@ -355,7 +351,6 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
 .real-layer-toggles input{accent-color:var(--green);margin:0}
 .real-layer-toggles .real-layer-title{color:#8ba3bf;font-weight:700;letter-spacing:.3px}
 
-/* Confirm dialog */
 .confirm-dialog{
   width:min(440px,calc(100vw - 24px));
   padding:0;
@@ -389,22 +384,38 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
 .confirm-dialog .cd-foot #cdCancel{background:#192941}
 .confirm-dialog .cd-foot #cdOk{background:rgba(96,165,250,.16);border-color:var(--blue);color:#93c5fd}
 
-/* Order footer */
+.chart-overlay-bottom{
+  display:flex;
+  flex-direction:column;
+  min-height:0;
+  overflow:hidden;
+}
 .trade-footer{
+  flex:1 1 auto;
+  min-height:0;
   display:grid;
-  grid-template-columns:minmax(220px,1fr) auto minmax(170px,.8fr);
-  gap:12px;
+  grid-template-columns:minmax(220px,1.35fr) auto minmax(170px,.85fr);
+  gap:10px 14px;
+  align-content:stretch;
   align-items:center;
   padding:9px 11px;
   background:linear-gradient(180deg,#101e31,#0d1929);
   border-top:1px solid #2a3b53;
+  overflow:auto;
 }
-.lot-block{min-width:0}
-.lot-block #lotResult{margin-top:1px}
-.lot-block .lot-value{display:inline-block;font-size:20px;font-weight:800;color:#62dfb3;margin:0 8px 0 0}
-.lot-controls{display:flex;align-items:center;gap:10px;margin-top:6px;flex-wrap:wrap}
+.lot-block{
+  min-width:0;
+  height:100%;
+  display:flex;
+  flex-direction:column;
+  justify-content:space-between;
+  gap:4px;
+}
+.lot-block #lotResult{margin-top:0;display:flex;align-items:center;flex-wrap:wrap;gap:6px}
+.lot-block .lot-value{display:inline-block;font-size:clamp(16px,calc(12px + .06 * var(--lot-panel-h, 110px)),26px);font-weight:800;color:#62dfb3;margin:0 6px 0 0;line-height:1.15}
+.lot-controls{display:flex;align-items:center;gap:8px 12px;margin-top:2px;flex-wrap:wrap}
 .limit-preset-bar{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-.btn-limit-preset{padding:4px 8px;font-size:10px;font-weight:700;border-radius:6px;background:#162438;border-color:#3a5273}
+.btn-limit-preset{padding:clamp(4px,calc(2px + .02 * var(--lot-panel-h, 110px)),7px) clamp(8px,calc(6px + .03 * var(--lot-panel-h, 110px)),12px);font-size:clamp(10px,calc(9px + .015 * var(--lot-panel-h, 110px)),12px);font-weight:700;border-radius:6px;background:#162438;border-color:#3a5273}
 .btn-limit-preset.buy-preset{border-color:#237a60;color:#6de3b8}
 .btn-limit-preset.buy-preset.selected{background:rgba(39,201,149,.18);border-color:var(--green)}
 .btn-limit-preset.sell-preset{border-color:#8c4050;color:#ff9aaa}
@@ -412,14 +423,14 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
 .btn-limit-preset.mkt-preset.selected{background:rgba(96,165,250,.18);border-color:var(--blue);color:#93c5fd}
 
 .level-toggles{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.level-toggles label{display:inline-flex;gap:4px;align-items:center;color:#aebdd0;font-size:10px}
+.level-toggles label{display:inline-flex;gap:4px;align-items:center;color:#aebdd0;font-size:clamp(10px,calc(9px + .012 * var(--lot-panel-h, 110px)),12px);cursor:pointer}
 .level-toggles input{accent-color:var(--blue);margin:0}
 
-.trade-submit{display:flex;gap:7px}
-.trade-submit button{min-width:110px;font-weight:750;padding:8px 12px;border-radius:8px;white-space:nowrap}
+.trade-submit{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:center}
+.trade-submit button{min-width:clamp(96px,calc(84px + .15 * var(--lot-panel-h, 110px)),144px);min-height:clamp(32px,calc(26px + .08 * var(--lot-panel-h, 110px)),44px);font-weight:750;padding:8px 12px;border-radius:8px;white-space:nowrap}
 #sendBuy{background:rgba(39,201,149,.12);border-color:#217c62;color:#6de3b8}
 #sendSell{background:rgba(240,107,126,.1);border-color:#8c4050;color:#ff9aaa}
-.request-state{text-align:right;line-height:1.35;max-width:280px}
+.request-state{text-align:right;line-height:1.4;max-width:320px;align-self:center}
 .statusline{padding:5px 10px;color:#8195ad;font-size:11px;border-top:1px solid var(--line);background:#0d1929}
 
 .side{padding:12px;background:linear-gradient(180deg,#111e31,#0e1929)}
@@ -542,7 +553,6 @@ th{color:var(--muted);font-weight:600}
 .stats-section td,.stats-section th{font-size:11px;padding:8px}
 .stats-updated{padding-top:10px;text-align:right}
 
-/* Thông báo realtime nổi trong vùng biểu đồ */
 .rt-signal-toast{
   position:absolute;z-index:35;top:54px;left:12px;width:min(330px,calc(100% - 24px));
   padding:10px 12px;border:1px solid #2c9b78;border-left:4px solid var(--green);
@@ -692,20 +702,22 @@ body.trade-fullscreen .chart-overlay-bottom{
   flex-direction:column;
   background:#0d192a;
   border-top:1px solid #34445c;
+  overflow:hidden;
 }
 body.trade-fullscreen .chart-overlay-bottom #lotResizeHandle{width:100%;flex:0 0 14px;border-top:0}
 body.trade-fullscreen .chart-overlay-bottom .trade-footer{
-  min-height:56px;
-  padding:6px 9px;
-  gap:8px;
+  flex:1 1 auto;
+  min-height:64px;
+  padding:8px 10px;
+  gap:8px 10px;
   border-top:0;
   background:transparent;
-  grid-template-columns:minmax(0,1fr) auto minmax(130px,.65fr);
+  grid-template-columns:minmax(0,1.35fr) auto minmax(130px,.75fr);
   overflow:auto;
 }
-body.trade-fullscreen .chart-overlay-bottom .lot-value{font-size:17px}
-body.trade-fullscreen .chart-overlay-bottom .trade-submit button{min-width:96px;min-height:32px;padding:5px 8px;font-size:11px}
-body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:10px}
+body.trade-fullscreen .chart-overlay-bottom .lot-value{font-size:clamp(16px,calc(12px + .06 * var(--lot-panel-h, 110px)),25px)}
+body.trade-fullscreen .chart-overlay-bottom .trade-submit button{min-width:clamp(92px,calc(78px + .14 * var(--lot-panel-h, 110px)),136px);min-height:clamp(32px,calc(26px + .07 * var(--lot-panel-h, 110px)),42px);padding:6px 10px;font-size:11px}
+body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,calc(9.5px + .01 * var(--lot-panel-h, 110px)),12px)}
 
 @media(max-width:600px){
   body.trade-fullscreen .chart-overlay-top{top:5px;left:5px;right:5px}
@@ -1069,7 +1081,7 @@ async function apiFetch(url, options = {}) {
 const fmt = n => Number(n).toLocaleString('en-US', { minimumFractionDigits: mt5Digits, maximumFractionDigits: mt5Digits });
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-/* ================= LOCK STATE (chỉ vị thế tài khoản) ================= */
+/* ================= LOCK STATE ================= */
 const LOCK_STORAGE = 'chartRealSltpLocked';
 let realSltpLocked = (() => {
   try { return localStorage.getItem(LOCK_STORAGE) === '1'; } catch { return false; }
@@ -1185,6 +1197,7 @@ function renderRsiDivergences(signals, bars) {
 
 let lastBarsSignature = '';
 let syncing = false, firstLoad = true, autoDirection = 'BUY', pendingOrderType = 'BUY_LIMIT', lastLoadedSymbol = '';
+let activePreset = 'MARKET';
 
 /* ================= FORM MỚI — DRAG OVERLAY ================= */
 const dragOverlay = document.createElement('div');
@@ -1268,7 +1281,6 @@ for (const key of ['entry', 'sl', 'tp']) {
     if (line.dataset.drag !== '1') return;
     line.dataset.drag = '0';
     try { line.releasePointerCapture(ev.pointerId); } catch (_) {}
-    // Nếu không di chuyển (chỉ click), mở popup Entry
     if (key === 'entry' && line.dataset.dragMoved !== '1') {
       openEntryPopupAt(ev.clientX, ev.clientY);
     }
@@ -1299,7 +1311,7 @@ rsiChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
   syncing = true; priceChart.timeScale().setVisibleLogicalRange(range); syncing = false;
 });
 
-/* ================= FORM MỚI — SLTP PROPOSE (giữ nguyên như code cũ) ================= */
+/* ================= FORM MỚI — SLTP PROPOSE ================= */
 let pendingSltpChange = null;
 
 function findOpenPositionForSymbol() {
@@ -1381,7 +1393,7 @@ const realOverlay = document.createElement('div');
 realOverlay.className = 'drag-overlay';
 realOverlay.style.zIndex = '6';
 $('priceChart').appendChild(realOverlay);
-let realLineEls = []; // { el, type, key, payload }
+let realLineEls = [];
 
 const REAL_LAYER_STORAGE = 'chartRealLayerVisible';
 let realLayerVisible = (() => {
@@ -1487,7 +1499,6 @@ function renderRealLines() {
         const rect = $('priceChart').getBoundingClientRect();
         const p = candleSeries.coordinateToPrice(ev.clientY - rect.top);
         if (p == null || !Number.isFinite(p)) return;
-        const ds = String(price.toFixed(mt5Digits));
         el.firstChild.textContent = label.replace(/\d+(\.\d+)?/, Number(p).toFixed(mt5Digits));
         el.style.top = (ev.clientY - rect.top) + 'px';
       });
@@ -1510,7 +1521,6 @@ function renderRealLines() {
     realLineEls.push({ el, type, key });
   };
 
-  // Mũi tên entry nằm trong lớp Vị thế tài khoản; bấm vào chỉ mở thông tin dạng đọc.
   const makeEntryMarker = (data, kind, entry, direction, index) => {
     const y = candleSeries.priceToCoordinate(entry);
     if (y == null) return;
@@ -1530,14 +1540,11 @@ function renderRealLines() {
   };
 
   positions.forEach((p, index) => {
-    const sym = p.symbol;
     const dir = String(p.direction || '').toUpperCase();
     const ticket = String(p.ticket ?? p.id ?? '');
     const entry = Number(p.entry) || 0;
     const sl = Number(p.sl) || 0;
     const tp = Number(p.tp) || 0;
-    const volume = Number(p.volume) || 0;
-    const profit = Number(p.profit) || 0;
     if (realEntryVisible && entry > 0) {
       makeLine({ price: entry, type: 'pos-entry', key: 'entry', side: dir, payload: { kind: 'position', data: p }, label: `#${ticket} ${dir} ENTRY ${entry.toFixed(mt5Digits)}` });
       makeEntryMarker(p, 'position', entry, dir, index);
@@ -1551,7 +1558,6 @@ function renderRealLines() {
   });
 
   pendings.forEach((o, index) => {
-    const sym = o.symbol;
     const dir = String(o.direction || '').toUpperCase();
     const ticket = String(o.ticket ?? o.id ?? '');
     const entry = Number(o.entry ?? o.price ?? o.open_price) || 0;
@@ -1593,7 +1599,6 @@ function proposeRealLevelChange(payload, key, oldPrice, newPrice) {
     desiredTp = newPrice;
   }
 
-  // kiểm tra hình học
   const checkEntry = isPending ? desiredEntry : entry;
   if (desiredSl > 0 && checkEntry > 0) {
     if (dir === 'BUY' && desiredSl >= checkEntry) { $('requestState').textContent = 'SL BUY phải < Entry. Đã hoàn tác.'; renderRealLines(); return; }
@@ -1819,7 +1824,6 @@ function renderSignals(signals, bars) {
   }));
   candleSeries.setMarkers(bars.length ? markers : []);
 
-  // Chỉ báo RT mới sau lần tải đầu của từng mã/khung; không bật thông báo hàng loạt khi mở trang.
   const viewKey = $('symbol').value + '|' + $('tf').value;
   const rtItems = list.filter(s => s.signal_type === 'RT');
   const currentKeys = new Set(rtItems.map(signalKey));
@@ -1857,11 +1861,24 @@ function applyLimitDefaults(ref, limitType = 'BUY_LIMIT') {
   }
 }
 function syncPresetButtons() {
-  const isPending = $('orderMode').value === 'PENDING';
-  $('presetMarket').classList.toggle('selected', !isPending);
-  $('presetBuyLimit').classList.toggle('selected', isPending && pendingOrderType === 'BUY_LIMIT');
-  $('presetSellLimit').classList.toggle('selected', isPending && pendingOrderType === 'SELL_LIMIT');
+  $('presetMarket').classList.toggle('selected', activePreset === 'MARKET');
+  $('presetBuyLimit').classList.toggle('selected', activePreset === 'BUY_LIMIT');
+  $('presetSellLimit').classList.toggle('selected', activePreset === 'SELL_LIMIT');
 }
+
+function clearPresetSelection() {
+  activePreset = null;
+  $('showEntry').checked = false;
+  $('showSL').checked = false;
+  $('showTP').checked = false;
+  $('entryWrap').style.opacity = '.65';
+  $('entryPrice').readOnly = true;
+  syncPresetButtons();
+  setLevelLines();
+  calcLot();
+  $('requestState').textContent = 'Đã bỏ chọn chế độ và bỏ tick SL/TP form mới.';
+}
+
 function handleLevelAdjusted() {
   const mode = $('orderMode').value;
   const entry = Number($('entryPrice').value);
@@ -1871,6 +1888,7 @@ function handleLevelAdjusted() {
     const nextType = sl > entry ? 'SELL_LIMIT' : 'BUY_LIMIT';
     if (nextType !== pendingOrderType) {
       pendingOrderType = nextType;
+      if (activePreset === 'BUY_LIMIT' || activePreset === 'SELL_LIMIT') activePreset = nextType;
       const gap = defaultGap(entry);
       if (nextType === 'SELL_LIMIT') {
         if (ref > 0 && entry <= ref) {
@@ -1897,6 +1915,12 @@ function handleLevelAdjusted() {
 }
 
 function activateLimitPreset(limitType) {
+  if (activePreset === limitType) {
+    clearPresetSelection();
+    return;
+  }
+  activePreset = limitType;
+  pendingOrderType = limitType === 'SELL_LIMIT' ? 'SELL_LIMIT' : 'BUY_LIMIT';
   $('orderMode').value = 'PENDING';
   $('showEntry').checked = true;
   $('showSL').checked = true;
@@ -1908,20 +1932,30 @@ function activateLimitPreset(limitType) {
   setLevelLines();
   calcLot();
 }
+
 function activateMarketPreset() {
+  if (activePreset === 'MARKET') {
+    clearPresetSelection();
+    return;
+  }
+  activePreset = 'MARKET';
   $('orderMode').value = 'MARKET';
   $('showEntry').checked = false;
+  $('showSL').checked = true;
+  $('showTP').checked = true;
   $('entryWrap').style.opacity = '.65';
   $('entryPrice').readOnly = true;
   if (latestMarketPrice > 0) {
     const base = Number(latestMarketPrice), gap = defaultGap(base);
     $('entryPrice').value = base.toFixed(mt5Digits);
-    if (autoDirection === 'BUY') {
-      $('slPrice').value = (base - gap).toFixed(mt5Digits);
-      $('tpPrice').value = (base + gap).toFixed(mt5Digits);
-    } else {
-      $('slPrice').value = (base + gap).toFixed(mt5Digits);
-      $('tpPrice').value = (base - gap).toFixed(mt5Digits);
+    if (!(Number($('slPrice').value) > 0) || !(Number($('tpPrice').value) > 0)) {
+      if (autoDirection === 'BUY') {
+        $('slPrice').value = (base - gap).toFixed(mt5Digits);
+        $('tpPrice').value = (base + gap).toFixed(mt5Digits);
+      } else {
+        $('slPrice').value = (base + gap).toFixed(mt5Digits);
+        $('tpPrice').value = (base - gap).toFixed(mt5Digits);
+      }
     }
   }
   syncPresetButtons();
@@ -2035,12 +2069,12 @@ async function load(forceNetwork = false) {
       const symbolChanged = lastLoadedSymbol !== symbol;
       const slVal = Number($('slPrice').value);
       const base = Number(bars[bars.length - 1].close), gap = defaultGap(base);
-      const slInvalidForMarket = $('orderMode').value === 'MARKET' && (!(slVal > 0) || (autoDirection === 'BUY' && slVal >= base) || (autoDirection === 'SELL' && slVal <= base));
+      const slInvalidForMarket = activePreset === 'MARKET' && $('orderMode').value === 'MARKET' && (!(slVal > 0) || (autoDirection === 'BUY' && slVal >= base) || (autoDirection === 'SELL' && slVal <= base));
       if (symbolChanged || slInvalidForMarket) {
         latestMarketPrice = base;
-        if ($('orderMode').value === 'PENDING') {
-          applyLimitDefaults(base, pendingOrderType);
-        } else {
+        if (activePreset === 'BUY_LIMIT' || activePreset === 'SELL_LIMIT') {
+          applyLimitDefaults(base, activePreset);
+        } else if (activePreset === 'MARKET') {
           $('entryPrice').value = base.toFixed(mt5Digits);
           if (autoDirection === 'BUY') {
             $('slPrice').value = (base - gap).toFixed(mt5Digits);
@@ -2053,8 +2087,6 @@ async function load(forceNetwork = false) {
         lastLoadedSymbol = symbol;
       }
       if ($('orderMode').value === 'MARKET') $('entryPrice').value = Number(bars[bars.length - 1].close).toFixed(mt5Digits);
-      // Khi đổi symbol/timeframe phải reset cả vùng thời gian lẫn thang giá.
-      // Không khôi phục oldRange của symbol trước (đặc biệt luồng cache -> network).
       const resetChartView = firstLoad || symbolChanged;
       if (resetChartView) {
         priceChart.priceScale('right').applyOptions({ autoScale: true });
@@ -2210,7 +2242,6 @@ function setTradePanelVisible(visible) {
   try { localStorage.setItem('chartTradePanelVisible', visible ? '1' : '0'); } catch (_) {}
   requestAnimationFrame(applyChartDimensions);
 }
-// Luôn thu gọn bảng lệnh khi tải trang; người dùng có thể chủ động mở lại.
 setTradePanelVisible(false);
 tradePanelToggle.addEventListener('click', () => {
   setTradePanelVisible(tradePanel.classList.contains('trade-panel-collapsed'));
@@ -2295,8 +2326,6 @@ $('statsDialog').addEventListener('click', e => { if (e.target === $('statsDialo
 
 function setLevelLines() {
   const mode = $('orderMode').value;
-  // Hai lớp loại trừ nhau: bật Vị thế tài khoản thì chỉ hiển thị mức giá lấy từ MT5;
-  // tắt Vị thế tài khoản mới hiển thị các mức giá đang nhập trong form.
   const showFormLevels = !realLayerVisible;
   for (const key of ['entry', 'sl', 'tp']) {
     const id = key === 'entry' ? 'entryPrice' : key === 'sl' ? 'slPrice' : 'tpPrice';
@@ -2424,6 +2453,9 @@ function calcLot() {
 function syncOrderModeFromEntry() {
   const pending = $('showEntry').checked;
   $('orderMode').value = pending ? 'PENDING' : 'MARKET';
+  if (activePreset !== null) {
+    activePreset = pending ? pendingOrderType : 'MARKET';
+  }
   $('entryWrap').style.opacity = pending ? '1' : '.65';
   $('entryPrice').readOnly = !pending;
   if (!pending && latestMarketPrice > 0) {
@@ -2451,7 +2483,11 @@ $('presetSellLimit').addEventListener('click', () => activateLimitPreset('SELL_L
   else { setLevelLines(); calcLot(); }
 }));
 $('orderMode').addEventListener('change', () => {
-  $('showEntry').checked = $('orderMode').value === 'PENDING';
+  const isPending = $('orderMode').value === 'PENDING';
+  activePreset = isPending ? pendingOrderType : 'MARKET';
+  $('showEntry').checked = isPending;
+  $('showSL').checked = true;
+  $('showTP').checked = true;
   syncOrderModeFromEntry();
 });
 $('showEntry').checked = false;
@@ -2572,12 +2608,14 @@ function setRsiHeight(height) {
   try { localStorage.setItem('chartRsiHeight', String(Math.round(next))); } catch (_) {}
 }
 function setLotHeight(height) {
-  const footer = lotResizeHandle.nextElementSibling, workspace = document.querySelector('.chart-workspace');
-  if (!footer || !workspace) return;
-  const max = Math.max(56, Math.floor(workspace.clientHeight * 0.45));
-  const next = Math.max(56, Math.min(max, height));
-  footer.style.setProperty('height', next + 'px', 'important');
-  footer.style.setProperty('flex', `0 0 ${next}px`, 'important');
+  const overlayBottom = document.querySelector('.chart-overlay-bottom');
+  const workspace = document.querySelector('.chart-workspace');
+  if (!overlayBottom || !workspace) return;
+  const max = Math.max(84, Math.floor(workspace.clientHeight * 0.72));
+  const next = Math.max(84, Math.min(max, height));
+  overlayBottom.style.setProperty('height', next + 'px', 'important');
+  overlayBottom.style.setProperty('flex', `0 0 ${next}px`, 'important');
+  overlayBottom.style.setProperty('--lot-panel-h', String(Math.round(next)));
   applyChartDimensions();
   try { localStorage.setItem('chartLotPanelHeight', String(Math.round(next))); } catch (_) {}
 }
@@ -2586,7 +2624,7 @@ try {
   const savedRsi = Number(localStorage.getItem('chartRsiHeight'));
   if (Number.isFinite(savedRsi) && savedRsi >= 0) setRsiHeight(savedRsi);
   const savedLot = Number(localStorage.getItem('chartLotPanelHeight'));
-  if (Number.isFinite(savedLot) && savedLot >= 56) setLotHeight(savedLot);
+  if (Number.isFinite(savedLot) && savedLot >= 84) setLotHeight(savedLot);
 } catch (_) {}
 
 function startResize(kind, e) {
@@ -2594,7 +2632,9 @@ function startResize(kind, e) {
   const handle = kind === 'rsi' ? rsiResizeHandle : lotResizeHandle;
   activeResize = kind;
   resizeStartY = e.clientY;
-  resizeStartHeight = kind === 'rsi' ? $('rsiChart').getBoundingClientRect().height : lotResizeHandle.nextElementSibling.getBoundingClientRect().height;
+  resizeStartHeight = kind === 'rsi'
+    ? $('rsiChart').getBoundingClientRect().height
+    : document.querySelector('.chart-overlay-bottom').getBoundingClientRect().height;
   try { handle.setPointerCapture(e.pointerId); } catch (_) {}
   document.body.style.setProperty('user-select', 'none');
   document.body.style.setProperty('-webkit-user-select', 'none');
