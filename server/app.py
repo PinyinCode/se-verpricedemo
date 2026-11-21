@@ -156,12 +156,13 @@ def init_db() -> None:
           symbol TEXT, direction TEXT, status TEXT NOT NULL DEFAULT 'pending',
           created_at TEXT NOT NULL, acked_at TEXT, ok INTEGER, message TEXT
         )""")
-        # Thêm cột kind (close|cancel) nếu chưa có
         cr_cols = {row[1] for row in conn.execute("PRAGMA table_info(close_requests)")}
         if "kind" not in cr_cols:
             conn.execute("ALTER TABLE close_requests ADD COLUMN kind TEXT NOT NULL DEFAULT 'close'")
         if "is_pending" not in cr_cols:
             conn.execute("ALTER TABLE close_requests ADD COLUMN is_pending INTEGER NOT NULL DEFAULT 0")
+        if "order_type" not in cr_cols:
+            conn.execute("ALTER TABLE close_requests ADD COLUMN order_type TEXT NOT NULL DEFAULT ''")
 
         conn.execute("""
         CREATE TABLE IF NOT EXISTS today_signals (
@@ -355,10 +356,11 @@ class ClosePositionIn(BaseModel):
     position_id: str | None = Field(default=None, max_length=64)
     symbol: str | None = Field(default=None, max_length=32)
     direction: Literal["BUY", "SELL"] | None = None
+    order_type: str | None = Field(default=None, max_length=32)
     volume: float | None = Field(default=None, ge=0)
     entry: float | None = Field(default=None, ge=0)
     source: str | None = Field(default=None, max_length=40)
-    is_pending: bool | None = None  # True = hủy pending, False/None = đóng position mở
+    is_pending: bool | None = None
 
     @field_validator("symbol")
     @classmethod
@@ -374,7 +376,7 @@ class CloseRequestAckIn(BaseModel):
     position_id: str = Field(default="", max_length=64)
     ok: bool
     message: str = Field(default="", max_length=500)
-    kind: Literal["close", "cancel"] = "close"   # EA báo lại loại
+    kind: Literal["close", "cancel"] = "close"
 
 
 class AckIn(BaseModel):
@@ -541,10 +543,7 @@ def create_signal(payload: SignalIn):
 
 @app.post("/api/chart/request", dependencies=[Depends(require_key)])
 def chart_request(payload: SignalIn):
-    """Queue a chart-originated paper request; this endpoint never executes broker orders.
-
-    Yêu cầu X-API-Key để tránh spam queue từ Internet.
-    """
+    """Queue a chart-originated paper request; this endpoint never executes broker orders."""
     if payload.requested_lot <= 0:
         raise HTTPException(status_code=422, detail="Thiếu lot đã tính từ Risk và khoảng Entry-SL")
     with db() as conn:
@@ -715,20 +714,49 @@ def update_paper_positions(payload: PaperPositionsIn):
     return {"ok": True, "open_positions": len(payload.positions), "updated_at": now}
 
 
-def _enqueue_close_position(payload: ClosePositionIn, kind: Literal["close", "cancel"]) -> dict:
-    """Queue a close (position mở) hoặc cancel (pending) request.
+def _find_matching_item(
+    conn: sqlite3.Connection,
+    table: str,
+    pos_id: str,
+    want_pending: int | None,
+    symbol: str | None,
+    direction: str | None,
+):
+    if pos_id:
+        if want_pending is None:
+            row = conn.execute(
+                f"SELECT * FROM {table} WHERE id=? OR ticket=?",
+                (pos_id, pos_id),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                f"SELECT * FROM {table} WHERE (id=? OR ticket=?) AND is_pending=?",
+                (pos_id, pos_id, want_pending),
+            ).fetchone()
+        if row:
+            return row
 
-    Auth đã được xử lý bởi Depends(optional_key) ở tầng route.
-    """
+    if symbol:
+        clauses = ["symbol=?"]
+        params: list = [symbol]
+        if want_pending is not None:
+            clauses.append("is_pending=?")
+            params.append(want_pending)
+        if direction:
+            clauses.append("direction=?")
+            params.append(direction)
+        sql = f"SELECT * FROM {table} WHERE " + " AND ".join(clauses) + " ORDER BY opened_at ASC LIMIT 1"
+        return conn.execute(sql, params).fetchone()
+    return None
+
+
+def _enqueue_close_position(payload: ClosePositionIn, kind: Literal["close", "cancel"]) -> dict:
+    """Queue a close (position mở) hoặc cancel (pending) cho cả paper và MT5."""
     ticket_str = str(payload.ticket).strip() if payload.ticket is not None else ""
     pos_id = (payload.position_id or payload.id or ticket_str or "").strip()
     if not pos_id and not payload.symbol:
-        raise HTTPException(status_code=422, detail="Thiếu thông tin vị thế cần đóng/hủy")
+        raise HTTPException(status_code=422, detail="Thiếu thông tin vị thế/lệnh chờ cần đóng/hủy")
 
-    # Xác định is_pending mong muốn
-    # - kind="cancel" -> chắc chắn pending
-    # - kind="close"  -> chắc chắn position mở
-    # - payload.is_pending (nếu có) override
     if payload.is_pending is not None:
         want_pending: int | None = 1 if payload.is_pending else 0
     elif kind == "cancel":
@@ -740,34 +768,10 @@ def _enqueue_close_position(payload: ClosePositionIn, kind: Literal["close", "ca
 
     now = utc_now()
     with db() as conn:
-        row = None
-
-        # 1) Match chính xác theo id/ticket + is_pending
-        if pos_id:
-            if want_pending is None:
-                row = conn.execute(
-                    "SELECT * FROM paper_positions WHERE id=? OR ticket=?",
-                    (pos_id, pos_id),
-                ).fetchone()
-            else:
-                row = conn.execute(
-                    "SELECT * FROM paper_positions WHERE (id=? OR ticket=?) AND is_pending=?",
-                    (pos_id, pos_id, want_pending),
-                ).fetchone()
-
-        # 2) Fallback theo symbol (+direction) + is_pending
-        if row is None and payload.symbol:
-            clauses = ["symbol=?"]
-            params: list = [payload.symbol]
-            if want_pending is not None:
-                clauses.append("is_pending=?")
-                params.append(want_pending)
-            if payload.direction:
-                clauses.append("direction=?")
-                params.append(payload.direction)
-            sql = "SELECT * FROM paper_positions WHERE " + " AND ".join(clauses) + \
-                  " ORDER BY opened_at ASC LIMIT 1"
-            row = conn.execute(sql, params).fetchone()
+        # Tìm trong paper_positions trước, sau đó tìm trong mt5_account_items
+        row = _find_matching_item(conn, "paper_positions", pos_id, want_pending, payload.symbol, payload.direction)
+        if row is None:
+            row = _find_matching_item(conn, "mt5_account_items", pos_id, want_pending, payload.symbol, payload.direction)
 
         resolved_id = row["id"] if row else pos_id
         resolved_ticket = (row["ticket"] if row and row["ticket"] else "") or ticket_str or resolved_id
@@ -775,13 +779,18 @@ def _enqueue_close_position(payload: ClosePositionIn, kind: Literal["close", "ca
         resolved_dir = row["direction"] if row else (payload.direction or "")
         resolved_pending = 1 if (row and row["is_pending"]) else (0 if row else int(want_pending or 0))
         resolved_kind = "cancel" if resolved_pending else kind
+        row_order_type = ""
+        if row and "order_type" in row.keys():
+            row_order_type = str(row["order_type"] or "")
+        resolved_order_type = (payload.order_type or row_order_type or (
+            ("BUY_LIMIT" if resolved_dir == "BUY" else "SELL_LIMIT") if resolved_pending else "MARKET"
+        )).strip().upper()
 
-        # Chống trùng request đang pending
         existing = conn.execute(
-            "SELECT request_id FROM close_requests WHERE status='pending' "
+            "SELECT request_id FROM close_requests WHERE status='pending' AND kind=? "
             "AND ((? != '' AND position_id=?) OR (? != '' AND ticket=?) "
             "OR (? != '' AND symbol=? AND (? = '' OR direction=?)))",
-            (resolved_id, resolved_id, resolved_ticket, resolved_ticket,
+            (resolved_kind, resolved_id, resolved_id, resolved_ticket, resolved_ticket,
              resolved_sym, resolved_sym, resolved_dir, resolved_dir),
         ).fetchone()
         if existing:
@@ -790,22 +799,23 @@ def _enqueue_close_position(payload: ClosePositionIn, kind: Literal["close", "ca
                 "request_id": existing["request_id"],
                 "status": "pending",
                 "kind": resolved_kind,
+                "order_type": resolved_order_type,
                 "message": "Đã có yêu cầu đang chờ xử lý",
             }
 
         request_id = secrets.token_hex(10)
         conn.execute(
-            "INSERT INTO close_requests(request_id,position_id,ticket,symbol,direction,status,created_at,kind,is_pending) "
-            "VALUES(?,?,?,?,?,'pending',?,?,?)",
+            "INSERT INTO close_requests(request_id,position_id,ticket,symbol,direction,status,created_at,kind,is_pending,order_type) "
+            "VALUES(?,?,?,?,?,'pending',?,?,?,?)",
             (request_id, resolved_id, resolved_ticket, resolved_sym, resolved_dir, now,
-             resolved_kind, resolved_pending),
+             resolved_kind, resolved_pending, resolved_order_type),
         )
         verb = "Hủy" if resolved_kind == "cancel" else "Đóng"
         conn.execute(
             "INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
             (
                 f"{resolved_kind}_requested",
-                f"{verb} {resolved_sym} {resolved_dir} ({resolved_id or resolved_ticket or request_id})",
+                f"{verb} {resolved_sym} {resolved_dir} {resolved_order_type} ({resolved_id or resolved_ticket or request_id})",
                 now,
             ),
         )
@@ -814,7 +824,8 @@ def _enqueue_close_position(payload: ClosePositionIn, kind: Literal["close", "ca
         "request_id": request_id,
         "status": "pending",
         "kind": resolved_kind,
-        "message": f"Đã gửi yêu cầu {verb.lower()} {resolved_sym} {resolved_dir}".strip(),
+        "order_type": resolved_order_type,
+        "message": f"Đã gửi yêu cầu {verb.lower()} {resolved_sym} {resolved_order_type}".strip(),
     }
 
 
@@ -826,7 +837,16 @@ def chart_close_position(payload: ClosePositionIn):
 
 @app.post("/api/chart/cancel", dependencies=[Depends(optional_key)])
 def chart_cancel_pending(payload: ClosePositionIn):
-    """Hủy lệnh chờ (pending limit)."""
+    """Hủy lệnh chờ (pending limit/stop của Paper hoặc MT5)."""
+    return _enqueue_close_position(payload, kind="cancel")
+
+
+@app.post("/api/orders/cancel", dependencies=[Depends(optional_key)])
+@app.post("/api/pending/cancel", dependencies=[Depends(optional_key)])
+@app.post("/api/mt5/orders/cancel", dependencies=[Depends(optional_key)])
+@app.post("/api/paper/cancel", dependencies=[Depends(optional_key)])
+def alias_cancel_pending(payload: ClosePositionIn):
+    """Alias các route hủy lệnh chờ để khớp với mọi client/EA."""
     return _enqueue_close_position(payload, kind="cancel")
 
 
@@ -836,8 +856,7 @@ def queue_close_position(payload: ClosePositionIn):
     return _enqueue_close_position(payload, kind="close")
 
 
-@app.get("/api/paper/close-requests", dependencies=[Depends(require_key)])
-def get_close_requests():
+def _fetch_pending_close_requests(kind_filter: str | None = None) -> list[dict]:
     now = time.time()
     cutoff = datetime.fromtimestamp(now - CLOSE_REQUEST_TTL, timezone.utc).isoformat()
     with db() as conn:
@@ -846,14 +865,37 @@ def get_close_requests():
             "WHERE status='pending' AND created_at < ?",
             (utc_now(), cutoff),
         )
-        rows = [dict(r) for r in conn.execute(
-            "SELECT request_id, position_id, ticket, symbol, direction, kind, is_pending "
-            "FROM close_requests WHERE status='pending' ORDER BY created_at ASC LIMIT 20"
-        ).fetchall()]
-    return {"ok": True, "close_requests": rows}
+        if kind_filter:
+            rows = [dict(r) for r in conn.execute(
+                "SELECT request_id, position_id, ticket, symbol, direction, kind, is_pending, order_type "
+                "FROM close_requests WHERE status='pending' AND kind=? ORDER BY created_at ASC LIMIT 20",
+                (kind_filter,),
+            ).fetchall()]
+        else:
+            rows = [dict(r) for r in conn.execute(
+                "SELECT request_id, position_id, ticket, symbol, direction, kind, is_pending, order_type "
+                "FROM close_requests WHERE status='pending' ORDER BY created_at ASC LIMIT 20"
+            ).fetchall()]
+    return rows
+
+
+@app.get("/api/paper/close-requests", dependencies=[Depends(require_key)])
+def get_close_requests():
+    return {"ok": True, "close_requests": _fetch_pending_close_requests()}
+
+
+@app.get("/api/mt5/close-requests", dependencies=[Depends(require_key)])
+def get_mt5_close_requests():
+    return {"ok": True, "close_requests": _fetch_pending_close_requests()}
+
+
+@app.get("/api/mt5/cancel-requests", dependencies=[Depends(require_key)])
+def get_mt5_cancel_requests():
+    return {"ok": True, "cancel_requests": _fetch_pending_close_requests("cancel")}
 
 
 @app.post("/api/paper/close-requests/ack", dependencies=[Depends(require_key)])
+@app.post("/api/mt5/close-requests/ack", dependencies=[Depends(require_key)])
 def ack_close_request(payload: CloseRequestAckIn):
     now = utc_now()
     with db() as conn:
@@ -867,15 +909,16 @@ def ack_close_request(payload: CloseRequestAckIn):
         pos_target = (payload.position_id or (req_row["position_id"] if req_row else "") or "").strip()
         ticket_target = ((req_row["ticket"] if req_row and req_row["ticket"] else "") or "").strip()
         if payload.ok:
-            if pos_target and ticket_target:
-                conn.execute(
-                    "DELETE FROM paper_positions WHERE id=? OR ticket=? OR id=? OR ticket=?",
-                    (pos_target, pos_target, ticket_target, ticket_target),
-                )
-            elif pos_target:
-                conn.execute("DELETE FROM paper_positions WHERE id=? OR ticket=?", (pos_target, pos_target))
-            elif ticket_target:
-                conn.execute("DELETE FROM paper_positions WHERE id=? OR ticket=?", (ticket_target, ticket_target))
+            for tbl in ("paper_positions", "mt5_account_items"):
+                if pos_target and ticket_target:
+                    conn.execute(
+                        f"DELETE FROM {tbl} WHERE id=? OR ticket=? OR id=? OR ticket=?",
+                        (pos_target, pos_target, ticket_target, ticket_target),
+                    )
+                elif pos_target:
+                    conn.execute(f"DELETE FROM {tbl} WHERE id=? OR ticket=?", (pos_target, pos_target))
+                elif ticket_target:
+                    conn.execute(f"DELETE FROM {tbl} WHERE id=? OR ticket=?", (ticket_target, ticket_target))
         conn.execute(
             "INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
             ("close_ack",
@@ -902,7 +945,6 @@ def record_paper_closed(payload: PaperClosedIn):
 
 
 def _stable_trade_id(item: RealTradeItemIn) -> str:
-    """Sinh ID ổn định cho trade (dùng hashlib thay vì hash() vì hash không stable giữa process)."""
     if item.id:
         return item.id
     if item.ticket is not None:
@@ -960,7 +1002,6 @@ def update_scans(payload: ScanUpdateIn):
 def update_today_signals(payload: TodaySignalsIn):
     now = utc_now()
     with db() as conn:
-        # Upsert theo signal_key thay vì DELETE ALL (an toàn hơn khi có nhiều nguồn)
         for item in payload.signals:
             key = "|".join((item.symbol, item.timeframe, item.direction,
                             item.divergence, item.signal_type, str(item.signal_time)))
