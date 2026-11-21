@@ -336,6 +336,11 @@ th{color:var(--muted);font-weight:600}
 .settings-fields{display:grid;gap:12px}
 .settings-fields label{display:grid;gap:5px;color:#aebdd0;font-size:11px}
 .settings-fields input,.settings-fields select{width:100%;padding:9px 10px}
+.api-key-settings{display:flex;gap:6px;align-items:center}
+.api-key-settings input{min-width:0;flex:1;font-family:ui-monospace,SFMono-Regular,monospace}
+.api-key-settings button{flex:0 0 auto}
+#apiKeyStatus.ok{color:var(--green)}
+#apiKeyStatus.err{color:var(--red)}
 
 .stats-dialog{width:min(1120px,calc(100vw - 20px));max-height:88dvh}
 .stats-body{padding:12px 16px 16px;overflow:auto;max-height:calc(88dvh - 58px)}
@@ -469,7 +474,6 @@ body.trade-fullscreen .chart-overlay-top .chart-pickers strong{white-space:nowra
 body.trade-fullscreen .chart-overlay-top .chart-pickers select{min-width:74px;padding:4px 5px;min-height:29px}
 body.trade-fullscreen .chart-overlay-top .chart-actions{display:flex;flex:0 0 auto;flex-wrap:nowrap;margin-left:auto;gap:3px}
 body.trade-fullscreen .chart-overlay-top .chart-actions button{min-width:30px;min-height:29px;padding:4px 6px;font-size:11px;white-space:nowrap}
-body.trade-fullscreen .chart-overlay-top .chart-actions #fullscreenToggle{width:30px;font-size:18px;line-height:1;padding:3px}
 body.trade-fullscreen .chart-overlay-top .status-strip{width:100%;padding:3px 8px;gap:10px;font-size:10px}
 
 body.trade-fullscreen .chart-overlay-bottom{
@@ -500,7 +504,6 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:10px}
   body.trade-fullscreen .chart-overlay-top .chart-pickers strong{display:none}
   body.trade-fullscreen .chart-overlay-top .chart-pickers select{min-width:68px}
   body.trade-fullscreen .chart-overlay-top .chart-actions button{min-width:27px;padding:4px;font-size:10px}
-  body.trade-fullscreen .chart-overlay-top .chart-actions #fullscreenToggle{min-width:29px;width:29px;font-size:18px}
   body.trade-fullscreen .chart-overlay-bottom .trade-footer{grid-template-columns:minmax(0,1fr) auto;gap:5px}
   body.trade-fullscreen .chart-overlay-bottom .request-state{display:none}
   body.trade-fullscreen .chart-overlay-bottom .trade-submit button{min-width:82px}
@@ -520,11 +523,6 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:10px}
 <header>
   <div><span class="brand">Forex AI · Chart</span> <span class="muted">/ AI OOP V8 MT5 feed</span></div>
   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-    <div class="api-key-box" id="apiKeyBox" title="Nhập API key để đặt lệnh. Lưu vào trình duyệt.">
-      <input id="apiKeyInput" type="password" placeholder="API key..." autocomplete="off" spellcheck="false">
-      <button id="apiKeyToggle" type="button" title="Hiện/ẩn key">👁</button>
-      <button id="apiKeySave" type="button" title="Lưu key">💾</button>
-    </div>
     <span class="tag">DEMO / PAPER ONLY</span>
   </div>
 </header>
@@ -564,8 +562,7 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:10px}
                 <button id="statsButton" type="button" aria-label="Thống kê" title="Thống kê tín hiệu và lịch sử giao dịch thật">▤</button>
                 <button id="fitChart" type="button" aria-label="Vừa khung" title="Vừa khung biểu đồ">⤢</button>
                 <button id="refresh" type="button" title="Làm mới dữ liệu">↻</button>
-                <button id="fullscreenToggle" type="button" aria-label="Toàn màn hình" title="Bật/tắt toàn màn hình">⛶</button>
-              </div>
+                        </div>
             </div>
             <div class="status-strip" id="telemetryBar">
               <span id="clockGMT7">--:--:--</span>
@@ -627,11 +624,19 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:10px}
 
 <dialog id="tradeSettingsDialog" class="positions-dialog trade-settings-dialog">
   <div class="positions-dialog-head">
-    <div><strong>CÀI ĐẶT GIAO DỊCH PAPER</strong><div class="small">Chế độ, Risk, Entry (Limit), SL và TP</div></div>
+    <div><strong>CÀI ĐẶT GIAO DỊCH PAPER</strong><div class="small">API key, chế độ, Risk, Entry (Limit), SL và TP</div></div>
     <button type="button" id="closeTradeSettings" aria-label="Đóng">✕</button>
   </div>
   <div class="positions-dialog-body">
     <div class="settings-fields">
+      <label>API key
+        <div class="api-key-settings">
+          <input id="apiKeyInput" type="password" placeholder="Nhập API key..." autocomplete="off" spellcheck="false">
+          <button id="apiKeyToggle" type="button" title="Hiện/ẩn API key">👁</button>
+          <button id="apiKeySave" type="button">Lưu</button>
+        </div>
+      </label>
+      <div id="apiKeyStatus" class="small" role="status">API key được lưu trong trình duyệt này.</div>
       <label>Chế độ
         <select id="orderMode">
           <option value="MARKET" selected>Market</option>
@@ -722,11 +727,15 @@ let chartApiKey = (() => {
 })();
 
 function refreshApiKeyBox() {
-  const box = $('apiKeyBox'), inp = $('apiKeyInput');
-  if (!box || !inp) return;
+  const inp = $('apiKeyInput');
+  if (!inp) return;
   if (document.activeElement !== inp) inp.value = chartApiKey;
-  box.classList.toggle('ok', !!chartApiKey);
-  box.classList.remove('err');
+  const status = $('apiKeyStatus');
+  if (status) {
+    status.textContent = chartApiKey ? 'API key đã được lưu (' + maskKey(chartApiKey) + ').' : 'Chưa lưu API key.';
+    status.classList.toggle('ok', !!chartApiKey);
+    status.classList.remove('err');
+  }
 }
 function saveApiKey(key) {
   chartApiKey = String(key || '').trim();
@@ -1129,7 +1138,7 @@ function formatOrderKind(o) {
 async function closePosition(posId, btn) {
   const idStr = String(posId ?? '').trim();
   if (!idStr) { $('positionsUpdated').textContent = 'Không tìm thấy ID/Ticket của vị thế để đóng.'; return; }
-  if (!chartApiKey) { $('positionsUpdated').textContent = 'Chưa nhập API key — hãy nhập ở header rồi thử lại.'; return; }
+  if (!chartApiKey) { $('positionsUpdated').textContent = 'Chưa nhập API key — mở Cài đặt để nhập.'; return; }
   const pos = chartOpenPositions.find(x => String(getPositionId(x)) === idStr);
   const label = pos ? (pos.symbol + ' ' + pos.direction + ' ' + pos.volume + ' lot') : ('#' + idStr);
   if (!window.confirm('Xác nhận đóng vị thế ' + label + '?')) return;
@@ -1154,7 +1163,7 @@ async function closePosition(posId, btn) {
 async function cancelPendingOrder(orderId, btn) {
   const idStr = String(orderId ?? '').trim();
   if (!idStr) { $('positionsUpdated').textContent = 'Không tìm thấy ID của lệnh chờ.'; return; }
-  if (!chartApiKey) { $('positionsUpdated').textContent = 'Chưa nhập API key — hãy nhập ở header rồi thử lại.'; return; }
+  if (!chartApiKey) { $('positionsUpdated').textContent = 'Chưa nhập API key — mở Cài đặt để nhập.'; return; }
   const ord = chartPendingOrders.find(x => String(getPendingId(x)) === idStr);
   if (!ord) { $('positionsUpdated').textContent = 'Không tìm thấy lệnh chờ trong danh sách đã đồng bộ.'; return; }
   if (ord.read_only) { $('positionsUpdated').textContent = 'Lệnh MT5 ngoài luồng PAPER chỉ được hiển thị, không thể hủy từ giao diện này.'; return; }
@@ -1263,7 +1272,7 @@ async function refreshChartPositions() {
   }
 }
 
-$('settingsButton').addEventListener('click', () => $('tradeSettingsDialog').showModal());
+$('settingsButton').addEventListener('click', () => { refreshApiKeyBox(); $('tradeSettingsDialog').showModal(); });
 $('closeTradeSettings').addEventListener('click', () => $('tradeSettingsDialog').close());
 $('tradeSettingsDialog').addEventListener('click', e => { if (e.target === $('tradeSettingsDialog')) $('tradeSettingsDialog').close(); });
 $('positionsButton').addEventListener('click', () => { refreshChartPositions(); $('positionsDialog').showModal(); });
@@ -1509,35 +1518,19 @@ const chartResizeObserver = new ResizeObserver(applyChartDimensions);
 chartResizeObserver.observe($('priceChart'));
 chartResizeObserver.observe($('rsiChart'));
 
-async function toggleTradeFullscreen() {
-  const on = !document.body.classList.contains('trade-fullscreen');
-  document.body.classList.toggle('trade-fullscreen', on);
-  $('fullscreenToggle').textContent = '⛶';
-  if (on && document.fullscreenEnabled && !document.fullscreenElement) { try { await document.documentElement.requestFullscreen(); } catch (_) {} }
-  else if (!on && document.fullscreenElement) { try { await document.exitFullscreen(); } catch (_) {} }
-  requestAnimationFrame(applyChartDimensions);
-}
-$('fullscreenToggle').addEventListener('click', toggleTradeFullscreen);
-document.addEventListener('fullscreenchange', () => {
-  if (!document.fullscreenElement && document.body.classList.contains('trade-fullscreen')) {
-    document.body.classList.remove('trade-fullscreen');
-    $('fullscreenToggle').textContent = '⛶';
-    requestAnimationFrame(applyChartDimensions);
-  }
-});
 document.addEventListener('keydown', e => {
   const tag = (e.target && e.target.tagName || '').toLowerCase();
   if (['input', 'textarea', 'select'].includes(tag) || e.target.isContentEditable) return;
-  if (e.key === 'Escape' && document.body.classList.contains('trade-fullscreen')) { toggleTradeFullscreen(); return; }
-  if (e.key.toLowerCase() === 'f') { e.preventDefault(); toggleTradeFullscreen(); }
   if (e.key.toLowerCase() === 'r') { e.preventDefault(); lastBarsSignature = ''; load(); }
   if (e.key === '0') { e.preventDefault(); priceChart.timeScale().fitContent(); priceChart.timeScale().applyOptions({ rightOffset: 10 }); }
 });
 
 async function sendPaper(direction) {
   if (!chartApiKey) {
-    $('requestState').textContent = 'Chưa nhập API key — nhập ở header (góc trên phải) rồi thử lại.';
-    $('apiKeyBox').classList.add('err');
+    $('requestState').textContent = 'Chưa nhập API key — mở Cài đặt để nhập.';
+    $('apiKeyStatus').textContent = 'Cần nhập API key trước khi gửi yêu cầu PAPER.';
+    $('apiKeyStatus').classList.add('err');
+    $('tradeSettingsDialog').showModal();
     $('apiKeyInput').focus();
     return;
   }
@@ -1561,10 +1554,10 @@ async function sendPaper(direction) {
       const d = await r.json();
       if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
       $('requestState').textContent = 'Đã đưa ' + limitLabel + ' vào hàng đợi PAPER · ID ' + d.signal_id + ' · chờ MT5 nhận';
-      $('apiKeyBox').classList.add('ok');
+      $('apiKeyStatus').textContent = 'API key hợp lệ.'; $('apiKeyStatus').classList.add('ok');
     } catch (err) {
       $('requestState').textContent = 'Không gửi được: ' + err.message;
-      if (String(err.message).toLowerCase().includes('key')) { $('apiKeyBox').classList.add('err'); $('apiKeyInput').focus(); }
+      if (String(err.message).toLowerCase().includes('key')) { $('apiKeyStatus').textContent = 'API key chưa được chấp nhận: ' + err.message; $('apiKeyStatus').classList.add('err'); $('tradeSettingsDialog').showModal(); $('apiKeyInput').focus(); }
     }
     return;
   }
@@ -1583,10 +1576,10 @@ async function sendPaper(direction) {
     const d = await r.json();
     if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
     $('requestState').textContent = 'Đã đưa ' + direction + ' vào hàng đợi PAPER · ID ' + d.signal_id + ' · chờ MT5 nhận';
-    $('apiKeyBox').classList.add('ok');
+    $('apiKeyStatus').textContent = 'API key hợp lệ.'; $('apiKeyStatus').classList.add('ok');
   } catch (err) {
     $('requestState').textContent = 'Không gửi được: ' + err.message;
-    if (String(err.message).toLowerCase().includes('key')) { $('apiKeyBox').classList.add('err'); $('apiKeyInput').focus(); }
+    if (String(err.message).toLowerCase().includes('key')) { $('apiKeyStatus').textContent = 'API key chưa được chấp nhận: ' + err.message; $('apiKeyStatus').classList.add('err'); $('tradeSettingsDialog').showModal(); $('apiKeyInput').focus(); }
   }
 }
 
@@ -1696,17 +1689,17 @@ refreshApiKeyBox();
 
 $('apiKeySave').addEventListener('click', () => {
   saveApiKey($('apiKeyInput').value);
-  $('requestState').textContent = 'Đã lưu API key (' + maskKey(chartApiKey) + ') · thử đặt lệnh để kiểm tra.';
+  $('requestState').textContent = 'Đã lưu API key (' + maskKey(chartApiKey) + ').';
 });
 $('apiKeyInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') {
     saveApiKey($('apiKeyInput').value);
     $('apiKeyInput').blur();
-    $('requestState').textContent = 'Đã lưu API key (' + maskKey(chartApiKey) + ') · thử đặt lệnh để kiểm tra.';
+    $('requestState').textContent = 'Đã lưu API key (' + maskKey(chartApiKey) + ').';
   }
 });
 $('apiKeyInput').addEventListener('input', () => {
-  $('apiKeyBox').classList.remove('err');
+  $('apiKeyStatus').classList.remove('err');
 });
 $('apiKeyToggle').addEventListener('click', () => {
   const inp = $('apiKeyInput');
