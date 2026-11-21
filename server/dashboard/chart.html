@@ -341,7 +341,6 @@ th{color:var(--muted);font-weight:600}
 .stats-section td,.stats-section th{font-size:11px;padding:8px}
 .stats-updated{padding-top:10px;text-align:right}
 
-/* Responsive layouts (non-fullscreen) */
 @media (orientation:portrait){
   main{padding:8px}
   .layout{grid-template-columns:minmax(0,1fr);gap:8px}
@@ -377,7 +376,6 @@ th{color:var(--muted);font-weight:600}
   .stats-section .positions-table-wrap{max-height:230px}
 }
 
-/* Fullscreen chart-first overlay mode */
 body.trade-fullscreen{overflow:hidden}
 body.trade-fullscreen header,
 body.trade-fullscreen .layout>aside,
@@ -830,7 +828,7 @@ for (const key of ['entry', 'sl', 'tp']) {
     if (p == null || !Number.isFinite(p)) return;
     const id = key === 'entry' ? 'entryPrice' : key === 'sl' ? 'slPrice' : 'tpPrice';
     $(id).value = Number(p).toFixed(mt5Digits);
-    handleLevelAdjusted(key);
+    handleLevelAdjusted();
   });
   const stop = () => { line.dataset.drag = '0'; };
   line.addEventListener('pointerup', stop);
@@ -1055,8 +1053,10 @@ async function load() {
 
     if (bars.length) {
       const symbolChanged = lastLoadedSymbol !== symbol;
-      if (symbolChanged) {
-        const base = Number(bars[bars.length - 1].close), gap = defaultGap(base);
+      const slVal = Number($('slPrice').value);
+      const base = Number(bars[bars.length - 1].close), gap = defaultGap(base);
+      const slInvalidForMarket = $('orderMode').value === 'MARKET' && (!(slVal > 0) || (autoDirection === 'BUY' && slVal >= base) || (autoDirection === 'SELL' && slVal <= base));
+      if (symbolChanged || slInvalidForMarket) {
         latestMarketPrice = base;
         if ($('orderMode').value === 'PENDING') {
           applyLimitDefaults(base, pendingOrderType);
