@@ -95,11 +95,18 @@ button.locked{background:rgba(251,191,36,.14);border-color:var(--amber);color:#f
 
 .chart-workspace{display:flex;flex-direction:column;min-height:0}
 .chart-head{min-height:50px;padding:7px 10px;background:linear-gradient(180deg,#142239,#101b2c)}
-.chart-pickers,.chart-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+.chart-pickers,.chart-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap;min-width:0}
 .chart-pickers strong{font-size:14px;margin-right:4px;letter-spacing:.2px}
 .chart-pickers select{min-width:80px;padding:6px 9px}
 .chart-actions{margin-left:auto}
 .chart-actions button{padding:6px 9px}
+/* Keep every chart toolbar button visible; progressively compress controls on narrow screens. */
+body.trade-fullscreen .chart-head{flex-wrap:nowrap;min-width:0;gap:5px}
+body.trade-fullscreen .chart-pickers{flex:0 1 auto;flex-wrap:nowrap;gap:4px}
+body.trade-fullscreen .chart-actions{flex:0 0 auto;flex-wrap:nowrap;gap:clamp(2px,.55vw,6px)}
+body.trade-fullscreen .chart-actions button{flex:0 0 auto;min-width:25px;padding:5px 6px;font-size:clamp(9px,2.3vw,12px)}
+body.trade-fullscreen .chart-actions #tradePanelToggle{min-width:0;padding-inline:7px;white-space:nowrap}
+body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clamp(48px,8vw,76px);padding-inline:4px}
 .chart-actions #feedState{max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 .status-strip{
@@ -702,13 +709,24 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:10px}
 
 @media(max-width:600px){
   body.trade-fullscreen .chart-overlay-top{top:5px;left:5px;right:5px}
+  body.trade-fullscreen .chart-head{gap:3px;padding:4px 5px}
   body.trade-fullscreen .chart-overlay-top .chart-pickers strong{display:none}
-  body.trade-fullscreen .chart-overlay-top .chart-pickers select{min-width:68px}
-  body.trade-fullscreen .chart-overlay-top .chart-actions button{min-width:27px;padding:4px;font-size:10px}
+  body.trade-fullscreen .chart-overlay-top .chart-pickers select{width:clamp(45px,15vw,62px);min-width:0;padding:4px 2px;font-size:10px}
+  body.trade-fullscreen .chart-overlay-top .chart-actions{gap:2px}
+  body.trade-fullscreen .chart-overlay-top .chart-actions button{min-width:22px;padding:3px 4px;font-size:10px}
+  body.trade-fullscreen .chart-overlay-top .chart-actions #tradePanelToggle{padding-inline:4px;font-size:9px}
+  body.trade-fullscreen .chart-overlay-top .chart-actions #feedState{display:none}
   body.trade-fullscreen .chart-overlay-bottom .trade-footer{grid-template-columns:minmax(0,1fr) auto;gap:5px}
   body.trade-fullscreen .chart-overlay-bottom .request-state{display:none}
   body.trade-fullscreen .chart-overlay-bottom .trade-submit button{min-width:82px}
   body.trade-fullscreen .chart-stage #rsiChart{height:58px}
+}
+@media(max-width:360px){
+  body.trade-fullscreen .chart-head{gap:2px;padding-inline:3px}
+  body.trade-fullscreen .chart-overlay-top .chart-pickers select{width:43px;font-size:9px}
+  body.trade-fullscreen .chart-overlay-top .chart-actions{gap:1px}
+  body.trade-fullscreen .chart-overlay-top .chart-actions button{min-width:20px;padding:2px;font-size:9px}
+  body.trade-fullscreen .chart-overlay-top .chart-actions #tradePanelToggle{padding-inline:3px;font-size:8px}
 }
 @media(orientation:landscape) and (max-height:520px){
   body.trade-fullscreen .chart-overlay-top{top:4px;left:6px;right:6px}
@@ -886,6 +904,7 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:10px}
       <label>Risk ($)<input id="riskMoney" type="number" min="0.01" step="1" value="25"></label>
       <label id="entryWrap">Entry (Limit)<input id="entryPrice" type="number" step="any"></label>
       <label>SL<input id="slPrice" type="number" step="any"></label>
+      <div id="modalLotStatus" class="small" role="status">Chưa đủ điều kiện tính lot.</div>
       <label>TP<input id="tpPrice" type="number" step="any"></label>
     </div>
     <p class="small">BUY LIMIT: Entry &lt; giá hiện tại và SL &lt; Entry. SELL LIMIT: Entry &gt; giá hiện tại và SL &gt; Entry.</p>
@@ -2328,6 +2347,15 @@ function volumeDigits(step) {
   return 8;
 }
 
+function setLotStatus(message, isError = true) {
+  $('lotResult').textContent = message;
+  const modalStatus = $('modalLotStatus');
+  if (modalStatus) {
+    modalStatus.textContent = message;
+    modalStatus.style.color = isError ? 'var(--red)' : 'var(--green)';
+  }
+}
+
 function calcLot() {
   const risk = Number($('riskMoney').value);
   const sl = Number($('slPrice').value);
@@ -2338,26 +2366,54 @@ function calcLot() {
   updateDirectionFromSL();
   setLevelLines();
 
-  if (!(risk > 0 && e > 0 && sl > 0 && mt5TickSize > 0 && mt5TickValue > 0 && mt5VolumeMin > 0 && mt5VolumeMax >= mt5VolumeMin && mt5VolumeStep > 0 && e !== sl)) {
-    $('lotResult').textContent = 'Thiếu Risk, Entry, SL hoặc thông số Tick/Min-Max-Step lot từ MT5.';
+  if (!$('showSL').checked) {
+    setLotStatus('SL đang tắt — bật mục SL để tính lot.');
+    return null;
+  }
+  if (!(sl > 0) || !Number.isFinite(sl)) {
+    setLotStatus('Chưa nhập SL hợp lệ — nhập mức SL để tính lot.');
+    return null;
+  }
+  if (!(e > 0) || !Number.isFinite(e)) {
+    setLotStatus('Chưa có Entry/giá hiện tại hợp lệ — chưa thể tính lot.');
+    return null;
+  }
+  if (e === sl) {
+    setLotStatus('SL không hợp lệ — SL phải khác Entry/giá hiện tại.');
+    return null;
+  }
+  if ($('orderMode').value === 'PENDING') {
+    const invalidBuy = pendingOrderType === 'BUY_LIMIT' && sl >= e;
+    const invalidSell = pendingOrderType === 'SELL_LIMIT' && sl <= e;
+    if (invalidBuy || invalidSell) {
+      setLotStatus(pendingOrderType + ' có SL không hợp lệ — kiểm tra lại vị trí SL so với Entry.');
+      return null;
+    }
+  }
+  if (!(risk > 0 && mt5TickSize > 0 && mt5TickValue > 0 && mt5VolumeMin > 0 && mt5VolumeMax >= mt5VolumeMin && mt5VolumeStep > 0)) {
+    setLotStatus('Thiếu Risk hợp lệ hoặc thông số Tick/Min-Max-Step lot từ MT5.');
     return null;
   }
   const distance = Math.abs(e - sl);
   const lossPerLot = (distance / mt5TickSize) * mt5TickValue;
   if (!(lossPerLot > 0 && Number.isFinite(lossPerLot))) {
-    $('lotResult').textContent = 'Không tính được mức lỗ cho 1 lot.';
+    setLotStatus('Không tính được mức lỗ cho 1 lot — kiểm tra thông số giá và Tick từ MT5.');
     return null;
   }
   const rawLot = risk / lossPerLot, lotDigits = volumeDigits(mt5VolumeStep);
   let lot = Math.floor((rawLot + 1e-10) / mt5VolumeStep) * mt5VolumeStep;
   lot = Number(Math.min(lot, mt5VolumeMax).toFixed(lotDigits));
   if (lot < mt5VolumeMin) {
-    $('lotResult').innerHTML = '<div class="lot-value">KHÔNG ĐỦ LOT TỐI THIỂU</div><div>Lot tính ra ' + rawLot.toFixed(6) + ' thấp hơn min ' + mt5VolumeMin + '. Tăng Risk hoặc thu hẹp SL.</div>';
+    const message = 'Không đủ lot tối thiểu — lot tính ra ' + rawLot.toFixed(6) + ', thấp hơn min ' + mt5VolumeMin + '.';
+    $('lotResult').innerHTML = '<div class="lot-value">KHÔNG ĐỦ LOT TỐI THIỂU</div><div>' + message + '</div>';
+    if ($('modalLotStatus')) { $('modalLotStatus').textContent = message; $('modalLotStatus').style.color = 'var(--red)'; }
     return null;
   }
   const actualRisk = lot * lossPerLot;
   const modeTag = $('orderMode').value === 'PENDING' ? ' · ' + pendingOrderType.replace('_', ' ') : '';
+  const lotSummary = lot.toFixed(lotDigits) + ' LOT · Risk thực tế ' + actualRisk.toFixed(2) + ' / ' + risk.toFixed(2) + modeTag;
   $('lotResult').innerHTML = '<div class="lot-value">' + lot.toFixed(lotDigits) + ' LOT</div><div>|Entry - SL|: ' + distance.toFixed(mt5Digits) + ' · Lỗ/lot: ' + lossPerLot.toFixed(2) + ' · Risk: ' + actualRisk.toFixed(2) + ' / ' + risk.toFixed(2) + modeTag + '</div>';
+  if ($('modalLotStatus')) { $('modalLotStatus').textContent = lotSummary; $('modalLotStatus').style.color = 'var(--green)'; }
   return { risk, e, s: sl, lot, actualRisk };
 }
 
