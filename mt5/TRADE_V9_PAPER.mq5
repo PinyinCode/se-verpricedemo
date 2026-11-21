@@ -6,7 +6,7 @@
 //| Pending orders: LIMIT ONLY (BUY_LIMIT / SELL_LIMIT), no Stop     |
 //+------------------------------------------------------------------+
 #property strict
-#property version "2.12"
+#property version "2.13"
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
@@ -148,9 +148,19 @@ string JsonValue(string json,string key)
    if(p>=StringLen(json)) return "";
    if(StringGetCharacter(json,p)=='"')
    {
-      int e=StringFind(json,"\"",p+1);
-      if(e<0) return "";
-      return StringSubstr(json,p+1,e-p-1);
+      string out="";
+      for(int i=p+1; i<StringLen(json); i++)
+      {
+         ushort ch=StringGetCharacter(json,i);
+         if(ch=='\\' && i+1<StringLen(json))
+         {
+            ushort nx=StringGetCharacter(json,i+1);
+            if(nx=='"' || nx=='\\') { out+=ShortToString(nx); i++; continue; }
+         }
+         if(ch=='"') return out;
+         out+=ShortToString(ch);
+      }
+      return "";
    }
    int e=p;
    while(e<StringLen(json) && StringGetCharacter(json,e)!=',' &&
@@ -255,7 +265,7 @@ bool Request(string method,string path,string body,string &response,int &status)
 //--- Heartbeat ------------------------------------------------------
 void SendHeartbeat()
 {
-   int    openCount = UsePaperSimulation ? ArraySize(trades) : CountRealPositions();
+   int    openCount = UsePaperSimulation ? ArraySize(trades) : CountRealExposure();
    string mode      = UsePaperSimulation ? "PAPER" : "REAL";
    string body=StringFormat(
       "{\"component\":\"TRADE-V9-%s\",\"status\":\"online\",\"details\":\"%s consumer active; positions=%d\"}",
@@ -298,13 +308,33 @@ ENUM_ORDER_TYPE_FILLING PickFilling(string symbol)
    return ORDER_FILLING_RETURN;
 }
 
-//--- Đếm position -----------------------------------------------
+//--- Đếm position & pending limit --------------------------------
 int CountRealPositions()
 {
    int n=0;
    for(int i=PositionsTotal()-1;i>=0;i--)
       if(posInfo.SelectByIndex(i) && posInfo.Magic()==MagicNumber) n++;
    return n;
+}
+
+int CountRealLimitOrders()
+{
+   int n=0;
+   for(int i=OrdersTotal()-1;i>=0;i--)
+   {
+      ulong tk=OrderGetTicket(i);
+      if(tk==0) continue;
+      if(OrderGetInteger(ORDER_MAGIC)!=MagicNumber) continue;
+      ENUM_ORDER_TYPE ot=(ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+      if(ot==ORDER_TYPE_BUY_LIMIT || ot==ORDER_TYPE_SELL_LIMIT)
+         n++;
+   }
+   return n;
+}
+
+int CountRealExposure()
+{
+   return CountRealPositions() + CountRealLimitOrders();
 }
 
 //--- Ánh xạ ticket <-> signal -------------------------------------
@@ -361,7 +391,8 @@ void PruneClosedRealPositions()
    if(UsePaperSimulation) return;
    for(int i=ArraySize(realTicketIds)-1;i>=0;i--)
    {
-      if(!PositionSelectByTicket(StringToInteger(realTicketIds[i])))
+      ulong tk=(ulong)StringToInteger(realTicketIds[i]);
+      if(!PositionSelectByTicket(tk) && !OrderSelect(tk))
          ForgetRealPosition(realTicketIds[i]);
    }
 }
@@ -537,7 +568,7 @@ void SendPaperClosed(int i,string outcome,double realized)
       "\"outcome\":\"%s\",\"closed_at\":%.0f}",
       JsonEscape(trades[i].id),JsonEscape(trades[i].symbol),JsonEscape(trades[i].timeframe),trades[i].direction,
       trades[i].entry,trades[i].sl,trades[i].tp,trades[i].volume,trades[i].riskMoney,
-      realized,(double)trades[i].opened,JsonEscape(outcome),(double)TimeCurrent());
+      NormalizeDouble(realized,2),(double)trades[i].opened,JsonEscape(outcome),(double)TimeCurrent());
    string response; int status;
    if(!Request("POST","/api/paper/closed",body,response,status))
       Print("[V9] Closed history sync failed HTTP=",status," response=",response);
@@ -664,29 +695,60 @@ bool CloseRealPositionById(string targetId,string symbol,string &detailOut)
          }
       }
    }
-   if(targetTicket==0)
-   {
-      detailOut="Position not found";
-      return false;
-   }
 
    trade.SetExpertMagicNumber(MagicNumber);
    trade.SetDeviationInPoints(SlippagePoints);
-   trade.SetTypeFilling(PickFilling(posInfo.Symbol()));
    trade.SetAsyncMode(false);
 
-   if(!trade.PositionClose(targetTicket))
+   if(targetTicket!=0)
    {
-      detailOut=StringFormat("PositionClose failed retcode=%d (%s)",
-         trade.ResultRetcode(),trade.ResultRetcodeDescription());
-      Print("[REAL CLOSE FAIL] ticket=",targetTicket," ",detailOut);
-      return false;
+      if(!PositionSelectByTicket(targetTicket))
+      {
+         detailOut="Position disappeared";
+         return false;
+      }
+      trade.SetTypeFilling(PickFilling(PositionGetString(POSITION_SYMBOL)));
+      if(!trade.PositionClose(targetTicket))
+      {
+         detailOut=StringFormat("PositionClose failed retcode=%d (%s)",
+            trade.ResultRetcode(),trade.ResultRetcodeDescription());
+         Print("[REAL CLOSE FAIL] ticket=",targetTicket," ",detailOut);
+         return false;
+      }
+      ForgetRealPosition(IntegerToString((long)targetTicket));
+      detailOut=StringFormat("Closed ticket=%I64u",targetTicket);
+      Print("[REAL CLOSE] ",detailOut);
+      return true;
    }
 
-   ForgetRealPosition(IntegerToString((long)targetTicket));
-   detailOut=StringFormat("Closed ticket=%I64u",targetTicket);
-   Print("[REAL CLOSE] ",detailOut);
-   return true;
+   // Nếu không có position mở thì kiểm tra pending limit order tương ứng để hủy
+   for(int i=OrdersTotal()-1;i>=0;i--)
+   {
+      ulong ordTicket=OrderGetTicket(i);
+      if(ordTicket==0) continue;
+      if(OrderGetInteger(ORDER_MAGIC)!=MagicNumber) continue;
+      ENUM_ORDER_TYPE ot=(ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+      if(ot!=ORDER_TYPE_BUY_LIMIT && ot!=ORDER_TYPE_SELL_LIMIT) continue;
+      string ordSym=OrderGetString(ORDER_SYMBOL);
+      string tkStr=IntegerToString((long)ordTicket);
+      int rIdx=FindTicketIndex(tkStr);
+      string sigId=(rIdx>=0) ? realSignalIds[rIdx] : "";
+      bool matchId=(targetId!="" && (tkStr==targetId || (sigId!="" && sigId==targetId)));
+      bool matchSym=(symbol!="" && ordSym==symbol);
+      if(matchId || matchSym)
+      {
+         if(trade.OrderDelete(ordTicket))
+         {
+            ForgetRealPosition(tkStr);
+            detailOut=StringFormat("Deleted pending limit ticket=%I64u",ordTicket);
+            Print("[REAL CANCEL LIMIT] ",detailOut);
+            return true;
+         }
+      }
+   }
+
+   detailOut="Position not found";
+   return false;
 }
 
 void ExecuteCloseCommand(string cmdJson)
@@ -810,7 +872,7 @@ void PollServer()
      Print("[V9 REJECT] Invalid TP geometry signal=",id);
      Ack(id,"REJECTED","Invalid TP geometry"); return; }
 
-   int openCount = UsePaperSimulation ? ArraySize(trades) : CountRealPositions();
+   int openCount = UsePaperSimulation ? ArraySize(trades) : CountRealExposure();
    if(openCount>=MaxOpenPaperTrades)
    { Print("[V9 REJECT] Max positions reached signal=",id," open=",openCount);
      Ack(id,"REJECTED","Max positions reached"); return; }
@@ -844,7 +906,7 @@ void SendPaperPositions()
             "\"risk\":%.2f,\"profit\":%.2f,\"opened_at\":%.0f}",
             JsonEscape(trades[i].id),JsonEscape(symbol),JsonEscape(trades[i].timeframe),trades[i].direction,
             trades[i].entry,trades[i].sl,trades[i].tp,trades[i].volume,
-            trades[i].riskMoney,profit,(double)trades[i].opened);
+            trades[i].riskMoney,NormalizeDouble(profit,2),(double)trades[i].opened);
       }
    }
    else
@@ -872,7 +934,7 @@ void SendPaperPositions()
             JsonEscape(positionId), JsonEscape(posInfo.Symbol()), JsonEscape(tfValue),
             (posInfo.PositionType()==POSITION_TYPE_BUY?"BUY":"SELL"),
             posInfo.PriceOpen(), posInfo.StopLoss(), posInfo.TakeProfit(),
-            posInfo.Volume(), riskMoney, profit, (double)posInfo.Time());
+            posInfo.Volume(), riskMoney, NormalizeDouble(profit,2), (double)posInfo.Time());
       }
    }
    body+="]}";
@@ -919,7 +981,7 @@ void PublishRealClosedDeals()
       if(tradesJson != "") tradesJson += ",";
       tradesJson += StringFormat(
          "{\"id\":\"v9-%I64u\",\"ticket\":\"%I64u\",\"symbol\":\"%s\",\"timeframe\":\"MT5\",\"direction\":\"%s\",\"entry\":%.8f,\"sl\":0,\"tp\":0,\"volume\":%.4f,\"profit\":%.2f,\"outcome\":\"CLOSED\",\"opened_at\":0,\"closed_at\":%I64d}",
-         dealTicket, dealTicket, JsonEscape(sym), dir, price, vol, profit, closedAt
+         dealTicket, dealTicket, JsonEscape(sym), dir, price, vol, NormalizeDouble(profit,2), closedAt
       );
       count++;
    }
