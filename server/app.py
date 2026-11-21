@@ -212,6 +212,17 @@ def init_db() -> None:
           time1 INTEGER NOT NULL DEFAULT 0, time2 INTEGER NOT NULL DEFAULT 0,
           updated_at TEXT NOT NULL
         )""")
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS symbol_commissions (
+          account_id TEXT NOT NULL, symbol TEXT NOT NULL,
+          commission_per_lot REAL NOT NULL,
+          swap_long REAL NOT NULL DEFAULT 0, swap_short REAL NOT NULL DEFAULT 0,
+          contract_size REAL NOT NULL DEFAULT 0, tick_value REAL NOT NULL DEFAULT 0,
+          point_size REAL NOT NULL DEFAULT 0,
+          source_updated_at INTEGER NOT NULL DEFAULT 0,
+          received_at TEXT NOT NULL,
+          PRIMARY KEY(account_id, symbol)
+        )""")
 
 
 @asynccontextmanager
@@ -517,6 +528,26 @@ class CandleBatchIn(BaseModel):
 
 class TodaySignalsIn(BaseModel):
     signals: list[TodaySignalItem] = Field(default_factory=list, max_length=200)
+
+class CommissionItemIn(BaseModel):
+    symbol: str = Field(min_length=3, max_length=32)
+    commission_per_lot: float = Field(ge=0, le=1000000)
+    swap_long: float = Field(default=0, ge=-1000000, le=1000000)
+    swap_short: float = Field(default=0, ge=-1000000, le=1000000)
+    contract_size: float = Field(default=0, ge=0, le=1000000000)
+    tick_value: float = Field(default=0, ge=0, le=1000000)
+    point_size: float = Field(default=0, gt=0, le=1000000)
+    source_updated_at: int = Field(default=0, ge=0)
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_commission_symbol(cls, value: str) -> str:
+        return value.strip().upper()
+
+
+class CommissionBatchIn(BaseModel):
+    account_id: str = Field(min_length=1, max_length=32)
+    items: list[CommissionItemIn] = Field(min_length=1, max_length=200)
 
 
 # ============ Routes ============
@@ -1198,6 +1229,30 @@ def update_candles(payload: CandleBatchIn):
         )
     return {"ok": True, "symbol": payload.symbol, "timeframe": payload.timeframe,
             "received": len(rows), "updated_at": now}
+
+
+@app.post("/api/mt5/commissions", dependencies=[Depends(require_key)])
+def update_commissions(payload: CommissionBatchIn):
+    received = utc_now()
+    rows = [
+        (payload.account_id, item.symbol, item.commission_per_lot,
+         item.swap_long, item.swap_short, item.contract_size,
+         item.tick_value, item.point_size, item.source_updated_at, received)
+        for item in payload.items
+    ]
+    with db() as conn:
+        conn.executemany(
+            "INSERT INTO symbol_commissions(account_id,symbol,commission_per_lot,swap_long,swap_short,"
+            "contract_size,tick_value,point_size,source_updated_at,received_at) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(account_id,symbol) DO UPDATE SET "
+            "commission_per_lot=excluded.commission_per_lot,swap_long=excluded.swap_long,"
+            "swap_short=excluded.swap_short,contract_size=excluded.contract_size,"
+            "tick_value=excluded.tick_value,point_size=excluded.point_size,"
+            "source_updated_at=excluded.source_updated_at,received_at=excluded.received_at",
+            rows,
+        )
+    return {"ok": True, "account_id": payload.account_id,
+            "received": len(rows), "received_at": received}
 
 
 @app.get("/api/chart/data")
