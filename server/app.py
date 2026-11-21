@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Forex AI bridge API. Demo/paper-trading only; no broker order execution."""
+"""Forex AI bridge API. MT5 real-order only; no paper simulation."""
 from __future__ import annotations
 
 import hashlib
@@ -25,12 +25,12 @@ DB_PATH = Path(os.getenv("FOREX_DB_PATH", str(BASE_DIR / "forex_demo.db")))
 API_KEY = os.getenv("FOREX_API_KEY", "").strip()
 STALE_SECONDS = int(os.getenv("SIGNAL_STALE_SECONDS", "300"))
 CLOSE_REQUEST_TTL = int(os.getenv("CLOSE_REQUEST_TTL_SECONDS", "45"))
+SLTP_REQUEST_TTL = int(os.getenv("SLTP_REQUEST_TTL_SECONDS", "60"))
 
 _db_lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
-# Bộ nhớ tạm: id -> timestamp ack gần nhất. Item bị "xóa mềm" 10 giây.
 _recently_acked: dict[str, float] = {}
-_ACK_COOLDOWN = 10.0  # giây
+_ACK_COOLDOWN = 10.0
 
 
 def utc_now() -> str:
@@ -119,19 +119,6 @@ def init_db() -> None:
                 conn.execute(sql)
 
         conn.execute("""
-        CREATE TABLE IF NOT EXISTS paper_positions (
-          id TEXT PRIMARY KEY, ticket TEXT, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
-          direction TEXT NOT NULL, entry REAL NOT NULL, sl REAL NOT NULL, tp REAL NOT NULL,
-          volume REAL NOT NULL, risk REAL NOT NULL, profit REAL NOT NULL,
-          opened_at REAL NOT NULL, updated_at TEXT NOT NULL
-        )""")
-        pos_cols = {row[1] for row in conn.execute("PRAGMA table_info(paper_positions)")}
-        if "ticket" not in pos_cols:
-            conn.execute("ALTER TABLE paper_positions ADD COLUMN ticket TEXT")
-        if "is_pending" not in pos_cols:
-            conn.execute("ALTER TABLE paper_positions ADD COLUMN is_pending INTEGER NOT NULL DEFAULT 0")
-
-        conn.execute("""
         CREATE TABLE IF NOT EXISTS mt5_account_items (
           id TEXT PRIMARY KEY, ticket TEXT, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
           direction TEXT NOT NULL, entry REAL NOT NULL, sl REAL NOT NULL, tp REAL NOT NULL,
@@ -139,13 +126,6 @@ def init_db() -> None:
           is_pending INTEGER NOT NULL DEFAULT 0, order_type TEXT NOT NULL DEFAULT '',
           magic INTEGER NOT NULL DEFAULT 0, comment TEXT NOT NULL DEFAULT '',
           source TEXT NOT NULL DEFAULT 'MT5_EXTERNAL', updated_at TEXT NOT NULL
-        )""")
-        conn.execute("""
-        CREATE TABLE IF NOT EXISTS paper_history (
-          id TEXT PRIMARY KEY, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
-          direction TEXT NOT NULL, entry REAL NOT NULL, sl REAL NOT NULL, tp REAL NOT NULL,
-          volume REAL NOT NULL, risk REAL NOT NULL, profit REAL NOT NULL,
-          outcome TEXT NOT NULL, opened_at REAL NOT NULL, closed_at REAL NOT NULL
         )""")
         conn.execute("""
         CREATE TABLE IF NOT EXISTS real_history (
@@ -169,6 +149,15 @@ def init_db() -> None:
             conn.execute("ALTER TABLE close_requests ADD COLUMN order_type TEXT NOT NULL DEFAULT ''")
 
         conn.execute("""
+        CREATE TABLE IF NOT EXISTS sltp_requests (
+          request_id TEXT PRIMARY KEY, ticket TEXT NOT NULL, symbol TEXT,
+          old_sl REAL NOT NULL DEFAULT 0, old_tp REAL NOT NULL DEFAULT 0,
+          new_sl REAL NOT NULL DEFAULT 0, new_tp REAL NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'pending',
+          created_at TEXT NOT NULL, acked_at TEXT, ok INTEGER, message TEXT
+        )""")
+
+        conn.execute("""
         CREATE TABLE IF NOT EXISTS today_signals (
           signal_key TEXT PRIMARY KEY, symbol TEXT NOT NULL, timeframe TEXT NOT NULL,
           direction TEXT NOT NULL, divergence TEXT NOT NULL, signal_type TEXT NOT NULL,
@@ -177,11 +166,6 @@ def init_db() -> None:
           time1 INTEGER NOT NULL DEFAULT 0, time2 INTEGER NOT NULL DEFAULT 0,
           updated_at TEXT NOT NULL
         )""")
-        today_cols = {row[1] for row in conn.execute("PRAGMA table_info(today_signals)")}
-        if "time1" not in today_cols:
-            conn.execute("ALTER TABLE today_signals ADD COLUMN time1 INTEGER NOT NULL DEFAULT 0")
-        if "time2" not in today_cols:
-            conn.execute("ALTER TABLE today_signals ADD COLUMN time2 INTEGER NOT NULL DEFAULT 0")
 
 
 @asynccontextmanager
@@ -198,13 +182,12 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(
-    title="Forex AI Demo Server",
-    version="0.2.0",
-    description="Signal analysis and MT5 demo bridge. No live order execution.",
+    title="Forex AI Server",
+    version="0.3.0",
+    description="Signal analysis and MT5 real-order bridge.",
     lifespan=lifespan,
 )
 
-# Cho phép frontend tĩnh trên GitHub Pages gọi API. Có thể ghi đè bằng FRONTEND_ORIGINS.
 _frontend_origins = [x.strip() for x in os.getenv(
     "FRONTEND_ORIGINS", "https://pinyincode.github.io,http://localhost:8000,http://127.0.0.1:8000"
 ).split(",") if x.strip()]
@@ -219,13 +202,6 @@ app.mount("/static", StaticFiles(directory=str(BASE_DIR / "dashboard")), name="s
 
 
 def require_key(x_api_key: str | None = Header(default=None)) -> None:
-    if not API_KEY:
-        raise HTTPException(status_code=503, detail="Server chưa cấu hình FOREX_API_KEY")
-    if not x_api_key or not secrets.compare_digest(x_api_key, API_KEY):
-        raise HTTPException(status_code=401, detail="API key không hợp lệ")
-
-
-def optional_key(x_api_key: str | None = Header(default=None)) -> None:
     if not API_KEY:
         raise HTTPException(status_code=503, detail="Server chưa cấu hình FOREX_API_KEY")
     if not x_api_key or not secrets.compare_digest(x_api_key, API_KEY):
@@ -281,26 +257,6 @@ class SignalIn(BaseModel):
         return self
 
 
-class PaperPositionIn(BaseModel):
-    id: str = Field(min_length=1, max_length=64)
-    ticket: str | int | None = None
-    symbol: str = Field(min_length=3, max_length=32)
-    timeframe: str = Field(default="—", min_length=1, max_length=16)
-    direction: Literal["BUY", "SELL"]
-    entry: float = Field(gt=0)
-    sl: float = Field(ge=0)
-    tp: float = Field(ge=0)
-    volume: float = Field(gt=0)
-    risk: float = Field(default=0, ge=0)
-    profit: float
-    opened_at: float = Field(default=0, ge=0)
-    is_pending: bool = Field(default=False)
-
-
-class PaperPositionsIn(BaseModel):
-    positions: list[PaperPositionIn] = Field(default_factory=list, max_length=100)
-
-
 class Mt5AccountItemIn(BaseModel):
     id: str = Field(min_length=1, max_length=64)
     ticket: str | int | None = None
@@ -322,11 +278,6 @@ class Mt5AccountItemIn(BaseModel):
 
 class Mt5AccountSnapshotIn(BaseModel):
     items: list[Mt5AccountItemIn] = Field(default_factory=list, max_length=500)
-
-
-class PaperClosedIn(PaperPositionIn):
-    outcome: Literal["PAPER_TP", "PAPER_SL", "MANUAL_CLOSE"]
-    closed_at: float = Field(gt=0)
 
 
 class RealTradeItemIn(BaseModel):
@@ -394,9 +345,33 @@ class CloseRequestAckIn(BaseModel):
     kind: Literal["close", "cancel"] = "close"
 
 
+class ModifySltpIn(BaseModel):
+    ticket: str | int
+    symbol: str | None = Field(default=None, max_length=32)
+    old_sl: float = Field(default=0, ge=0)
+    old_tp: float = Field(default=0, ge=0)
+    new_sl: float = Field(default=0, ge=0)
+    new_tp: float = Field(default=0, ge=0)
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_sltp_symbol(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip().upper()
+        return cleaned or None
+
+
+class SltpRequestAckIn(BaseModel):
+    request_id: str = Field(min_length=1, max_length=64)
+    ticket: str = Field(default="", max_length=64)
+    ok: bool
+    message: str = Field(default="", max_length=500)
+
+
 class AckIn(BaseModel):
     signal_id: str
-    status: Literal["SIMULATED", "REJECTED", "ERROR"]
+    status: Literal["PLACED", "REJECTED", "ERROR"]
     message: str = Field(default="", max_length=500)
 
 
@@ -492,9 +467,9 @@ def health():
         elapsed_ms = round((time.perf_counter() - t0) * 1000, 1)
         return {
             "status": "ok",
-            "service": "forex-ai-demo",
+            "service": "forex-ai",
             "database": "ok",
-            "mode": "DEMO_ONLY",
+            "mode": "REAL_ONLY",
             "latency_ms": elapsed_ms,
             "time": utc_now(),
         }
@@ -556,8 +531,8 @@ def create_signal(payload: SignalIn):
         return _insert_signal(conn, payload, payload.source)
 
 
-@app.post("/api/chart/request", dependencies=[Depends(require_key)])
-def chart_request(payload: SignalIn):
+@app.post("/api/chart/order", dependencies=[Depends(require_key)])
+def chart_order(payload: SignalIn):
     if payload.requested_lot <= 0:
         raise HTTPException(status_code=422, detail="Thiếu lot đã tính từ Risk và khoảng Entry-SL")
     with db() as conn:
@@ -566,7 +541,7 @@ def chart_request(payload: SignalIn):
 
 
 @app.get("/api/mt5/next", dependencies=[Depends(require_key)])
-def next_signal(consumer: str = Query(default="mt5-demo", min_length=2, max_length=40)):
+def next_signal(consumer: str = Query(default="mt5", min_length=2, max_length=40)):
     now = time.time()
     with db() as conn:
         conn.execute(
@@ -575,7 +550,7 @@ def next_signal(consumer: str = Query(default="mt5-demo", min_length=2, max_leng
             (datetime.fromtimestamp(now - 45, timezone.utc).isoformat(),),
         )
         row = conn.execute(
-            "SELECT * FROM signals WHERE status='pending' AND source!='web-chart' ORDER BY created_at LIMIT 1"
+            "SELECT * FROM signals WHERE status='pending' ORDER BY created_at LIMIT 1"
         ).fetchone()
         if row is None:
             return {"ok": True, "signal": None}
@@ -590,53 +565,6 @@ def next_signal(consumer: str = Query(default="mt5-demo", min_length=2, max_leng
         result = dict(row)
         result.update(status="claimed", claimed_by=consumer)
         return {"ok": True, "signal": result}
-
-
-@app.get("/api/chart/next", dependencies=[Depends(require_key)])
-def next_chart_request():
-    now = time.time()
-    with db() as conn:
-        conn.execute(
-            "UPDATE signals SET status='pending',claimed_by=NULL,claimed_at=NULL "
-            "WHERE source='web-chart' AND status='claimed' AND claimed_at < ?",
-            (datetime.fromtimestamp(now - 45, timezone.utc).isoformat(),),
-        )
-        row = conn.execute(
-            "SELECT * FROM signals WHERE source='web-chart' AND status='pending' "
-            "ORDER BY created_at LIMIT 1"
-        ).fetchone()
-        if row is None:
-            return {"ok": True, "signal": None}
-        age = (datetime.now(timezone.utc) - datetime.fromisoformat(row["created_at"])).total_seconds()
-        if age > STALE_SECONDS:
-            conn.execute("UPDATE signals SET status='expired' WHERE id=?", (row["id"],))
-            return {"ok": True, "signal": None}
-        consumer = "trade-v9-paper-chart"
-        conn.execute(
-            "UPDATE signals SET status='claimed',claimed_by=?,claimed_at=? "
-            "WHERE id=? AND status='pending'",
-            (consumer, utc_now(), row["id"]),
-        )
-        result = dict(row)
-        result.update(status="claimed", claimed_by=consumer)
-        return {"ok": True, "signal": result}
-
-
-@app.post("/api/chart/ack", dependencies=[Depends(require_key)])
-def acknowledge_chart_request(payload: AckIn):
-    now = utc_now()
-    with db() as conn:
-        cur = conn.execute(
-            "UPDATE signals SET status='completed',ack_at=?,ack_status=?,ack_message=? "
-            "WHERE id=? AND status='claimed' AND source='web-chart' "
-            "AND claimed_by='trade-v9-paper-chart'",
-            (now, payload.status, payload.message, payload.signal_id),
-        )
-        if cur.rowcount != 1:
-            raise HTTPException(status_code=404, detail="Không tìm thấy yêu cầu chart PAPER đang được nhận")
-        conn.execute("INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
-                     ("chart_paper_ack", f"{payload.signal_id}: {payload.status} {payload.message}", now))
-    return {"ok": True}
 
 
 @app.post("/api/mt5/ack", dependencies=[Depends(require_key)])
@@ -656,7 +584,6 @@ def acknowledge(payload: AckIn):
 
 
 def _cleanup_recently_acked():
-    """Xóa các id đã hết thời gian cooldown."""
     now = time.time()
     expired = [k for k, t in _recently_acked.items() if now - t > _ACK_COOLDOWN]
     for k in expired:
@@ -670,7 +597,6 @@ def update_mt5_account_snapshot(payload: Mt5AccountSnapshotIn):
     with db() as conn:
         conn.execute("DELETE FROM mt5_account_items")
         if payload.items:
-            # Lọc bỏ những item vừa bị ack đóng/hủy trong 10s qua
             filtered = [
                 item for item in payload.items
                 if str(item.id) not in _recently_acked
@@ -711,45 +637,6 @@ def update_mt5_account_snapshot(payload: Mt5AccountSnapshotIn):
     return {"ok": True, "items": len(payload.items), "updated_at": now}
 
 
-@app.post("/api/paper/positions", dependencies=[Depends(require_key)])
-def update_paper_positions(payload: PaperPositionsIn):
-    now = utc_now()
-    _cleanup_recently_acked()
-    with db() as conn:
-        conn.execute("DELETE FROM paper_positions")
-        if payload.positions:
-            filtered = [
-                p for p in payload.positions
-                if str(p.id) not in _recently_acked
-                and (str(p.ticket) if p.ticket is not None else "") not in _recently_acked
-            ]
-            if filtered:
-                conn.executemany(
-                    "INSERT INTO paper_positions(id,ticket,symbol,timeframe,direction,entry,sl,tp,volume,risk,profit,opened_at,updated_at,is_pending) "
-                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                    [
-                        (
-                            p.id,
-                            str(p.ticket).strip() if p.ticket is not None else p.id,
-                            p.symbol.upper(),
-                            p.timeframe,
-                            p.direction,
-                            p.entry,
-                            p.sl,
-                            p.tp,
-                            p.volume,
-                            p.risk,
-                            p.profit,
-                            p.opened_at,
-                            now,
-                            1 if p.is_pending else 0,
-                        )
-                        for p in filtered
-                    ],
-                )
-    return {"ok": True, "open_positions": len(payload.positions), "updated_at": now}
-
-
 def _find_matching_item(
     conn: sqlite3.Connection,
     table: str,
@@ -758,6 +645,7 @@ def _find_matching_item(
     symbol: str | None,
     direction: str | None,
 ):
+    """Chỉ fallback sang symbol khi pos_id rỗng. Tránh đóng nhầm lệnh."""
     if pos_id:
         if want_pending is None:
             row = conn.execute(
@@ -769,8 +657,7 @@ def _find_matching_item(
                 f"SELECT * FROM {table} WHERE (id=? OR ticket=?) AND is_pending=?",
                 (pos_id, pos_id, want_pending),
             ).fetchone()
-        if row:
-            return row
+        return row
 
     if symbol:
         clauses = ["symbol=?"]
@@ -796,27 +683,22 @@ def _enqueue_close_position(payload: ClosePositionIn, kind: Literal["close", "ca
         want_pending: int | None = 1 if payload.is_pending else 0
     elif kind == "cancel":
         want_pending = 1
-    elif kind == "close":
-        want_pending = 0
     else:
-        want_pending = None
+        want_pending = 0
 
     now = utc_now()
     with db() as conn:
-        row = _find_matching_item(conn, "paper_positions", pos_id, want_pending, payload.symbol, payload.direction)
+        row = _find_matching_item(conn, "mt5_account_items", pos_id, want_pending, payload.symbol, payload.direction)
         if row is None:
-            row = _find_matching_item(conn, "mt5_account_items", pos_id, want_pending, payload.symbol, payload.direction)
+            raise HTTPException(status_code=404, detail="Không tìm thấy vị thế/lệnh chờ trên MT5")
 
-        resolved_id = row["id"] if row else pos_id
-        resolved_ticket = (row["ticket"] if row and row["ticket"] else "") or ticket_str or resolved_id
-        resolved_sym = row["symbol"] if row else (payload.symbol or "")
-        resolved_dir = row["direction"] if row else (payload.direction or "")
-        resolved_pending = 1 if (row and row["is_pending"]) else (0 if row else int(want_pending or 0))
+        resolved_id = row["id"]
+        resolved_ticket = (row["ticket"] if row["ticket"] else "") or ticket_str or resolved_id
+        resolved_sym = row["symbol"]
+        resolved_dir = row["direction"]
+        resolved_pending = 1 if row["is_pending"] else 0
         resolved_kind = "cancel" if resolved_pending else kind
-        row_order_type = ""
-        if row and "order_type" in row.keys():
-            row_order_type = str(row["order_type"] or "")
-        resolved_order_type = (payload.order_type or row_order_type or (
+        resolved_order_type = (payload.order_type or row["order_type"] or (
             ("BUY_LIMIT" if resolved_dir == "BUY" else "SELL_LIMIT") if resolved_pending else "MARKET"
         )).strip().upper()
 
@@ -863,30 +745,17 @@ def _enqueue_close_position(payload: ClosePositionIn, kind: Literal["close", "ca
     }
 
 
-@app.post("/api/chart/close", dependencies=[Depends(optional_key)])
+@app.post("/api/chart/close", dependencies=[Depends(require_key)])
 def chart_close_position(payload: ClosePositionIn):
     return _enqueue_close_position(payload, kind="close")
 
 
-@app.post("/api/chart/cancel", dependencies=[Depends(optional_key)])
+@app.post("/api/chart/cancel", dependencies=[Depends(require_key)])
 def chart_cancel_pending(payload: ClosePositionIn):
     return _enqueue_close_position(payload, kind="cancel")
 
 
-@app.post("/api/orders/cancel", dependencies=[Depends(optional_key)])
-@app.post("/api/pending/cancel", dependencies=[Depends(optional_key)])
-@app.post("/api/mt5/orders/cancel", dependencies=[Depends(optional_key)])
-@app.post("/api/paper/cancel", dependencies=[Depends(optional_key)])
-def alias_cancel_pending(payload: ClosePositionIn):
-    return _enqueue_close_position(payload, kind="cancel")
-
-
-@app.post("/api/paper/positions/close", dependencies=[Depends(optional_key)])
-def queue_close_position(payload: ClosePositionIn):
-    return _enqueue_close_position(payload, kind="close")
-
-
-def _fetch_pending_close_requests(kind_filter: str | None = None) -> list[dict]:
+def _fetch_pending_close_requests() -> list[dict]:
     now = time.time()
     cutoff = datetime.fromtimestamp(now - CLOSE_REQUEST_TTL, timezone.utc).isoformat()
     with db() as conn:
@@ -895,36 +764,17 @@ def _fetch_pending_close_requests(kind_filter: str | None = None) -> list[dict]:
             "WHERE status='pending' AND created_at < ?",
             (utc_now(), cutoff),
         )
-        if kind_filter:
-            rows = [dict(r) for r in conn.execute(
-                "SELECT request_id, position_id, ticket, symbol, direction, kind, is_pending, order_type "
-                "FROM close_requests WHERE status='pending' AND kind=? ORDER BY created_at ASC LIMIT 20",
-                (kind_filter,),
-            ).fetchall()]
-        else:
-            rows = [dict(r) for r in conn.execute(
-                "SELECT request_id, position_id, ticket, symbol, direction, kind, is_pending, order_type "
-                "FROM close_requests WHERE status='pending' ORDER BY created_at ASC LIMIT 20"
-            ).fetchall()]
-    return rows
+        return [dict(r) for r in conn.execute(
+            "SELECT request_id, position_id, ticket, symbol, direction, kind, is_pending, order_type "
+            "FROM close_requests WHERE status='pending' ORDER BY created_at ASC LIMIT 20"
+        ).fetchall()]
 
 
-@app.get("/api/paper/close-requests", dependencies=[Depends(require_key)])
+@app.get("/api/mt5/close-requests", dependencies=[Depends(require_key)])
 def get_close_requests():
     return {"ok": True, "close_requests": _fetch_pending_close_requests()}
 
 
-@app.get("/api/mt5/close-requests", dependencies=[Depends(require_key)])
-def get_mt5_close_requests():
-    return {"ok": True, "close_requests": _fetch_pending_close_requests()}
-
-
-@app.get("/api/mt5/cancel-requests", dependencies=[Depends(require_key)])
-def get_mt5_cancel_requests():
-    return {"ok": True, "cancel_requests": _fetch_pending_close_requests("cancel")}
-
-
-@app.post("/api/paper/close-requests/ack", dependencies=[Depends(require_key)])
 @app.post("/api/mt5/close-requests/ack", dependencies=[Depends(require_key)])
 def ack_close_request(payload: CloseRequestAckIn):
     now = utc_now()
@@ -932,6 +782,8 @@ def ack_close_request(payload: CloseRequestAckIn):
         req_row = conn.execute(
             "SELECT * FROM close_requests WHERE request_id=?", (payload.request_id,)
         ).fetchone()
+        if req_row is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy close request")
         conn.execute(
             "UPDATE close_requests SET status='acked',acked_at=?,ok=?,message=? WHERE request_id=?",
             (now, 1 if payload.ok else 0, payload.message, payload.request_id),
@@ -939,23 +791,20 @@ def ack_close_request(payload: CloseRequestAckIn):
         pos_target = (payload.position_id or (req_row["position_id"] if req_row else "") or "").strip()
         ticket_target = ((req_row["ticket"] if req_row and req_row["ticket"] else "") or "").strip()
         if payload.ok:
-            # Đánh dấu 10 giây để server bỏ qua nếu EA sync lại item đó
             expire = time.time() + _ACK_COOLDOWN
             if pos_target:
                 _recently_acked[pos_target] = expire
             if ticket_target:
                 _recently_acked[ticket_target] = expire
-            # Xóa item khỏi bảng hiển thị
-            for tbl in ("paper_positions", "mt5_account_items"):
-                if pos_target and ticket_target:
-                    conn.execute(
-                        f"DELETE FROM {tbl} WHERE id=? OR ticket=? OR id=? OR ticket=?",
-                        (pos_target, pos_target, ticket_target, ticket_target),
-                    )
-                elif pos_target:
-                    conn.execute(f"DELETE FROM {tbl} WHERE id=? OR ticket=?", (pos_target, pos_target))
-                elif ticket_target:
-                    conn.execute(f"DELETE FROM {tbl} WHERE id=? OR ticket=?", (ticket_target, ticket_target))
+            if pos_target and ticket_target:
+                conn.execute(
+                    "DELETE FROM mt5_account_items WHERE id=? OR ticket=? OR id=? OR ticket=?",
+                    (pos_target, pos_target, ticket_target, ticket_target),
+                )
+            elif pos_target:
+                conn.execute("DELETE FROM mt5_account_items WHERE id=? OR ticket=?", (pos_target, pos_target))
+            elif ticket_target:
+                conn.execute("DELETE FROM mt5_account_items WHERE id=? OR ticket=?", (ticket_target, ticket_target))
         conn.execute(
             "INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
             ("close_ack",
@@ -965,19 +814,97 @@ def ack_close_request(payload: CloseRequestAckIn):
     return {"ok": True}
 
 
-@app.post("/api/paper/closed", dependencies=[Depends(require_key)])
-def record_paper_closed(payload: PaperClosedIn):
+@app.post("/api/mt5/modify-sltp", dependencies=[Depends(require_key)])
+def modify_sltp(payload: ModifySltpIn):
+    ticket_str = str(payload.ticket).strip()
+    if not ticket_str:
+        raise HTTPException(status_code=422, detail="Thiếu ticket")
+    if payload.new_sl <= 0 and payload.new_tp <= 0:
+        raise HTTPException(status_code=422, detail="Cần ít nhất SL hoặc TP mới")
+    now = utc_now()
     with db() as conn:
-        conn.execute("DELETE FROM paper_positions WHERE id=?", (payload.id,))
+        row = conn.execute(
+            "SELECT * FROM mt5_account_items WHERE (id=? OR ticket=?) AND is_pending=0",
+            (ticket_str, ticket_str),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy vị thế đang mở với ticket này")
+        sym = row["symbol"]
+        entry = float(row["entry"])
+        direction = row["direction"]
+        # Kiểm tra hình học SL/TP mới
+        if payload.new_sl > 0:
+            if direction == "BUY" and payload.new_sl >= entry:
+                raise HTTPException(status_code=422, detail="SL BUY phải < Entry")
+            if direction == "SELL" and payload.new_sl <= entry:
+                raise HTTPException(status_code=422, detail="SL SELL phải > Entry")
+        if payload.new_tp > 0:
+            if direction == "BUY" and payload.new_tp <= entry:
+                raise HTTPException(status_code=422, detail="TP BUY phải > Entry")
+            if direction == "SELL" and payload.new_tp >= entry:
+                raise HTTPException(status_code=422, detail="TP SELL phải < Entry")
+
+        existing = conn.execute(
+            "SELECT request_id FROM sltp_requests WHERE status='pending' AND ticket=?",
+            (ticket_str,),
+        ).fetchone()
+        if existing:
+            conn.execute(
+                "UPDATE sltp_requests SET new_sl=?, new_tp=?, created_at=? WHERE request_id=?",
+                (payload.new_sl, payload.new_tp, now, existing["request_id"]),
+            )
+            request_id = existing["request_id"]
+        else:
+            request_id = secrets.token_hex(10)
+            conn.execute(
+                "INSERT INTO sltp_requests(request_id,ticket,symbol,old_sl,old_tp,new_sl,new_tp,status,created_at) "
+                "VALUES(?,?,?,?,?,?,?,'pending',?)",
+                (request_id, ticket_str, sym, payload.old_sl, payload.old_tp,
+                 payload.new_sl, payload.new_tp, now),
+            )
         conn.execute(
-            "INSERT OR REPLACE INTO paper_history(id,symbol,timeframe,direction,entry,sl,tp,volume,risk,profit,outcome,opened_at,closed_at) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (payload.id, payload.symbol.upper(), payload.timeframe, payload.direction,
-             payload.entry, payload.sl, payload.tp, payload.volume, payload.risk,
-             payload.profit, payload.outcome, payload.opened_at, payload.closed_at),
+            "INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
+            ("sltp_requested",
+             f"ticket={ticket_str} {sym} SL {payload.old_sl}->{payload.new_sl} TP {payload.old_tp}->{payload.new_tp}",
+             now),
         )
-        conn.execute("INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
-                     ("paper_closed", f"{payload.symbol} {payload.direction} {payload.outcome} P/L={payload.profit:.2f}", utc_now()))
+    return {"ok": True, "request_id": request_id, "status": "pending", "ticket": ticket_str}
+
+
+@app.get("/api/mt5/sltp-requests", dependencies=[Depends(require_key)])
+def get_sltp_requests():
+    now = time.time()
+    cutoff = datetime.fromtimestamp(now - SLTP_REQUEST_TTL, timezone.utc).isoformat()
+    with db() as conn:
+        conn.execute(
+            "UPDATE sltp_requests SET status='expired',acked_at=?,message='Hết hạn chờ MT5' "
+            "WHERE status='pending' AND created_at < ?",
+            (utc_now(), cutoff),
+        )
+        rows = [dict(r) for r in conn.execute(
+            "SELECT request_id, ticket, symbol, old_sl, old_tp, new_sl, new_tp "
+            "FROM sltp_requests WHERE status='pending' ORDER BY created_at ASC LIMIT 20"
+        ).fetchall()]
+    return {"ok": True, "sltp_requests": rows}
+
+
+@app.post("/api/mt5/sltp-requests/ack", dependencies=[Depends(require_key)])
+def ack_sltp_request(payload: SltpRequestAckIn):
+    now = utc_now()
+    with db() as conn:
+        req_row = conn.execute(
+            "SELECT * FROM sltp_requests WHERE request_id=?", (payload.request_id,)
+        ).fetchone()
+        if req_row is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy SLTP request")
+        conn.execute(
+            "UPDATE sltp_requests SET status='acked',acked_at=?,ok=?,message=? WHERE request_id=?",
+            (now, 1 if payload.ok else 0, payload.message, payload.request_id),
+        )
+        conn.execute(
+            "INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
+            ("sltp_ack", f"{payload.request_id} ticket={payload.ticket}: ok={payload.ok} {payload.message}".strip(), now),
+        )
     return {"ok": True}
 
 
@@ -1111,7 +1038,7 @@ def chart_data(
         "volume_min": 0, "volume_max": 0, "volume_step": 0,
     }
     return {
-        "mode": "DEMO_ONLY",
+        "mode": "REAL_ONLY",
         "symbol": symbol,
         "timeframe": timeframe,
         **meta,
@@ -1128,15 +1055,6 @@ def dashboard_data():
         signals = [dict(r) for r in conn.execute(
             "SELECT id,symbol,timeframe,direction,order_type,entry,sl,tp,score,source,status,created_at,ack_status,ack_message "
             "FROM signals ORDER BY created_at DESC LIMIT 100").fetchall()]
-        all_paper_orders = [dict(r) for r in conn.execute(
-            "SELECT id,ticket,symbol,timeframe,direction,entry,sl,tp,volume,risk,profit,opened_at,updated_at,is_pending "
-            "FROM paper_positions ORDER BY opened_at DESC").fetchall()]
-        paper_positions = [p for p in all_paper_orders if not p["is_pending"]]
-        paper_pending_orders = [
-            {**p, "order_type": "BUY_LIMIT" if p["direction"] == "BUY" else "SELL_LIMIT",
-             "status": "Đang chờ khớp"}
-            for p in all_paper_orders if p["is_pending"]
-        ]
         mt5_account_items = [dict(r) for r in conn.execute(
             "SELECT id,ticket,symbol,timeframe,direction,entry,sl,tp,volume,profit,opened_at,"
             "is_pending,order_type,magic,comment,source,updated_at "
@@ -1154,9 +1072,6 @@ def dashboard_data():
             "SELECT updated_at FROM heartbeats WHERE component='mt5-account-snapshot'"
         ).fetchone()
         mt5_snapshot_updated_at = snapshot_state["updated_at"] if snapshot_state else None
-        paper_history = [dict(r) for r in conn.execute(
-            "SELECT id,symbol,timeframe,direction,entry,sl,tp,volume,risk,profit,outcome,opened_at,closed_at "
-            "FROM paper_history ORDER BY closed_at DESC LIMIT 50").fetchall()]
         real_history = [dict(r) for r in conn.execute(
             "SELECT id,ticket,symbol,timeframe,direction,entry,sl,tp,volume,profit,outcome,opened_at,closed_at "
             "FROM real_history ORDER BY closed_at DESC LIMIT 100").fetchall()]
@@ -1173,7 +1088,7 @@ def dashboard_data():
         counts = {r["status"]: r["n"] for r in conn.execute(
             "SELECT status,COUNT(*) AS n FROM signals WHERE status!='completed' GROUP BY status").fetchall()}
         counts["completed"] = conn.execute(
-            "SELECT COUNT(*) FROM signals WHERE status='completed' AND ack_status='SIMULATED'"
+            "SELECT COUNT(*) FROM signals WHERE status='completed' AND ack_status='PLACED'"
         ).fetchone()[0]
         counts["rejected"] = conn.execute(
             "SELECT COUNT(*) FROM signals WHERE status='completed' AND ack_status='REJECTED'"
@@ -1203,17 +1118,12 @@ def dashboard_data():
             "SELECT symbol,timeframe,direction,divergence,signal_type,signal_time,price1,price2,rsi1,rsi2,time1,time2 "
             "FROM today_signals ORDER BY signal_time DESC LIMIT 200").fetchall()]
     return {
-        "mode": "DEMO_ONLY",
+        "mode": "REAL_ONLY",
         "signals": signals,
         "today_signals": today_signals,
-        "paper_positions": paper_positions,
-        "open_positions": paper_positions,
-        "paper_pending_orders": paper_pending_orders,
-        "pending_orders": paper_pending_orders + mt5_pending_orders,
         "mt5_positions": mt5_positions,
         "mt5_pending_orders": mt5_pending_orders,
         "mt5_snapshot_updated_at": mt5_snapshot_updated_at,
-        "paper_history": paper_history,
         "real_history": real_history,
         "mt5_history": real_history,
         "heartbeats": heartbeats,
