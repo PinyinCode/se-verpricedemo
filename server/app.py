@@ -215,16 +215,25 @@ class SignalIn(BaseModel):
                 raise ValueError("BUY_LIMIT chỉ áp dụng cho hướng BUY")
             if self.sl >= self.entry:
                 raise ValueError("BUY_LIMIT yêu cầu SL < Entry")
+            if self.tp > 0 and self.tp <= self.entry:
+                raise ValueError("BUY_LIMIT yêu cầu TP > Entry")
         elif self.order_type == "SELL_LIMIT":
             if self.direction != "SELL":
                 raise ValueError("SELL_LIMIT chỉ áp dụng cho hướng SELL")
             if self.sl <= self.entry:
                 raise ValueError("SELL_LIMIT yêu cầu SL > Entry")
+            if self.tp > 0 and self.tp >= self.entry:
+                raise ValueError("SELL_LIMIT yêu cầu TP < Entry")
         else:
             if (self.direction == "BUY" and self.sl >= self.entry) or (
                 self.direction == "SELL" and self.sl <= self.entry
             ):
                 raise ValueError("SL phải nằm đúng phía so với entry")
+            if self.tp > 0:
+                if self.direction == "BUY" and self.tp <= self.entry:
+                    raise ValueError("BUY yêu cầu TP > Entry")
+                if self.direction == "SELL" and self.tp >= self.entry:
+                    raise ValueError("SELL yêu cầu TP < Entry")
         return self
 
 
@@ -674,11 +683,18 @@ def ack_close_request(payload: CloseRequestAckIn):
             (now, 1 if payload.ok else 0, payload.message, payload.request_id),
         )
         pos_target = (payload.position_id or (req_row["position_id"] if req_row else "") or "").strip()
-        if payload.ok and pos_target:
-            conn.execute("DELETE FROM paper_positions WHERE id=? OR ticket=?", (pos_target, pos_target))
+        ticket_target = ((req_row["ticket"] if req_row and req_row["ticket"] else "") or "").strip()
+        if payload.ok:
+            if pos_target and ticket_target:
+                conn.execute("DELETE FROM paper_positions WHERE id=? OR ticket=? OR id=? OR ticket=?",
+                             (pos_target, pos_target, ticket_target, ticket_target))
+            elif pos_target:
+                conn.execute("DELETE FROM paper_positions WHERE id=? OR ticket=?", (pos_target, pos_target))
+            elif ticket_target:
+                conn.execute("DELETE FROM paper_positions WHERE id=? OR ticket=?", (ticket_target, ticket_target))
         conn.execute(
             "INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
-            ("close_ack", f"{payload.request_id} ({pos_target}): ok={payload.ok} {payload.message}".strip(), now),
+            ("close_ack", f"{payload.request_id} ({pos_target or ticket_target}): ok={payload.ok} {payload.message}".strip(), now),
         )
     return {"ok": True}
 
@@ -752,7 +768,7 @@ def update_today_signals(payload: TodaySignalsIn):
             key = "|".join((item.symbol, item.timeframe, item.direction,
                             item.divergence, item.signal_type, str(item.signal_time)))
             conn.execute(
-                "INSERT INTO today_signals(signal_key,symbol,timeframe,direction,divergence,signal_type,"
+                "INSERT OR REPLACE INTO today_signals(signal_key,symbol,timeframe,direction,divergence,signal_type,"
                 "signal_time,price1,price2,rsi1,rsi2,time1,time2,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (key, item.symbol, item.timeframe, item.direction, item.divergence,
                  item.signal_type, item.signal_time, item.price1, item.price2,
