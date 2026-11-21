@@ -1323,6 +1323,7 @@ function bindRealLayerToggles() {
     realLayerVisible = $('showRealLayer').checked;
     try { localStorage.setItem(REAL_LAYER_STORAGE, realLayerVisible ? '1' : '0'); } catch (_) {}
     renderRealLines();
+    setLevelLines();
   });
   $('showRealEntry').addEventListener('change', () => {
     realEntryVisible = $('showRealEntry').checked;
@@ -2116,6 +2117,9 @@ $('statsDialog').addEventListener('click', e => { if (e.target === $('statsDialo
 
 function setLevelLines() {
   const mode = $('orderMode').value;
+  // Hai lớp loại trừ nhau: bật Lệnh thật thì chỉ hiển thị mức giá lấy từ MT5;
+  // tắt Lệnh thật mới hiển thị các mức giá đang nhập trong form.
+  const showFormLevels = !realLayerVisible;
   for (const key of ['entry', 'sl', 'tp']) {
     const id = key === 'entry' ? 'entryPrice' : key === 'sl' ? 'slPrice' : 'tpPrice';
     const value = Number($(id).value);
@@ -2123,8 +2127,8 @@ function setLevelLines() {
     const y = value > 0 ? candleSeries.priceToCoordinate(value) : null;
     const line = dragLevels[key];
     const allowed = key !== 'entry' || mode === 'PENDING';
-    line.style.display = allowed && toggle.checked && y != null ? 'block' : 'none';
-    if (allowed && toggle.checked && y != null) {
+    line.style.display = showFormLevels && allowed && toggle.checked && y != null ? 'block' : 'none';
+    if (showFormLevels && allowed && toggle.checked && y != null) {
       line.style.top = y + 'px';
       line.firstChild.textContent = key === 'entry'
         ? (pendingOrderType === 'BUY_LIMIT' ? 'BUY LIMIT' : 'SELL LIMIT') + ' ' + value.toFixed(mt5Digits)
