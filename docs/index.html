@@ -1422,7 +1422,26 @@ function renderRealLines() {
     realLineEls.push({ el, type, key });
   };
 
-  positions.forEach(p => {
+  // Mũi tên entry nằm trong lớp Lệnh thật; bấm vào chỉ mở thông tin dạng đọc.
+  const makeEntryMarker = (data, kind, entry, direction, index) => {
+    const y = candleSeries.priceToCoordinate(entry);
+    if (y == null) return;
+    const marker = document.createElement('button');
+    marker.type = 'button';
+    marker.className = 'real-entry-marker ' + (direction === 'BUY' ? 'buy' : 'sell') + (kind === 'pending' ? ' pending' : '');
+    marker.textContent = direction === 'BUY' ? '▲ BUY' : '▼ SELL';
+    marker.title = 'Xem chi tiết lệnh #' + String(data.ticket ?? data.id ?? '');
+    marker.style.cssText = 'position:absolute;left:' + (10 + (index % 4) * 62) + 'px;top:' + Math.max(2, y - 11) + 'px;z-index:12;padding:3px 6px;border-radius:5px;border:1px solid ' + (direction === 'BUY' ? '#218765' : '#a44758') + ';background:' + (direction === 'BUY' ? 'rgba(18,92,68,.96)' : 'rgba(111,39,54,.96)') + ';color:#fff;font-size:10px;font-weight:800;line-height:14px;cursor:pointer;white-space:nowrap;pointer-events:auto;';
+    marker.addEventListener('click', ev => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      openRealPopup({ kind, data }, ev.clientX, ev.clientY, true);
+    });
+    realOverlay.appendChild(marker);
+    realLineEls.push({ el: marker, type: 'entry-marker', key: 'entry-marker' });
+  };
+
+  positions.forEach((p, index) => {
     const sym = p.symbol;
     const dir = String(p.direction || '').toUpperCase();
     const ticket = String(p.ticket ?? p.id ?? '');
@@ -1433,6 +1452,7 @@ function renderRealLines() {
     const profit = Number(p.profit) || 0;
     if (realEntryVisible && entry > 0) {
       makeLine({ price: entry, type: 'pos-entry', key: 'entry', side: dir, payload: { kind: 'position', data: p }, label: `#${ticket} ${dir} ENTRY ${entry.toFixed(mt5Digits)}` });
+      makeEntryMarker(p, 'position', entry, dir, index);
     }
     if (realSlVisible && sl > 0) {
       makeLine({ price: sl, type: 'pos-sl', key: 'sl', side: dir, payload: { kind: 'position', data: p }, label: `#${ticket} SL ${sl.toFixed(mt5Digits)}` });
@@ -1442,7 +1462,7 @@ function renderRealLines() {
     }
   });
 
-  pendings.forEach(o => {
+  pendings.forEach((o, index) => {
     const sym = o.symbol;
     const dir = String(o.direction || '').toUpperCase();
     const ticket = String(o.ticket ?? o.id ?? '');
@@ -1451,6 +1471,7 @@ function renderRealLines() {
     const tp = Number(o.tp) || 0;
     if (realEntryVisible && entry > 0) {
       makeLine({ price: entry, type: 'pend-entry', key: 'entry', side: dir, payload: { kind: 'pending', data: o }, label: `#${ticket} ${dir} LIMIT ${entry.toFixed(mt5Digits)}` });
+      makeEntryMarker(o, 'pending', entry, dir, index + positions.length);
     }
     if (realSlVisible && sl > 0) {
       makeLine({ price: sl, type: 'pend-sl', key: 'sl', side: dir, payload: { kind: 'pending', data: o }, label: `#${ticket} P-SL ${sl.toFixed(mt5Digits)}` });
@@ -1569,7 +1590,7 @@ $('cpOk').addEventListener('click', async () => {
 });
 
 /* ================= POPUP THÔNG TIN LỆNH THẬT ================= */
-function openRealPopup(payload, clientX, clientY) {
+function openRealPopup(payload, clientX, clientY, readOnly = false) {
   const popup = $('realPopup');
   const rect = $('priceChart').getBoundingClientRect();
   const isPending = payload.kind === 'pending';
@@ -1596,21 +1617,24 @@ function openRealPopup(payload, clientX, clientY) {
 
   const actions = $('rpActions');
   actions.innerHTML = '';
-  if (isPending) {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'btn-close-pos';
-    btn.textContent = 'Huỷ lệnh';
-    btn.addEventListener('click', () => { closeRealPopup(); cancelPendingOrder(ticket, btn); });
-    actions.appendChild(btn);
-  } else {
-    const btn = document.createElement('button');
-    btn.type = 'button';
-    btn.className = 'btn-close-pos';
-    btn.textContent = 'Đóng lệnh';
-    btn.addEventListener('click', () => { closeRealPopup(); closePosition(ticket, btn); });
-    actions.appendChild(btn);
+  if (!readOnly) {
+    if (isPending) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn-close-pos';
+      btn.textContent = 'Huỷ lệnh';
+      btn.addEventListener('click', () => { closeRealPopup(); cancelPendingOrder(ticket, btn); });
+      actions.appendChild(btn);
+    } else {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'btn-close-pos';
+      btn.textContent = 'Đóng lệnh';
+      btn.addEventListener('click', () => { closeRealPopup(); closePosition(ticket, btn); });
+      actions.appendChild(btn);
+    }
   }
+  actions.style.display = readOnly ? 'none' : '';
 
   let x = clientX - rect.left + 14;
   let y = clientY - rect.top + 14;
