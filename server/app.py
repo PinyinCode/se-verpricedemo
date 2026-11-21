@@ -1255,6 +1255,24 @@ def update_commissions(payload: CommissionBatchIn):
             "received": len(rows), "received_at": received}
 
 
+@app.get("/api/mt5/commissions", dependencies=[Depends(require_key)])
+def get_commissions(symbol: str | None = Query(default=None, min_length=3, max_length=32)):
+    """Return read-only MT5 commission snapshots for the requested symbol."""
+    sql = (
+        "SELECT account_id,symbol,commission_per_lot,swap_long,swap_short,"
+        "contract_size,tick_value,point_size,source_updated_at,received_at "
+        "FROM symbol_commissions"
+    )
+    params: tuple = ()
+    if symbol:
+        sql += " WHERE symbol=?"
+        params = (symbol.strip().upper(),)
+    sql += " ORDER BY received_at DESC, account_id"
+    with db() as conn:
+        rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
+    return {"ok": True, "items": rows}
+
+
 @app.get("/api/chart/data")
 def chart_data(
     symbol: str = Query(min_length=3, max_length=32),
