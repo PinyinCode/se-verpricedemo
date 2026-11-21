@@ -45,6 +45,25 @@ header{
 .tag{font-size:11px;border:1px solid #166548;color:#45d6a1;border-radius:20px;padding:3px 9px}
 main{padding:12px;max-width:1680px;margin:auto}
 
+/* API key box */
+.api-key-box{
+  display:flex;align-items:center;gap:5px;
+  padding:3px 4px;border-radius:7px;
+  background:#111f33;border:1px solid #31445f;
+}
+.api-key-box input{
+  background:transparent;border:0;padding:4px 6px;
+  width:160px;font:12px ui-monospace,SFMono-Regular,monospace;
+  color:var(--text);
+}
+.api-key-box input:focus{outline:none}
+.api-key-box button{
+  padding:3px 7px;font-size:11px;border-radius:5px;
+  background:#1a2b43;border:1px solid #354963;
+}
+.api-key-box.ok{border-color:#217c62}
+.api-key-box.err{border-color:#8c4050}
+
 select,button,input{
   font:inherit;
   color:var(--text);
@@ -360,6 +379,8 @@ th{color:var(--muted);font-weight:600}
   .trade-submit button{min-width:82px;padding:7px 8px;font-size:11px}
   #priceChart{height:46dvh;min-height:260px}
   #rsiChart{height:68px}
+  .api-key-box input{width:90px;font-size:11px}
+  .api-key-box button{padding:2px 5px;font-size:10px}
 }
 @media (orientation:landscape) and (min-width:650px){
   main{padding:8px 10px}
@@ -497,7 +518,14 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:10px}
 <body class="trade-fullscreen">
 <header>
   <div><span class="brand">Forex AI · Chart</span> <span class="muted">/ AI OOP V8 MT5 feed</span></div>
-  <span class="tag">DEMO / PAPER ONLY</span>
+  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+    <div class="api-key-box" id="apiKeyBox" title="Nhập API key để đặt lệnh. Lưu vào trình duyệt.">
+      <input id="apiKeyInput" type="password" placeholder="API key..." autocomplete="off" spellcheck="false">
+      <button id="apiKeyToggle" type="button" title="Hiện/ẩn key">👁</button>
+      <button id="apiKeySave" type="button" title="Lưu key">💾</button>
+    </div>
+    <span class="tag">DEMO / PAPER ONLY</span>
+  </div>
 </header>
 
 <main>
@@ -684,6 +712,34 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:10px}
 const $ = id => document.getElementById(id);
 let mt5Digits = 5, mt5TickSize = 0.00001, mt5TickValue = 0, mt5VolumeMin = 0, mt5VolumeMax = 0, mt5VolumeStep = 0, latestMarketPrice = 0;
 
+/* ================= API KEY ================= */
+const API_KEY_STORAGE = 'chartApiKey';
+let chartApiKey = (() => {
+  try { return localStorage.getItem(API_KEY_STORAGE) || ''; } catch { return ''; }
+})();
+
+function refreshApiKeyBox() {
+  const box = $('apiKeyBox'), inp = $('apiKeyInput');
+  if (!box || !inp) return;
+  if (document.activeElement !== inp) inp.value = chartApiKey;
+  box.classList.toggle('ok', !!chartApiKey);
+  box.classList.remove('err');
+}
+function saveApiKey(key) {
+  chartApiKey = String(key || '').trim();
+  try { localStorage.setItem(API_KEY_STORAGE, chartApiKey); } catch (_) {}
+  refreshApiKeyBox();
+}
+function maskKey(k) {
+  if (!k) return '(trống)';
+  return k.length <= 4 ? '****' : k.slice(0, 2) + '****' + k.slice(-2);
+}
+async function apiFetch(url, options = {}) {
+  const opts = { ...options, headers: { ...(options.headers || {}) } };
+  if (chartApiKey) opts.headers['X-API-Key'] = chartApiKey;
+  return fetch(url, opts);
+}
+
 const fmt = n => Number(n).toLocaleString('en-US', { minimumFractionDigits: mt5Digits, maximumFractionDigits: mt5Digits });
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
@@ -734,49 +790,27 @@ rsiSeries.createPriceLine({ price: 30, color: '#22c58b', lineWidth: 1, lineStyle
 let crosshairSyncing = false;
 priceChart.subscribeCrosshairMove(param => {
   if (crosshairSyncing) return;
-  if (!param || !param.time) {
-    crosshairSyncing = true;
-    rsiChart.clearCrosshairPosition();
-    crosshairSyncing = false;
-    return;
-  }
+  if (!param || !param.time) { crosshairSyncing = true; rsiChart.clearCrosshairPosition(); crosshairSyncing = false; return; }
   const point = rsiSeries.data().find(x => x.time === param.time);
-  if (point) {
-    crosshairSyncing = true;
-    rsiChart.setCrosshairPosition(point.value, param.time, rsiSeries);
-    crosshairSyncing = false;
-  }
+  if (point) { crosshairSyncing = true; rsiChart.setCrosshairPosition(point.value, param.time, rsiSeries); crosshairSyncing = false; }
 });
 rsiChart.subscribeCrosshairMove(param => {
   if (crosshairSyncing) return;
-  if (!param || !param.time) {
-    crosshairSyncing = true;
-    priceChart.clearCrosshairPosition();
-    crosshairSyncing = false;
-    return;
-  }
+  if (!param || !param.time) { crosshairSyncing = true; priceChart.clearCrosshairPosition(); crosshairSyncing = false; return; }
   const bar = candleSeries.data().find(x => x.time === param.time);
-  if (bar) {
-    crosshairSyncing = true;
-    priceChart.setCrosshairPosition(bar.close, param.time, candleSeries);
-    crosshairSyncing = false;
-  }
+  if (bar) { crosshairSyncing = true; priceChart.setCrosshairPosition(bar.close, param.time, candleSeries); crosshairSyncing = false; }
 });
 
 let divergenceSeries = [], priceDivergenceSeries = [];
 function clearDivergenceLines() {
   divergenceSeries.forEach(s => { try { rsiChart.removeSeries(s); } catch (_) {} });
   priceDivergenceSeries.forEach(s => { try { priceChart.removeSeries(s); } catch (_) {} });
-  divergenceSeries = [];
-  priceDivergenceSeries = [];
+  divergenceSeries = []; priceDivergenceSeries = [];
 }
 function nearestTime(t, bars) {
   if (!bars.length) return t;
   let best = bars[0].time, delta = Math.abs(best - t);
-  for (const b of bars) {
-    const d = Math.abs(b.time - t);
-    if (d < delta) { delta = d; best = b.time; }
-  }
+  for (const b of bars) { const d = Math.abs(b.time - t); if (d < delta) { delta = d; best = b.time; } }
   return best;
 }
 function renderRsiDivergences(signals, bars) {
@@ -817,9 +851,7 @@ for (const key of ['entry', 'sl', 'tp']) {
   dragLevels[key] = line;
   line.addEventListener('pointerdown', ev => {
     if (line.style.display === 'none') return;
-    ev.preventDefault();
-    line.setPointerCapture(ev.pointerId);
-    line.dataset.drag = '1';
+    ev.preventDefault(); line.setPointerCapture(ev.pointerId); line.dataset.drag = '1';
   });
   line.addEventListener('pointermove', ev => {
     if (line.dataset.drag !== '1') return;
@@ -837,19 +869,14 @@ for (const key of ['entry', 'sl', 'tp']) {
 
 priceChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
   if (syncing || !range) return;
-  syncing = true;
-  rsiChart.timeScale().setVisibleLogicalRange(range);
-  syncing = false;
+  syncing = true; rsiChart.timeScale().setVisibleLogicalRange(range); syncing = false;
   setLevelLines();
 });
 priceChart.subscribeCrosshairMove(param => {
   setLevelLines();
   const bar = param && param.seriesData ? param.seriesData.get(candleSeries) : null;
   const el = $('ohlcLegend');
-  if (!bar) {
-    el.innerHTML = '<b>O —</b><span>H —</span><span>L —</span><span>C —</span><span class="ohlc-change">—</span>';
-    return;
-  }
+  if (!bar) { el.innerHTML = '<b>O —</b><span>H —</span><span>L —</span><span>C —</span><span class="ohlc-change">—</span>'; return; }
   const o = Number(bar.open ?? bar.value), h = Number(bar.high ?? bar.value), l = Number(bar.low ?? bar.value), cl = Number(bar.close ?? bar.value);
   const delta = cl - o, cls = delta >= 0 ? 'up' : 'down';
   const pct = o ? ((delta / o) * 100).toFixed(2) : '0.00';
@@ -857,9 +884,7 @@ priceChart.subscribeCrosshairMove(param => {
 });
 rsiChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
   if (syncing || !range) return;
-  syncing = true;
-  priceChart.timeScale().setVisibleLogicalRange(range);
-  syncing = false;
+  syncing = true; priceChart.timeScale().setVisibleLogicalRange(range); syncing = false;
 });
 
 function rsi(values, period = 14) {
@@ -932,7 +957,6 @@ function syncPresetButtons() {
   $('presetBuyLimit').classList.toggle('selected', isPending && pendingOrderType === 'BUY_LIMIT');
   $('presetSellLimit').classList.toggle('selected', isPending && pendingOrderType === 'SELL_LIMIT');
 }
-
 function handleLevelAdjusted() {
   const mode = $('orderMode').value;
   const entry = Number($('entryPrice').value);
@@ -1019,19 +1043,12 @@ async function load() {
       priceFormat: { type: 'price', precision: mt5Digits, minMove: mt5TickSize > 0 ? mt5TickSize : Math.pow(10, -mt5Digits) },
     });
     for (const id of ['entryPrice', 'slPrice', 'tpPrice']) {
-      if ($(id).value !== '' && Number.isFinite(Number($(id).value))) {
-        $(id).value = Number($(id).value).toFixed(mt5Digits);
-      }
+      if ($(id).value !== '' && Number.isFinite(Number($(id).value))) $(id).value = Number($(id).value).toFixed(mt5Digits);
     }
     $('contractMeta').textContent = 'Tick ' + mt5TickSize.toFixed(mt5Digits) + ' · Tick value loss/lot ' + mt5TickValue + ' · Lot min/max/step ' + mt5VolumeMin + '/' + mt5VolumeMax + '/' + mt5VolumeStep;
 
     const bars = (data.candles || []).map(c => ({
-      time: Number(c.time),
-      open: Number(c.open),
-      high: Number(c.high),
-      low: Number(c.low),
-      close: Number(c.close),
-      volume: Number(c.volume ?? 0),
+      time: Number(c.time), open: Number(c.open), high: Number(c.high), low: Number(c.low), close: Number(c.close), volume: Number(c.volume ?? 0),
     }));
     if (bars.length) latestMarketPrice = bars[bars.length - 1].close;
 
@@ -1040,8 +1057,7 @@ async function load() {
     if (signature !== lastBarsSignature) {
       candleSeries.setData(bars);
       volumeSeries.setData(bars.filter(b => Number.isFinite(b.volume) && b.volume >= 0).map(b => ({
-        time: b.time,
-        value: b.volume,
+        time: b.time, value: b.volume,
         color: b.close >= b.open ? 'rgba(34,197,139,.42)' : 'rgba(240,107,126,.42)',
       })));
       rsiSeries.setData(rsi(bars));
@@ -1072,9 +1088,7 @@ async function load() {
         }
         lastLoadedSymbol = symbol;
       }
-      if ($('orderMode').value === 'MARKET') {
-        $('entryPrice').value = Number(bars[bars.length - 1].close).toFixed(mt5Digits);
-      }
+      if ($('orderMode').value === 'MARKET') $('entryPrice').value = Number(bars[bars.length - 1].close).toFixed(mt5Digits);
       if (firstLoad) {
         priceChart.timeScale().fitContent();
         priceChart.timeScale().applyOptions({ rightOffset: 10 });
@@ -1112,15 +1126,16 @@ function formatOrderKind(o) {
 async function closePosition(posId, btn) {
   const idStr = String(posId ?? '').trim();
   if (!idStr) { $('positionsUpdated').textContent = 'Không tìm thấy ID/Ticket của vị thế để đóng.'; return; }
+  if (!chartApiKey) { $('positionsUpdated').textContent = 'Chưa nhập API key — hãy nhập ở header rồi thử lại.'; return; }
   const pos = chartOpenPositions.find(x => String(getPositionId(x)) === idStr);
   const label = pos ? (pos.symbol + ' ' + pos.direction + ' ' + pos.volume + ' lot') : ('#' + idStr);
   if (!window.confirm('Xác nhận đóng vị thế ' + label + '?')) return;
   closingIds.add(idStr);
   if (btn) btn.disabled = true;
   $('positionsUpdated').textContent = 'Đang gửi lệnh đóng vị thế ' + label + '...';
-  const payload = { id: pos?.id ?? idStr, ticket: pos?.ticket ?? idStr, position_id: pos?.position_id ?? idStr, symbol: pos?.symbol || '', direction: pos?.direction || '', source: 'web-chart' };
+  const payload = { id: pos?.id ?? idStr, ticket: pos?.ticket ?? idStr, position_id: pos?.position_id ?? idStr, symbol: pos?.symbol || '', direction: pos?.direction || '', source: 'web-chart', is_pending: false };
   try {
-    const r = await fetch('/api/chart/close', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const r = await apiFetch('/api/chart/close', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(d.detail || d.message || ('HTTP ' + r.status));
     $('positionsUpdated').textContent = 'Đã gửi yêu cầu đóng vị thế ' + label + (d.status ? ' · ' + d.status : '');
@@ -1136,25 +1151,21 @@ async function closePosition(posId, btn) {
 async function cancelPendingOrder(orderId, btn) {
   const idStr = String(orderId ?? '').trim();
   if (!idStr) { $('positionsUpdated').textContent = 'Không tìm thấy ID của lệnh chờ.'; return; }
+  if (!chartApiKey) { $('positionsUpdated').textContent = 'Chưa nhập API key — hãy nhập ở header rồi thử lại.'; return; }
   const ord = chartPendingOrders.find(x => String(getPendingId(x)) === idStr);
   if (!ord) { $('positionsUpdated').textContent = 'Không tìm thấy lệnh chờ trong danh sách đã đồng bộ.'; return; }
-  if (ord.read_only || !ord.is_paper) {
-    $('positionsUpdated').textContent = 'Lệnh MT5 ngoài luồng PAPER chỉ được hiển thị, không thể hủy từ giao diện này.';
-    return;
-  }
+  if (ord.read_only || !ord.is_paper) { $('positionsUpdated').textContent = 'Lệnh MT5 ngoài luồng PAPER chỉ được hiển thị, không thể hủy từ giao diện này.'; return; }
   const kind = formatOrderKind(ord).label;
   const label = ((ord.symbol || '') + ' ' + kind + ' ' + (ord.volume ?? ord.lots ?? ord.lot ?? '') + ' lot').trim();
   if (!window.confirm('Xác nhận hủy lệnh chờ PAPER ' + label + '?')) return;
   cancelingIds.add(idStr);
   if (btn) btn.disabled = true;
   $('positionsUpdated').textContent = 'Đang gửi yêu cầu hủy lệnh PAPER ' + label + '...';
-  const payload = { id: ord.id ?? idStr, position_id: ord.id ?? ord.position_id ?? idStr, ticket: ord.ticket ?? ord.id ?? idStr, symbol: ord.symbol || '', direction: ord.direction || '', source: 'web-chart', is_pending: true };
+  const payload = { id: ord.id ?? idStr, position_id: ord.id ?? ord.position_id ?? idStr, ticket: ord.ticket ?? ord.id ?? idStr, symbol: ord.symbol || '', direction: ord.direction || '', source: 'web-chart', is_pending: true, kind: 'cancel' };
   try {
-    const r = await fetch('/api/chart/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const r = await apiFetch('/api/chart/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const d = await r.json().catch(() => ({}));
-    if (!r.ok || d.ok !== true || !d.request_id) {
-      throw new Error(d.detail || d.message || ('Server không tạo yêu cầu hủy (HTTP ' + r.status + ')'));
-    }
+    if (!r.ok || d.ok !== true || !d.request_id) throw new Error(d.detail || d.message || ('Server không tạo yêu cầu hủy (HTTP ' + r.status + ')'));
     cancelingIds.delete(idStr);
     await refreshChartPositions();
     $('positionsUpdated').textContent = 'Đã đưa yêu cầu hủy ' + label + ' vào hàng đợi PAPER · đang chờ EA xác nhận';
@@ -1168,8 +1179,7 @@ async function cancelPendingOrder(orderId, btn) {
 function renderChartPositions(positions, pendingOrders = []) {
   const rows = Array.isArray(positions) ? positions : [];
   const pendingRows = Array.isArray(pendingOrders) ? pendingOrders : [];
-  chartOpenPositions = rows;
-  chartPendingOrders = pendingRows;
+  chartOpenPositions = rows; chartPendingOrders = pendingRows;
   $('positionCount').textContent = String(rows.length + pendingRows.length);
   $('openPositionsMeta').textContent = rows.length + ' vị thế';
   $('pendingOrdersMeta').textContent = pendingRows.length + ' lệnh chờ';
@@ -1184,8 +1194,7 @@ function renderChartPositions(positions, pendingOrders = []) {
 
   if (signature !== positionSignature) {
     positionLines.forEach(x => { try { candleSeries.removePriceLine(x); } catch (_) {} });
-    positionLines = [];
-    positionSignature = signature;
+    positionLines = []; positionSignature = signature;
     visibleOpen.forEach(p => {
       const buy = String(p.direction || '').toUpperCase() === 'BUY';
       [['ENTRY', Number(p.entry), buy ? '#60a5fa' : '#fbbf24'], ['SL', Number(p.sl), '#f06478'], ['TP', Number(p.tp), '#22c58b']].forEach(([label, value, color]) => {
@@ -1360,9 +1369,7 @@ function getLimitValidation(forcedType = null) {
   const ref = Number(latestMarketPrice);
   const pendingType = forcedType || ((entry > 0 && sl > 0 && entry !== sl) ? (sl > entry ? 'SELL_LIMIT' : 'BUY_LIMIT') : pendingOrderType);
   const direction = pendingType === 'BUY_LIMIT' ? 'BUY' : 'SELL';
-  if (!(entry > 0) || !(sl > 0) || entry === sl) {
-    return { pendingType, direction, valid: false, reason: 'Cần Entry và SL hợp lệ và khác nhau.' };
-  }
+  if (!(entry > 0) || !(sl > 0) || entry === sl) return { pendingType, direction, valid: false, reason: 'Cần Entry và SL hợp lệ và khác nhau.' };
   if (pendingType === 'BUY_LIMIT') {
     if (sl >= entry) return { pendingType, direction, valid: false, reason: 'BUY LIMIT yêu cầu SL < Entry (' + fmt(entry) + ').' };
     if (ref > 0 && entry >= ref) return { pendingType, direction, valid: false, reason: 'BUY LIMIT yêu cầu Entry (' + fmt(entry) + ') < giá hiện tại (' + fmt(ref) + ').' };
@@ -1381,9 +1388,7 @@ function updateDirectionFromSL() {
   if (mode === 'PENDING') {
     const entry = Number($('entryPrice').value);
     const sl = Number($('slPrice').value);
-    if (entry > 0 && sl > 0 && entry !== sl) {
-      pendingOrderType = sl > entry ? 'SELL_LIMIT' : 'BUY_LIMIT';
-    }
+    if (entry > 0 && sl > 0 && entry !== sl) pendingOrderType = sl > entry ? 'SELL_LIMIT' : 'BUY_LIMIT';
     autoDirection = pendingOrderType === 'BUY_LIMIT' ? 'BUY' : 'SELL';
     syncPresetButtons();
     const isBuyLimit = pendingOrderType === 'BUY_LIMIT';
@@ -1399,26 +1404,22 @@ function updateDirectionFromSL() {
       : ('Limit: ' + info.reason);
     return;
   }
-
   $('sendBuy').textContent = 'BUY';
   $('sendSell').textContent = 'SELL';
   const sl = Number($('slPrice').value);
   const baseRef = Number(latestMarketPrice) > 0 ? Number(latestMarketPrice) : Number($('entryPrice').value);
-  if (sl > 0 && baseRef > 0 && sl !== baseRef) {
-    autoDirection = sl > baseRef ? 'SELL' : 'BUY';
-  }
+  if (sl > 0 && baseRef > 0 && sl !== baseRef) autoDirection = sl > baseRef ? 'SELL' : 'BUY';
   $('sendBuy').classList.toggle('active', autoDirection === 'BUY');
   $('sendSell').classList.toggle('active', autoDirection === 'SELL');
   $('sendBuy').style.display = autoDirection === 'BUY' ? '' : 'none';
+  $('sendSell').style.display = autoDirection === 'SELL' ? 'none' : '';
   $('sendSell').style.display = autoDirection === 'SELL' ? '' : 'none';
   $('requestState').textContent = 'SL đang xác định hướng ' + autoDirection + ' · chỉ gửi PAPER.';
 }
 
 function volumeDigits(step) {
   if (!(step > 0)) return 2;
-  for (let d = 0; d <= 8; d++) {
-    if (Math.abs(step * Math.pow(10, d) - Math.round(step * Math.pow(10, d))) < 1e-8) return d;
-  }
+  for (let d = 0; d <= 8; d++) if (Math.abs(step * Math.pow(10, d) - Math.round(step * Math.pow(10, d))) < 1e-8) return d;
   return 8;
 }
 
@@ -1464,9 +1465,7 @@ function syncOrderModeFromEntry() {
     $('entryPrice').value = latestMarketPrice.toFixed(mt5Digits);
   } else if (pending && latestMarketPrice > 0) {
     const curEntry = Number($('entryPrice').value);
-    if (!(curEntry > 0) || curEntry === latestMarketPrice) {
-      applyLimitDefaults(latestMarketPrice, pendingOrderType);
-    }
+    if (!(curEntry > 0) || curEntry === latestMarketPrice) applyLimitDefaults(latestMarketPrice, pendingOrderType);
   }
   syncPresetButtons();
   setLevelLines();
@@ -1510,11 +1509,8 @@ async function toggleTradeFullscreen() {
   const on = !document.body.classList.contains('trade-fullscreen');
   document.body.classList.toggle('trade-fullscreen', on);
   $('fullscreenToggle').textContent = '⛶';
-  if (on && document.fullscreenEnabled && !document.fullscreenElement) {
-    try { await document.documentElement.requestFullscreen(); } catch (_) {}
-  } else if (!on && document.fullscreenElement) {
-    try { await document.exitFullscreen(); } catch (_) {}
-  }
+  if (on && document.fullscreenEnabled && !document.fullscreenElement) { try { await document.documentElement.requestFullscreen(); } catch (_) {} }
+  else if (!on && document.fullscreenElement) { try { await document.exitFullscreen(); } catch (_) {} }
   requestAnimationFrame(applyChartDimensions);
 }
 $('fullscreenToggle').addEventListener('click', toggleTradeFullscreen);
@@ -1535,6 +1531,12 @@ document.addEventListener('keydown', e => {
 });
 
 async function sendPaper(direction) {
+  if (!chartApiKey) {
+    $('requestState').textContent = 'Chưa nhập API key — nhập ở header (góc trên phải) rồi thử lại.';
+    $('apiKeyBox').classList.add('err');
+    $('apiKeyInput').focus();
+    return;
+  }
   const c = calcLot();
   if (!c) return;
   const mode = $('orderMode').value;
@@ -1551,12 +1553,14 @@ async function sendPaper(direction) {
     const payload = { symbol: $('symbol').value, timeframe: $('tf').value, direction: info.direction, mode: 'PENDING', order_type: orderType, entry: c.e, sl: c.s, tp, risk_money: c.risk, requested_lot: c.lot, score: 0, source: 'web-chart' };
     $('requestState').textContent = 'Đang gửi yêu cầu ' + limitLabel + ' PAPER...';
     try {
-      const r = await fetch('/api/chart/request', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const r = await apiFetch('/api/chart/request', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
       const d = await r.json();
       if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
       $('requestState').textContent = 'Đã đưa ' + limitLabel + ' vào hàng đợi PAPER · ID ' + d.signal_id + ' · chờ MT5 nhận';
+      $('apiKeyBox').classList.add('ok');
     } catch (err) {
       $('requestState').textContent = 'Không gửi được: ' + err.message;
+      if (String(err.message).toLowerCase().includes('key')) { $('apiKeyBox').classList.add('err'); $('apiKeyInput').focus(); }
     }
     return;
   }
@@ -1571,12 +1575,14 @@ async function sendPaper(direction) {
   const payload = { symbol: $('symbol').value, timeframe: $('tf').value, direction, mode: 'MARKET', order_type: 'MARKET', entry: refPrice, sl: c.s, tp, risk_money: c.risk, requested_lot: c.lot, score: 0, source: 'web-chart' };
   $('requestState').textContent = 'Đang gửi yêu cầu PAPER...';
   try {
-    const r = await fetch('/api/chart/request', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const r = await apiFetch('/api/chart/request', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
     const d = await r.json();
     if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
     $('requestState').textContent = 'Đã đưa ' + direction + ' vào hàng đợi PAPER · ID ' + d.signal_id + ' · chờ MT5 nhận';
+    $('apiKeyBox').classList.add('ok');
   } catch (err) {
     $('requestState').textContent = 'Không gửi được: ' + err.message;
+    if (String(err.message).toLowerCase().includes('key')) { $('apiKeyBox').classList.add('err'); $('apiKeyInput').focus(); }
   }
 }
 
@@ -1680,6 +1686,29 @@ async function checkServerStatus() {
     $('serverState').title = String(e.message || e);
   }
 }
+
+/* ================= API KEY EVENTS ================= */
+refreshApiKeyBox();
+
+$('apiKeySave').addEventListener('click', () => {
+  saveApiKey($('apiKeyInput').value);
+  $('requestState').textContent = 'Đã lưu API key (' + maskKey(chartApiKey) + ') · thử đặt lệnh để kiểm tra.';
+});
+$('apiKeyInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') {
+    saveApiKey($('apiKeyInput').value);
+    $('apiKeyInput').blur();
+    $('requestState').textContent = 'Đã lưu API key (' + maskKey(chartApiKey) + ') · thử đặt lệnh để kiểm tra.';
+  }
+});
+$('apiKeyInput').addEventListener('input', () => {
+  $('apiKeyBox').classList.remove('err');
+});
+$('apiKeyToggle').addEventListener('click', () => {
+  const inp = $('apiKeyInput');
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+  $('apiKeyToggle').textContent = inp.type === 'password' ? '👁' : '🙈';
+});
 
 updateGMT7Clock();
 checkServerStatus();
