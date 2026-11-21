@@ -2053,9 +2053,14 @@ async function load(forceNetwork = false) {
         lastLoadedSymbol = symbol;
       }
       if ($('orderMode').value === 'MARKET') $('entryPrice').value = Number(bars[bars.length - 1].close).toFixed(mt5Digits);
-      if (firstLoad) {
+      // Khi đổi symbol/timeframe phải reset cả vùng thời gian lẫn thang giá.
+      // Không khôi phục oldRange của symbol trước (đặc biệt luồng cache -> network).
+      const resetChartView = firstLoad || symbolChanged;
+      if (resetChartView) {
+        priceChart.priceScale('right').applyOptions({ autoScale: true });
         priceChart.timeScale().fitContent();
         priceChart.timeScale().applyOptions({ rightOffset: 10 });
+        rsiChart.timeScale().fitContent();
         rsiChart.timeScale().applyOptions({ rightOffset: 10 });
         firstLoad = false;
       } else if (oldRange) {
