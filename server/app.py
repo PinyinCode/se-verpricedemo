@@ -27,6 +27,9 @@ CLOSE_REQUEST_TTL = int(os.getenv("CLOSE_REQUEST_TTL_SECONDS", "45"))
 
 _db_lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
+# Bộ nhớ tạm: id -> timestamp ack gần nhất. Item bị "xóa mềm" 10 giây.
+_recently_acked: dict[str, float] = {}
+_ACK_COOLDOWN = 10.0  # giây
 
 
 def utc_now() -> str:
@@ -210,7 +213,6 @@ def require_key(x_api_key: str | None = Header(default=None)) -> None:
 
 
 def optional_key(x_api_key: str | None = Header(default=None)) -> None:
-    """Nếu server có cấu hình API_KEY thì bắt buộc; nếu không thì từ chối (fail-closed)."""
     if not API_KEY:
         raise HTTPException(status_code=503, detail="Server chưa cấu hình FOREX_API_KEY")
     if not x_api_key or not secrets.compare_digest(x_api_key, API_KEY):
@@ -543,7 +545,6 @@ def create_signal(payload: SignalIn):
 
 @app.post("/api/chart/request", dependencies=[Depends(require_key)])
 def chart_request(payload: SignalIn):
-    """Queue a chart-originated paper request; this endpoint never executes broker orders."""
     if payload.requested_lot <= 0:
         raise HTTPException(status_code=422, detail="Thiếu lot đã tính từ Risk và khoảng Entry-SL")
     with db() as conn:
@@ -580,7 +581,6 @@ def next_signal(consumer: str = Query(default="mt5-demo", min_length=2, max_leng
 
 @app.get("/api/chart/next", dependencies=[Depends(require_key)])
 def next_chart_request():
-    """Dedicated consumer for manual chart PAPER requests; isolated from AI signal queue."""
     now = time.time()
     with db() as conn:
         conn.execute(
@@ -642,39 +642,55 @@ def acknowledge(payload: AckIn):
     return {"ok": True}
 
 
+def _cleanup_recently_acked():
+    """Xóa các id đã hết thời gian cooldown."""
+    now = time.time()
+    expired = [k for k, t in _recently_acked.items() if now - t > _ACK_COOLDOWN]
+    for k in expired:
+        _recently_acked.pop(k, None)
+
+
 @app.post("/api/mt5/account-snapshot", dependencies=[Depends(require_key)])
 def update_mt5_account_snapshot(payload: Mt5AccountSnapshotIn):
     now = utc_now()
+    _cleanup_recently_acked()
     with db() as conn:
         conn.execute("DELETE FROM mt5_account_items")
         if payload.items:
-            conn.executemany(
-                "INSERT INTO mt5_account_items(id,ticket,symbol,timeframe,direction,entry,sl,tp,volume,profit,"
-                "opened_at,is_pending,order_type,magic,comment,source,updated_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                [
-                    (
-                        item.id,
-                        str(item.ticket).strip() if item.ticket is not None else item.id,
-                        item.symbol.upper(),
-                        item.timeframe,
-                        item.direction,
-                        item.entry,
-                        item.sl,
-                        item.tp,
-                        item.volume,
-                        item.profit,
-                        item.opened_at,
-                        1 if item.is_pending else 0,
-                        item.order_type,
-                        item.magic,
-                        item.comment,
-                        item.source,
-                        now,
-                    )
-                    for item in payload.items
-                ],
-            )
+            # Lọc bỏ những item vừa bị ack đóng/hủy trong 10s qua
+            filtered = [
+                item for item in payload.items
+                if str(item.id) not in _recently_acked
+                and (str(item.ticket) if item.ticket is not None else "") not in _recently_acked
+            ]
+            if filtered:
+                conn.executemany(
+                    "INSERT INTO mt5_account_items(id,ticket,symbol,timeframe,direction,entry,sl,tp,volume,profit,"
+                    "opened_at,is_pending,order_type,magic,comment,source,updated_at) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    [
+                        (
+                            item.id,
+                            str(item.ticket).strip() if item.ticket is not None else item.id,
+                            item.symbol.upper(),
+                            item.timeframe,
+                            item.direction,
+                            item.entry,
+                            item.sl,
+                            item.tp,
+                            item.volume,
+                            item.profit,
+                            item.opened_at,
+                            1 if item.is_pending else 0,
+                            item.order_type,
+                            item.magic,
+                            item.comment,
+                            item.source,
+                            now,
+                        )
+                        for item in filtered
+                    ],
+                )
         conn.execute(
             "INSERT OR REPLACE INTO heartbeats(component,status,details,updated_at) VALUES(?,?,?,?)",
             ("mt5-account-snapshot", "online", f"{len(payload.items)} lệnh/vị thế", now),
@@ -685,32 +701,39 @@ def update_mt5_account_snapshot(payload: Mt5AccountSnapshotIn):
 @app.post("/api/paper/positions", dependencies=[Depends(require_key)])
 def update_paper_positions(payload: PaperPositionsIn):
     now = utc_now()
+    _cleanup_recently_acked()
     with db() as conn:
         conn.execute("DELETE FROM paper_positions")
         if payload.positions:
-            conn.executemany(
-                "INSERT INTO paper_positions(id,ticket,symbol,timeframe,direction,entry,sl,tp,volume,risk,profit,opened_at,updated_at,is_pending) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                [
-                    (
-                        p.id,
-                        str(p.ticket).strip() if p.ticket is not None else p.id,
-                        p.symbol.upper(),
-                        p.timeframe,
-                        p.direction,
-                        p.entry,
-                        p.sl,
-                        p.tp,
-                        p.volume,
-                        p.risk,
-                        p.profit,
-                        p.opened_at,
-                        now,
-                        1 if p.is_pending else 0,
-                    )
-                    for p in payload.positions
-                ],
-            )
+            filtered = [
+                p for p in payload.positions
+                if str(p.id) not in _recently_acked
+                and (str(p.ticket) if p.ticket is not None else "") not in _recently_acked
+            ]
+            if filtered:
+                conn.executemany(
+                    "INSERT INTO paper_positions(id,ticket,symbol,timeframe,direction,entry,sl,tp,volume,risk,profit,opened_at,updated_at,is_pending) "
+                    "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    [
+                        (
+                            p.id,
+                            str(p.ticket).strip() if p.ticket is not None else p.id,
+                            p.symbol.upper(),
+                            p.timeframe,
+                            p.direction,
+                            p.entry,
+                            p.sl,
+                            p.tp,
+                            p.volume,
+                            p.risk,
+                            p.profit,
+                            p.opened_at,
+                            now,
+                            1 if p.is_pending else 0,
+                        )
+                        for p in filtered
+                    ],
+                )
     return {"ok": True, "open_positions": len(payload.positions), "updated_at": now}
 
 
@@ -751,7 +774,6 @@ def _find_matching_item(
 
 
 def _enqueue_close_position(payload: ClosePositionIn, kind: Literal["close", "cancel"]) -> dict:
-    """Queue a close (position mở) hoặc cancel (pending) cho cả paper và MT5."""
     ticket_str = str(payload.ticket).strip() if payload.ticket is not None else ""
     pos_id = (payload.position_id or payload.id or ticket_str or "").strip()
     if not pos_id and not payload.symbol:
@@ -830,13 +852,11 @@ def _enqueue_close_position(payload: ClosePositionIn, kind: Literal["close", "ca
 
 @app.post("/api/chart/close", dependencies=[Depends(optional_key)])
 def chart_close_position(payload: ClosePositionIn):
-    """Đóng vị thế mở (paper hoặc real)."""
     return _enqueue_close_position(payload, kind="close")
 
 
 @app.post("/api/chart/cancel", dependencies=[Depends(optional_key)])
 def chart_cancel_pending(payload: ClosePositionIn):
-    """Hủy lệnh chờ (pending limit/stop của Paper hoặc MT5)."""
     return _enqueue_close_position(payload, kind="cancel")
 
 
@@ -845,13 +865,11 @@ def chart_cancel_pending(payload: ClosePositionIn):
 @app.post("/api/mt5/orders/cancel", dependencies=[Depends(optional_key)])
 @app.post("/api/paper/cancel", dependencies=[Depends(optional_key)])
 def alias_cancel_pending(payload: ClosePositionIn):
-    """Alias các route hủy lệnh chờ để khớp với mọi client/EA."""
     return _enqueue_close_position(payload, kind="cancel")
 
 
 @app.post("/api/paper/positions/close", dependencies=[Depends(optional_key)])
 def queue_close_position(payload: ClosePositionIn):
-    """Backward-compat: alias cho /api/chart/close."""
     return _enqueue_close_position(payload, kind="close")
 
 
@@ -908,6 +926,13 @@ def ack_close_request(payload: CloseRequestAckIn):
         pos_target = (payload.position_id or (req_row["position_id"] if req_row else "") or "").strip()
         ticket_target = ((req_row["ticket"] if req_row and req_row["ticket"] else "") or "").strip()
         if payload.ok:
+            # Đánh dấu 10 giây để server bỏ qua nếu EA sync lại item đó
+            expire = time.time() + _ACK_COOLDOWN
+            if pos_target:
+                _recently_acked[pos_target] = expire
+            if ticket_target:
+                _recently_acked[ticket_target] = expire
+            # Xóa item khỏi bảng hiển thị
             for tbl in ("paper_positions", "mt5_account_items"):
                 if pos_target and ticket_target:
                     conn.execute(
@@ -1085,6 +1110,7 @@ def chart_data(
 
 @app.get("/api/dashboard")
 def dashboard_data():
+    _cleanup_recently_acked()
     with db() as conn:
         signals = [dict(r) for r in conn.execute(
             "SELECT id,symbol,timeframe,direction,order_type,entry,sl,tp,score,source,status,created_at,ack_status,ack_message "
@@ -1102,12 +1128,10 @@ def dashboard_data():
             "SELECT id,ticket,symbol,timeframe,direction,entry,sl,tp,volume,profit,opened_at,"
             "is_pending,order_type,magic,comment,source,updated_at "
             "FROM mt5_account_items ORDER BY opened_at DESC").fetchall()]
-        # SỬA: Đổi read_only thành False để hiển thị nút Đóng/Hủy
         mt5_positions = [
             {**p, "read_only": False, "origin": p["source"]}
             for p in mt5_account_items if not p["is_pending"]
         ]
-        # SỬA: Đổi read_only thành False để hiển thị nút Đóng/Hủy
         mt5_pending_orders = [
             {**p, "read_only": False, "origin": p["source"],
              "status": "Đang chờ trên MT5"}
