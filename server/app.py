@@ -124,6 +124,8 @@ def init_db() -> None:
         pos_cols = {row[1] for row in conn.execute("PRAGMA table_info(paper_positions)")}
         if "ticket" not in pos_cols:
             conn.execute("ALTER TABLE paper_positions ADD COLUMN ticket TEXT")
+        if "is_pending" not in pos_cols:
+            conn.execute("ALTER TABLE paper_positions ADD COLUMN is_pending INTEGER NOT NULL DEFAULT 0")
 
         conn.execute("""
         CREATE TABLE IF NOT EXISTS paper_history (
@@ -250,6 +252,7 @@ class PaperPositionIn(BaseModel):
     risk: float = Field(default=0, ge=0)
     profit: float
     opened_at: float = Field(default=0, ge=0)
+    is_pending: bool = Field(default=False)
 
 
 class PaperPositionsIn(BaseModel):
@@ -579,10 +582,10 @@ def update_paper_positions(payload: PaperPositionsIn):
         for p in payload.positions:
             ticket_str = str(p.ticket).strip() if p.ticket is not None else p.id
             conn.execute(
-                "INSERT INTO paper_positions(id,ticket,symbol,timeframe,direction,entry,sl,tp,volume,risk,profit,opened_at,updated_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO paper_positions(id,ticket,symbol,timeframe,direction,entry,sl,tp,volume,risk,profit,opened_at,updated_at,is_pending) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (p.id, ticket_str, p.symbol.upper(), p.timeframe, p.direction, p.entry, p.sl, p.tp,
-                 p.volume, p.risk, p.profit, p.opened_at, now),
+                 p.volume, p.risk, p.profit, p.opened_at, now, 1 if p.is_pending else 0),
             )
     return {"ok": True, "open_positions": len(payload.positions), "updated_at": now}
 
@@ -852,9 +855,15 @@ def dashboard_data():
         signals = [dict(r) for r in conn.execute(
             "SELECT id,symbol,timeframe,direction,order_type,entry,sl,tp,score,source,status,created_at,ack_status,ack_message "
             "FROM signals ORDER BY created_at DESC LIMIT 100").fetchall()]
-        paper_positions = [dict(r) for r in conn.execute(
-            "SELECT id,ticket,symbol,timeframe,direction,entry,sl,tp,volume,risk,profit,opened_at,updated_at "
+        all_paper_orders = [dict(r) for r in conn.execute(
+            "SELECT id,ticket,symbol,timeframe,direction,entry,sl,tp,volume,risk,profit,opened_at,updated_at,is_pending "
             "FROM paper_positions ORDER BY opened_at DESC").fetchall()]
+        paper_positions = [p for p in all_paper_orders if not p["is_pending"]]
+        paper_pending_orders = [
+            {**p, "order_type": "BUY_LIMIT" if p["direction"] == "BUY" else "SELL_LIMIT",
+             "status": "Đang chờ khớp"}
+            for p in all_paper_orders if p["is_pending"]
+        ]
         paper_history = [dict(r) for r in conn.execute(
             "SELECT id,symbol,timeframe,direction,entry,sl,tp,volume,risk,profit,outcome,opened_at,closed_at "
             "FROM paper_history ORDER BY closed_at DESC LIMIT 50").fetchall()]
@@ -899,6 +908,8 @@ def dashboard_data():
         "today_signals": today_signals,
         "paper_positions": paper_positions,
         "open_positions": paper_positions,
+        "paper_pending_orders": paper_pending_orders,
+        "pending_orders": paper_pending_orders,
         "paper_history": paper_history,
         "real_history": real_history,
         "mt5_history": real_history,
