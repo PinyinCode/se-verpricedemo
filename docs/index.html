@@ -527,7 +527,8 @@ th{color:var(--muted);font-weight:600}
 .api-auth-warning.show{display:block}
 .api-auth-warning.error{border-color:#984253;border-left-color:var(--red);background:rgba(240,107,126,.10);color:#ffb0bc}
 #tradePanelToggle{white-space:nowrap;border-color:#47708f;color:#b8dcff;background:rgba(96,165,250,.10)}
-.chart-overlay-bottom.trade-panel-collapsed{height:0;min-height:0;flex:0 0 0;border:0;overflow:hidden}
+.chart-overlay-bottom.trade-panel-collapsed{height:0!important;min-height:0!important;flex:0 0 0!important;border:0;overflow:hidden}
+.chart-overlay-bottom.trade-panel-collapsed #lotResizeHandle{display:none!important}
 .chart-overlay-bottom.trade-panel-collapsed>*{display:none!important}
 
 .stats-dialog{width:min(1120px,calc(100vw - 20px));max-height:88dvh}
@@ -2239,8 +2240,21 @@ function setTradePanelVisible(visible) {
   tradePanelToggle.textContent = visible ? 'Thu gọn bảng lệnh' : 'Hiện bảng lệnh';
   tradePanelToggle.setAttribute('aria-expanded', visible ? 'true' : 'false');
   tradePanelToggle.title = visible ? 'Thu gọn bảng lệnh' : 'Hiện bảng lệnh';
+  if (!visible) {
+    // Xóa kích thước inline để bảng lệnh thực sự nhường toàn bộ không gian cho chart.
+    tradePanel.style.removeProperty('height');
+    tradePanel.style.removeProperty('flex');
+  } else {
+    try {
+      const savedHeight = Number(localStorage.getItem('chartLotPanelHeight'));
+      if (Number.isFinite(savedHeight) && savedHeight >= 84) setLotHeight(savedHeight);
+    } catch (_) {}
+  }
   try { localStorage.setItem('chartTradePanelVisible', visible ? '1' : '0'); } catch (_) {}
-  requestAnimationFrame(applyChartDimensions);
+  requestAnimationFrame(() => {
+    applyChartDimensions();
+    if (priceChart && priceChart.timeScale) priceChart.timeScale().applyOptions({ rightOffset: 10 });
+  });
 }
 setTradePanelVisible(false);
 tradePanelToggle.addEventListener('click', () => {
@@ -2613,11 +2627,13 @@ function setLotHeight(height) {
   if (!overlayBottom || !workspace) return;
   const max = Math.max(84, Math.floor(workspace.clientHeight * 0.72));
   const next = Math.max(84, Math.min(max, height));
+  overlayBottom.style.setProperty('--lot-panel-h', String(Math.round(next)));
+  try { localStorage.setItem('chartLotPanelHeight', String(Math.round(next))); } catch (_) {}
+  // Khi đang ẩn, chỉ lưu chiều cao để khôi phục; không chiếm chỗ của chart.
+  if (overlayBottom.classList.contains('trade-panel-collapsed')) return;
   overlayBottom.style.setProperty('height', next + 'px', 'important');
   overlayBottom.style.setProperty('flex', `0 0 ${next}px`, 'important');
-  overlayBottom.style.setProperty('--lot-panel-h', String(Math.round(next)));
   applyChartDimensions();
-  try { localStorage.setItem('chartLotPanelHeight', String(Math.round(next))); } catch (_) {}
 }
 
 try {
