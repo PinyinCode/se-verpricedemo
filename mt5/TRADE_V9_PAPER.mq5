@@ -6,7 +6,7 @@
 //| Pending orders: LIMIT ONLY (BUY_LIMIT / SELL_LIMIT), no Stop     |
 //+------------------------------------------------------------------+
 #property strict
-#property version "2.15"
+#property version "2.14"
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
@@ -26,7 +26,6 @@ input long   MagicNumber         = 20240915;
 input int    SlippagePoints      = 20;
 input string OrderComment        = "TRADE-V9";
 input bool   SyncRealHistory     = true;    // Đồng bộ lịch sử lệnh thật đã đóng
-input bool   AllowCancelExternalPending = true; // Cho phép hủy lệnh chờ ngoài magic trên MT5
 
 //--- Globals --------------------------------------------------------
 CTrade        trade;
@@ -106,15 +105,18 @@ datetime ParseIsoOrEpochTime(string raw)
    }
    if(allDigits) return (datetime)StringToInteger(raw);
 
+   // Hỗ trợ ISO: "2026-11-20T12:30:00Z", "2026-11-20T12:30:00+07:00", "2026.11.20 12:30:00"
    string s = raw;
    StringReplace(s, "T", " ");
    StringReplace(s, "Z", "");
 
+   // Cắt offset timezone: +HH:MM, -HH:MM, +HHMM, -HHMM (chỉ khi nằm sau phần date time)
    int spacePos = StringFind(s, " ");
    if(spacePos > 0)
    {
       int plusPos = StringFind(s, "+", spacePos);
       if(plusPos > 0) s = StringSubstr(s, 0, plusPos);
+      // tránh cắt nhầm dấu '-' của ngày (yyyy-mm-dd)
       int minusPos = StringFind(s, "-", spacePos);
       if(minusPos > 0) s = StringSubstr(s, 0, minusPos);
    }
@@ -497,6 +499,7 @@ bool OpenTrade(string id,string symbol,string tf,string direction,string rawOrde
    sl=NormalizeDouble(sl,digits);
    tp=NormalizeDouble(tp,digits);
 
+   // Sau khi normalize, kiểm tra lại TP để tránh TP == Entry (do rounding)
    if((direction=="BUY" && tp<=entry) || (direction=="SELL" && tp>=entry))
    { Ack(id,"REJECTED","Invalid TP geometry after normalize"); return false; }
 
@@ -652,6 +655,7 @@ void ManagePaperTrades()
 //--- Nhận và thực thi lệnh đóng/hủy từ server --------------------
 void AckCloseCommand(string requestId,string targetId,bool ok,string detail,string kind)
 {
+   // kind: "close" | "cancel"
    string body=StringFormat(
       "{\"request_id\":\"%s\",\"position_id\":\"%s\",\"ok\":%s,\"message\":\"%s\",\"kind\":\"%s\"}",
       JsonEscape(requestId),JsonEscape(targetId),(ok?"true":"false"),JsonEscape(detail),JsonEscape(kind));
@@ -660,6 +664,7 @@ void AckCloseCommand(string requestId,string targetId,bool ok,string detail,stri
       Print("[V9 CLOSE ACK FAIL] req=",requestId," HTTP=",status," response=",response);
 }
 
+// wantPending: -1=any, 0=chỉ position mở, 1=chỉ pending
 int FindPaperTradeIndex(string targetId,string symbol,string direction,int wantPending=-1)
 {
    if(targetId!="")
@@ -686,10 +691,12 @@ int FindPaperTradeIndex(string targetId,string symbol,string direction,int wantP
    return -1;
 }
 
+// preferPending: true khi request là HỦY pending -> không đóng position mở
 bool CloseRealPositionById(string targetId,string symbol,string &detailOut,bool preferPending=false)
 {
    ulong targetTicket=0;
 
+   // Chỉ tìm position mở nếu KHÔNG phải request hủy pending
    if(!preferPending)
    {
       if(targetId!="")
@@ -749,18 +756,14 @@ bool CloseRealPositionById(string targetId,string symbol,string &detailOut,bool 
       return true;
    }
 
-   // Hủy lệnh chờ (pending order) trên MT5
+   // Hủy pending limit order tương ứng
    for(int i=OrdersTotal()-1;i>=0;i--)
    {
       ulong ordTicket=OrderGetTicket(i);
       if(ordTicket==0) continue;
-      long ordMagic=OrderGetInteger(ORDER_MAGIC);
-      if(ordMagic!=MagicNumber && !AllowCancelExternalPending) continue;
-
+      if(OrderGetInteger(ORDER_MAGIC)!=MagicNumber) continue;
       ENUM_ORDER_TYPE ot=(ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
-      if(ot!=ORDER_TYPE_BUY_LIMIT && ot!=ORDER_TYPE_SELL_LIMIT &&
-         ot!=ORDER_TYPE_BUY_STOP  && ot!=ORDER_TYPE_SELL_STOP) continue;
-
+      if(ot!=ORDER_TYPE_BUY_LIMIT && ot!=ORDER_TYPE_SELL_LIMIT) continue;
       string ordSym=OrderGetString(ORDER_SYMBOL);
       string tkStr=IntegerToString((long)ordTicket);
       int rIdx=FindTicketIndex(tkStr);
@@ -772,21 +775,14 @@ bool CloseRealPositionById(string targetId,string symbol,string &detailOut,bool 
          if(trade.OrderDelete(ordTicket))
          {
             ForgetRealPosition(tkStr);
-            detailOut=StringFormat("Deleted pending ticket=%I64u",ordTicket);
-            Print("[REAL CANCEL PENDING] ",detailOut);
+            detailOut=StringFormat("Deleted pending limit ticket=%I64u",ordTicket);
+            Print("[REAL CANCEL LIMIT] ",detailOut);
             return true;
-         }
-         else
-         {
-            detailOut=StringFormat("OrderDelete failed retcode=%d (%s)",
-               trade.ResultRetcode(),trade.ResultRetcodeDescription());
-            Print("[REAL CANCEL FAIL] ticket=",ordTicket," ",detailOut);
-            return false;
          }
       }
    }
 
-   detailOut="Position/pending order not found";
+   detailOut="Position not found";
    return false;
 }
 
@@ -796,8 +792,8 @@ void ExecuteCloseCommand(string cmdJson)
    string targetId  = JsonValue(cmdJson,"position_id");
    if(targetId=="") targetId = JsonValue(cmdJson,"ticket");
    if(targetId=="") targetId = JsonValue(cmdJson,"id");
-   string symbol    = UpperTrim(JsonValue(cmdJson,"symbol"));
-   string direction = UpperTrim(JsonValue(cmdJson,"direction"));
+   string symbol    = JsonValue(cmdJson,"symbol");
+   string direction = JsonValue(cmdJson,"direction");
    string isPendingStr = JsonValue(cmdJson,"is_pending");
    bool   isPendingReq = (isPendingStr=="1" || isPendingStr=="true");
    string kindStr = JsonValue(cmdJson,"kind");
@@ -822,10 +818,9 @@ void ExecuteCloseCommand(string cmdJson)
       int idx=FindPaperTradeIndex(targetId,symbol,direction,wantPending);
       if(idx>=0)
       {
-         bool wasPending=trades[idx].isPending;
          closed=ClosePaperTradeAtIndex(idx,"MANUAL_CLOSE");
-         detail=closed ? (wasPending?"Canceled paper pending":"Closed paper position")
-                       : "Close paper failed";
+         detail=(trades[idx].isPending?"Canceled paper pending":"Closed paper position");
+         if(!closed) detail="Close paper failed";
       }
       else
       {
@@ -842,7 +837,6 @@ void ExecuteCloseCommand(string cmdJson)
    if(closed)
    {
       SendPaperPositions();
-      SendAccountSnapshot();
       if(!UsePaperSimulation) PublishRealClosedDeals();
    }
 }
@@ -1005,6 +999,7 @@ void SendAccountSnapshot()
    string itemsJson="";
    bool first=true;
 
+   // Broker positions: include manual trades and trades from other EAs too.
    for(int i=PositionsTotal()-1;i>=0;i--)
    {
       ulong ticket=PositionGetTicket(i);
@@ -1037,6 +1032,7 @@ void SendAccountSnapshot()
       );
    }
 
+   // Active pending orders from the terminal, regardless of where they were created.
    for(int i=OrdersTotal()-1;i>=0;i--)
    {
       ulong ticket=OrderGetTicket(i);
@@ -1142,7 +1138,7 @@ int OnInit()
 
    trade.SetExpertMagicNumber(MagicNumber);
    EventSetTimer(1);
-   Print("[V9] Started v2.15 in ",
+   Print("[V9] Started v2.14 in ",
          (UsePaperSimulation?"PAPER (no broker orders)":"REAL (live orders enabled)"),
          " mode. magic=",MagicNumber);
    return INIT_SUCCEEDED;
