@@ -476,7 +476,7 @@ body.trade-fullscreen .chart-overlay-top .chart-pickers strong{white-space:nowra
 body.trade-fullscreen .chart-overlay-top .chart-pickers select{min-width:74px;padding:4px 5px;min-height:29px}
 body.trade-fullscreen .chart-overlay-top .chart-actions{display:flex;flex:0 0 auto;flex-wrap:nowrap;margin-left:auto;gap:3px}
 body.trade-fullscreen .chart-overlay-top .chart-actions button{min-width:30px;min-height:29px;padding:4px 6px;font-size:11px;white-space:nowrap}
-body.trade-fullscreen .chart-overlay-top .status-strip{width:100%;padding:3px 8px;gap:10px;font-size:10px}
+body.trade-fullscreen .chart-overlay-top .status-strip{display:inline-flex;width:max-content;max-width:100%;flex:0 0 auto;align-self:flex-start;padding:3px 8px;gap:10px;font-size:10px}
 
 body.trade-fullscreen .chart-overlay-bottom{
   position:relative;
@@ -1038,14 +1038,72 @@ function activateMarketPreset() {
   calcLot();
 }
 
-async function load() {
+const chartCachePrimed = new Set();
+let chartCacheDbPromise = null;
+
+function openChartCacheDb() {
+  if (!('indexedDB' in window)) return Promise.resolve(null);
+  if (!chartCacheDbPromise) {
+    chartCacheDbPromise = new Promise(resolve => {
+      const request = indexedDB.open('forex-chart-cache', 1);
+      request.onupgradeneeded = () => {
+        const db = request.result;
+        if (!db.objectStoreNames.contains('chartData')) db.createObjectStore('chartData');
+      };
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => resolve(null);
+      request.onblocked = () => resolve(null);
+    });
+  }
+  return chartCacheDbPromise;
+}
+
+async function readChartCache(key) {
+  try {
+    const db = await openChartCacheDb();
+    if (!db) return null;
+    return await new Promise(resolve => {
+      const request = db.transaction('chartData', 'readonly').objectStore('chartData').get(key);
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => resolve(null);
+    });
+  } catch (_) { return null; }
+}
+
+async function writeChartCache(key, value) {
+  try {
+    const db = await openChartCacheDb();
+    if (!db) return;
+    await new Promise(resolve => {
+      const tx = db.transaction('chartData', 'readwrite');
+      tx.objectStore('chartData').put(value, key);
+      tx.oncomplete = tx.onerror = tx.onabort = () => resolve();
+    });
+  } catch (_) {}
+}
+
+async function load(forceNetwork = false) {
   const symbol = $('symbol').value, tf = $('tf').value;
   $('chartTitle').textContent = symbol + ' · ' + tf;
   $('feedState').textContent = 'Đang tải...';
   try {
-    const res = await fetch(API_BASE + '/api/chart/data?symbol=' + encodeURIComponent(symbol) + '&timeframe=' + encodeURIComponent(tf) + '&limit=1000', { cache: 'no-store' });
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const data = await res.json();
+    const cacheKey = symbol + '|' + tf;
+    let data = null;
+    let fromCache = false;
+    if (!forceNetwork && !chartCachePrimed.has(cacheKey)) {
+      data = await readChartCache(cacheKey);
+      if (data && Array.isArray(data.candles) && data.candles.length) {
+        fromCache = true;
+        chartCachePrimed.add(cacheKey);
+      }
+    }
+    if (!data) {
+      const res = await fetch(API_BASE + '/api/chart/data?symbol=' + encodeURIComponent(symbol) + '&timeframe=' + encodeURIComponent(tf) + '&limit=1000', { cache: 'no-store' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      data = await res.json();
+      chartCachePrimed.add(cacheKey);
+      void writeChartCache(cacheKey, data);
+    }
     mt5Digits = Math.max(0, Math.min(10, Number(data.digits ?? 5)));
     mt5TickSize = Number(data.tick_size ?? 0.00001);
     mt5TickValue = Number(data.tick_value ?? 0);
@@ -1116,6 +1174,10 @@ async function load() {
     } else {
       $('feedState').textContent = 'Chưa có nến MT5 được gửi lên server';
       $('signalDetails').textContent = 'API đã kết nối, đang chờ MT5 gửi dữ liệu OHLC.';
+    }
+    if (fromCache) {
+      $('feedState').textContent += ' · cache, đang cập nhật';
+      void load(true);
     }
   } catch (e) {
     $('feedState').textContent = 'Lỗi tải dữ liệu: ' + e.message;
