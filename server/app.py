@@ -52,11 +52,11 @@ def send_telegram_rt_signal(item: "TodaySignalItem") -> bool:
     direction = "▲ BUY" if item.direction == "BUY" else "▼ SELL"
     div_name = "Regular" if item.divergence.lower() in ("reg", "regular") else "Hidden"
     message = (
-        "🔔 AI OOP V8 · REALTIME\\n"
-        f"{item.symbol} · {item.timeframe}\\n"
-        f"{direction} · {div_name} Divergence\\n"
-        f"Giá điểm phân kỳ: {item.price2:.8f}\\n"
-        f"RSI: {item.rsi1:.1f} → {item.rsi2:.1f}\\n"
+        "🔔 AI OOP V8 · REALTIME\n"
+        f"{item.symbol} · {item.timeframe}\n"
+        f"{direction} · {div_name} Divergence\n"
+        f"Giá điểm phân kỳ: {item.price2:.8f}\n"
+        f"RSI: {item.rsi1:.1f} → {item.rsi2:.1f}\n"
         f"Thời gian: {local_time:%d/%m/%Y %H:%M} (GMT+7)"
     )
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
