@@ -2494,8 +2494,6 @@ $('priceChart').addEventListener('dblclick', event => {
   event.preventDefault();
   event.stopPropagation();
   priceChart.priceScale('right').applyOptions({ autoScale: true });
-  candleSeries.applyOptions({ autoscaleInfoProvider: undefined });
-  requestAnimationFrame(() => priceChart.applyOptions({}));
 }, true);
 
 $('fitChart').addEventListener('click', () => {
