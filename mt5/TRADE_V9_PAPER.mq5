@@ -6,7 +6,7 @@
 //| Pending orders: LIMIT ONLY (BUY_LIMIT / SELL_LIMIT), no Stop     |
 //+------------------------------------------------------------------+
 #property strict
-#property version "2.13"
+#property version "2.14"
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
@@ -71,6 +71,7 @@ uint lastHistorySyncMs   = 0;
 void SendPaperPositions();
 void SendAccountSnapshot();
 void PublishRealClosedDeals();
+int  CountRealExposure();
 
 //--- JSON & string helpers ------------------------------------------
 string JsonEscape(string s)
@@ -104,12 +105,22 @@ datetime ParseIsoOrEpochTime(string raw)
    }
    if(allDigits) return (datetime)StringToInteger(raw);
 
-   // Hỗ trợ định dạng ISO như "2026-11-20T12:30:00Z" hoặc "2026.11.20 12:30:00"
+   // Hỗ trợ ISO: "2026-11-20T12:30:00Z", "2026-11-20T12:30:00+07:00", "2026.11.20 12:30:00"
    string s = raw;
    StringReplace(s, "T", " ");
    StringReplace(s, "Z", "");
-   int plusPos = StringFind(s, "+");
-   if(plusPos > 0) s = StringSubstr(s, 0, plusPos);
+
+   // Cắt offset timezone: +HH:MM, -HH:MM, +HHMM, -HHMM (chỉ khi nằm sau phần date time)
+   int spacePos = StringFind(s, " ");
+   if(spacePos > 0)
+   {
+      int plusPos = StringFind(s, "+", spacePos);
+      if(plusPos > 0) s = StringSubstr(s, 0, plusPos);
+      // tránh cắt nhầm dấu '-' của ngày (yyyy-mm-dd)
+      int minusPos = StringFind(s, "-", spacePos);
+      if(minusPos > 0) s = StringSubstr(s, 0, minusPos);
+   }
+
    StringReplace(s, "-", ".");
    return StringToTime(s);
 }
@@ -398,7 +409,7 @@ void PruneClosedRealPositions()
    }
 }
 
-//--- Chuẩn hóa & kiểm tra loại lệnh (chỉ MARKET, BUY_LIMIT, SELL_LIMIT) ---
+//--- Chuẩn hóa & kiểm tra loại lệnh ------------------------------
 bool ResolveOrderType(string rawOrderType,string direction,string &normOrderType,string &errOut)
 {
    string ot = UpperTrim(rawOrderType);
@@ -487,6 +498,10 @@ bool OpenTrade(string id,string symbol,string tf,string direction,string rawOrde
    entry=NormalizeDouble(entry,digits);
    sl=NormalizeDouble(sl,digits);
    tp=NormalizeDouble(tp,digits);
+
+   // Sau khi normalize, kiểm tra lại TP để tránh TP == Entry (do rounding)
+   if((direction=="BUY" && tp<=entry) || (direction=="SELL" && tp>=entry))
+   { Ack(id,"REJECTED","Invalid TP geometry after normalize"); return false; }
 
    // ==================== PAPER ====================
    if(UsePaperSimulation)
@@ -589,6 +604,7 @@ bool ClosePaperTradeAtIndex(int idx,string outcome)
    }
    Print("[PAPER CLOSE] ",outcome," ",s," signal=",trades[idx].id,
          " volume=",DoubleToString(trades[idx].volume,4),
+         " pending=",(trades[idx].isPending?"yes":"no"),
          " realized P/L=",DoubleToString(realized,2));
    SendPaperClosed(idx,outcome,realized);
 
@@ -636,63 +652,81 @@ void ManagePaperTrades()
    }
 }
 
-//--- Nhận và thực thi lệnh đóng từ server ------------------------
-void AckCloseCommand(string requestId,string targetId,bool ok,string detail)
+//--- Nhận và thực thi lệnh đóng/hủy từ server --------------------
+void AckCloseCommand(string requestId,string targetId,bool ok,string detail,string kind)
 {
+   // kind: "close" | "cancel"
    string body=StringFormat(
-      "{\"request_id\":\"%s\",\"position_id\":\"%s\",\"ok\":%s,\"message\":\"%s\"}",
-      JsonEscape(requestId),JsonEscape(targetId),(ok?"true":"false"),JsonEscape(detail));
+      "{\"request_id\":\"%s\",\"position_id\":\"%s\",\"ok\":%s,\"message\":\"%s\",\"kind\":\"%s\"}",
+      JsonEscape(requestId),JsonEscape(targetId),(ok?"true":"false"),JsonEscape(detail),JsonEscape(kind));
    string response; int status;
    if(!Request("POST","/api/paper/close-requests/ack",body,response,status))
       Print("[V9 CLOSE ACK FAIL] req=",requestId," HTTP=",status," response=",response);
 }
 
-int FindPaperTradeIndex(string targetId,string symbol,string direction)
+// wantPending: -1=any, 0=chỉ position mở, 1=chỉ pending
+int FindPaperTradeIndex(string targetId,string symbol,string direction,int wantPending=-1)
 {
    if(targetId!="")
    {
       for(int i=0;i<ArraySize(trades);i++)
-         if(trades[i].id==targetId) return i;
+      {
+         if(trades[i].id!=targetId) continue;
+         if(wantPending==1 && !trades[i].isPending) continue;
+         if(wantPending==0 && trades[i].isPending) continue;
+         return i;
+      }
    }
    if(symbol!="")
    {
       for(int i=0;i<ArraySize(trades);i++)
-         if(trades[i].symbol==symbol && (direction=="" || trades[i].direction==direction))
-            return i;
+      {
+         if(trades[i].symbol!=symbol) continue;
+         if(direction!="" && trades[i].direction!=direction) continue;
+         if(wantPending==1 && !trades[i].isPending) continue;
+         if(wantPending==0 && trades[i].isPending) continue;
+         return i;
+      }
    }
    return -1;
 }
 
-bool CloseRealPositionById(string targetId,string symbol,string &detailOut)
+// preferPending: true khi request là HỦY pending -> không đóng position mở
+bool CloseRealPositionById(string targetId,string symbol,string &detailOut,bool preferPending=false)
 {
    ulong targetTicket=0;
-   if(targetId!="")
+
+   // Chỉ tìm position mở nếu KHÔNG phải request hủy pending
+   if(!preferPending)
    {
-      for(int i=PositionsTotal()-1;i>=0;i--)
+      if(targetId!="")
       {
-         if(!posInfo.SelectByIndex(i)) continue;
-         if(posInfo.Magic()!=MagicNumber) continue;
-         string tk=IntegerToString((long)posInfo.Ticket());
-         string posId=IntegerToString((long)PositionGetInteger(POSITION_IDENTIFIER));
-         int rIdx=FindTicketIndex(tk);
-         string sigId=(rIdx>=0) ? realSignalIds[rIdx] : "";
-         if(tk==targetId || posId==targetId || (sigId!="" && sigId==targetId))
+         for(int i=PositionsTotal()-1;i>=0;i--)
          {
-            targetTicket=posInfo.Ticket();
-            break;
+            if(!posInfo.SelectByIndex(i)) continue;
+            if(posInfo.Magic()!=MagicNumber) continue;
+            string tk=IntegerToString((long)posInfo.Ticket());
+            string posId=IntegerToString((long)PositionGetInteger(POSITION_IDENTIFIER));
+            int rIdx=FindTicketIndex(tk);
+            string sigId=(rIdx>=0) ? realSignalIds[rIdx] : "";
+            if(tk==targetId || posId==targetId || (sigId!="" && sigId==targetId))
+            {
+               targetTicket=posInfo.Ticket();
+               break;
+            }
          }
       }
-   }
-   if(targetTicket==0 && symbol!="")
-   {
-      for(int i=PositionsTotal()-1;i>=0;i--)
+      if(targetTicket==0 && symbol!="")
       {
-         if(!posInfo.SelectByIndex(i)) continue;
-         if(posInfo.Magic()!=MagicNumber) continue;
-         if(posInfo.Symbol()==symbol)
+         for(int i=PositionsTotal()-1;i>=0;i--)
          {
-            targetTicket=posInfo.Ticket();
-            break;
+            if(!posInfo.SelectByIndex(i)) continue;
+            if(posInfo.Magic()!=MagicNumber) continue;
+            if(posInfo.Symbol()==symbol)
+            {
+               targetTicket=posInfo.Ticket();
+               break;
+            }
          }
       }
    }
@@ -722,7 +756,7 @@ bool CloseRealPositionById(string targetId,string symbol,string &detailOut)
       return true;
    }
 
-   // Nếu không có position mở thì kiểm tra pending limit order tương ứng để hủy
+   // Hủy pending limit order tương ứng
    for(int i=OrdersTotal()-1;i>=0;i--)
    {
       ulong ordTicket=OrderGetTicket(i);
@@ -760,34 +794,46 @@ void ExecuteCloseCommand(string cmdJson)
    if(targetId=="") targetId = JsonValue(cmdJson,"id");
    string symbol    = JsonValue(cmdJson,"symbol");
    string direction = JsonValue(cmdJson,"direction");
+   string isPendingStr = JsonValue(cmdJson,"is_pending");
+   bool   isPendingReq = (isPendingStr=="1" || isPendingStr=="true");
+   string kindStr = JsonValue(cmdJson,"kind");
+   if(kindStr=="") kindStr = (isPendingReq ? "cancel" : "close");
    if(reqId=="") reqId = targetId;
 
    if(targetId=="" && symbol=="") return;
 
-   Print("[V9 CLOSE REQ] id=",targetId," symbol=",symbol," mode=",(UsePaperSimulation?"PAPER":"REAL"));
+   Print("[V9 ", UpperTrim(kindStr), " REQ] id=",targetId," symbol=",symbol,
+         " pending=",(isPendingReq?"yes":"no"),
+         " mode=",(UsePaperSimulation?"PAPER":"REAL"));
 
    bool closed=false;
    string detail="";
 
    if(UsePaperSimulation)
    {
-      int idx=FindPaperTradeIndex(targetId,symbol,direction);
+      int wantPending = -1;
+      if(kindStr=="cancel" || isPendingReq) wantPending = 1;
+      else if(kindStr=="close") wantPending = 0;
+
+      int idx=FindPaperTradeIndex(targetId,symbol,direction,wantPending);
       if(idx>=0)
       {
          closed=ClosePaperTradeAtIndex(idx,"MANUAL_CLOSE");
-         detail="Closed paper position";
+         detail=(trades[idx].isPending?"Canceled paper pending":"Closed paper position");
+         if(!closed) detail="Close paper failed";
       }
       else
       {
-         detail="Paper position not found";
+         detail=(wantPending==1 ? "Paper pending not found" : "Paper position not found");
       }
    }
    else
    {
-      closed=CloseRealPositionById(targetId,symbol,detail);
+      bool preferPending = (kindStr=="cancel" || isPendingReq);
+      closed=CloseRealPositionById(targetId,symbol,detail,preferPending);
    }
 
-   AckCloseCommand(reqId,targetId,closed,detail);
+   AckCloseCommand(reqId,targetId,closed,detail,kindStr);
    if(closed)
    {
       SendPaperPositions();
@@ -1092,7 +1138,7 @@ int OnInit()
 
    trade.SetExpertMagicNumber(MagicNumber);
    EventSetTimer(1);
-   Print("[V9] Started in ",
+   Print("[V9] Started v2.14 in ",
          (UsePaperSimulation?"PAPER (no broker orders)":"REAL (live orders enabled)"),
          " mode. magic=",MagicNumber);
    return INIT_SUCCEEDED;
