@@ -4,7 +4,7 @@
 //| optional close requests without opening new live trades.         |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.11"
+#property version "1.12"
 
 #include <Trade\Trade.mqh>
 
@@ -56,14 +56,61 @@ string JsonValue(string json, string key)
    if(p >= StringLen(json)) return "";
    if(StringGetCharacter(json,p)=='\"')
    {
-      int e = StringFind(json, "\"", p+1);
-      if(e < 0) return "";
-      return StringSubstr(json,p+1,e-p-1);
+      string out = "";
+      for(int i = p + 1; i < StringLen(json); i++)
+      {
+         ushort ch = StringGetCharacter(json, i);
+         if(ch == '\\' && i + 1 < StringLen(json))
+         {
+            ushort nx = StringGetCharacter(json, i + 1);
+            if(nx == '"' || nx == '\\') { out += ShortToString(nx); i++; continue; }
+         }
+         if(ch == '"') return out;
+         out += ShortToString(ch);
+      }
+      return "";
    }
    int e = p;
    while(e < StringLen(json) && StringGetCharacter(json,e)!=',' &&
          StringGetCharacter(json,e)!='}' && StringGetCharacter(json,e)!='\n') e++;
    return StringSubstr(json,p,e-p);
+}
+
+void ExtractTopLevelObjects(string arrJson, string &outObjects[])
+{
+   ArrayResize(outObjects, 0);
+   int depth = 0;
+   bool inString = false;
+   bool escaped = false;
+   int start = -1;
+   for(int i = 0; i < StringLen(arrJson); i++)
+   {
+      ushort ch = StringGetCharacter(arrJson, i);
+      if(inString)
+      {
+         if(escaped) escaped = false;
+         else if(ch == '\\') escaped = true;
+         else if(ch == '"') inString = false;
+         continue;
+      }
+      if(ch == '"') { inString = true; continue; }
+      if(ch == '{')
+      {
+         if(depth == 0) start = i;
+         depth++;
+      }
+      else if(ch == '}')
+      {
+         depth--;
+         if(depth == 0 && start >= 0)
+         {
+            int n = ArraySize(outObjects);
+            ArrayResize(outObjects, n + 1);
+            outObjects[n] = StringSubstr(arrJson, start, i - start + 1);
+            start = -1;
+         }
+      }
+   }
 }
 
 bool HttpRequest(string method,string path,string body,string &response,int &status)
@@ -430,7 +477,7 @@ void PublishRealHistory()
       if(tradesJson!="") tradesJson+=",";
       tradesJson+=StringFormat(
          "{\"id\":\"mt5-%I64u\",\"ticket\":\"%I64u\",\"symbol\":\"%s\",\"timeframe\":\"MT5\",\"direction\":\"%s\",\"entry\":%.8f,\"sl\":0,\"tp\":0,\"volume\":%.4f,\"profit\":%.2f,\"outcome\":\"CLOSED\",\"opened_at\":0,\"closed_at\":%I64d}",
-         dealTicket,dealTicket,JsonEscape(sym),dir,price,vol,profit,closedAt
+         dealTicket,dealTicket,JsonEscape(sym),dir,price,vol,NormalizeDouble(profit,2),closedAt
       );
       count++;
    }
@@ -451,52 +498,47 @@ void PollCloseRequests()
    if(!HttpRequest("GET","/api/paper/close-requests","",response,status)) return;
    if(StringFind(response,"\"close_requests\":[]")>=0) return;
 
-   int pos=0;
-   while(true)
+   string items[];
+   ExtractTopLevelObjects(response, items);
+   for(int k = 0; k < ArraySize(items); k++)
    {
-      int objStart=StringFind(response,"{",pos);
-      if(objStart<0) break;
-      int objEnd=StringFind(response,"}",objStart);
-      if(objEnd<0) break;
-      string item=StringSubstr(response,objStart,objEnd-objStart+1);
-      pos=objEnd+1;
+      string item = items[k];
+      string reqId = JsonValue(item, "request_id");
+      if(reqId == "") continue;
+      string ticketStr = JsonValue(item, "ticket");
+      string sym = JsonValue(item, "symbol");
+      string dir = JsonValue(item, "direction");
 
-      string reqId=JsonValue(item,"request_id");
-      if(reqId=="") continue;
-      string ticketStr=JsonValue(item,"ticket");
-      string sym=JsonValue(item,"symbol");
-      string dir=JsonValue(item,"direction");
-
-      bool closedAny=false;
-      string msg="No matching open position";
-      for(int i=PositionsTotal()-1; i>=0; i--)
+      bool closedAny = false;
+      string msg = "No matching open position";
+      for(int i = PositionsTotal() - 1; i >= 0; i--)
       {
-         ulong posTicket=PositionGetTicket(i);
-         if(posTicket==0 || !PositionSelectByTicket(posTicket)) continue;
-         string pSym=PositionGetString(POSITION_SYMBOL);
-         ENUM_POSITION_TYPE pType=(ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
-         string pDir=(pType==POSITION_TYPE_BUY)?"BUY":"SELL";
-         bool matchTicket=(ticketStr!="" && IntegerToString((long)posTicket)==ticketStr);
-         bool matchSymDir=(sym!="" && pSym==sym && (dir=="" || pDir==dir));
+         ulong posTicket = PositionGetTicket(i);
+         if(posTicket == 0 || !PositionSelectByTicket(posTicket)) continue;
+         string pSym = PositionGetString(POSITION_SYMBOL);
+         ENUM_POSITION_TYPE pType = (ENUM_POSITION_TYPE)PositionGetInteger(POSITION_TYPE);
+         string pDir = (pType == POSITION_TYPE_BUY) ? "BUY" : "SELL";
+         bool matchTicket = (ticketStr != "" && IntegerToString((long)posTicket) == ticketStr);
+         bool matchSymDir = (sym != "" && pSym == sym && (dir == "" || pDir == dir));
          if(matchTicket || matchSymDir)
          {
             if(g_closeTrade.PositionClose(posTicket))
             {
-               closedAny=true;
-               msg="Closed position "+IntegerToString((long)posTicket);
+               closedAny = true;
+               msg = "Closed position " + IntegerToString((long)posTicket);
             }
             else
             {
-               msg="Close failed: "+IntegerToString(g_closeTrade.ResultRetcode());
+               msg = "Close failed: " + IntegerToString(g_closeTrade.ResultRetcode());
             }
             break;
          }
       }
 
-      string ackBody=StringFormat("{\"request_id\":\"%s\",\"position_id\":\"%s\",\"ok\":%s,\"message\":\"%s\"}",
-         JsonEscape(reqId),JsonEscape(ticketStr),closedAny?"true":"false",JsonEscape(msg));
+      string ackBody = StringFormat("{\"request_id\":\"%s\",\"position_id\":\"%s\",\"ok\":%s,\"message\":\"%s\"}",
+         JsonEscape(reqId), JsonEscape(ticketStr), closedAny ? "true" : "false", JsonEscape(msg));
       string ackResp; int ackStatus;
-      HttpRequest("POST","/api/paper/close-requests/ack",ackBody,ackResp,ackStatus);
+      HttpRequest("POST", "/api/paper/close-requests/ack", ackBody, ackResp, ackStatus);
    }
 }
 
@@ -557,8 +599,13 @@ int OnInit()
       Print("Use localhost or HTTPS server URL.");
       return INIT_PARAMETERS_INCORRECT;
    }
+   if(ApiKey=="" || ApiKey=="SET_A_LONG_RANDOM_API_KEY")
+   {
+      Print("[SERVER] Set ApiKey privately in EA inputs.");
+      return INIT_PARAMETERS_INCORRECT;
+   }
    EventSetTimer(1);
-   Print("ServerConnector v1.11 initialized. Add ",ServerBaseURL,
+   Print("ServerConnector v1.12 initialized. Add ",ServerBaseURL,
          " to MT5 WebRequest allowlist.");
    return INIT_SUCCEEDED;
 }
