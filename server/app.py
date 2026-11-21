@@ -622,6 +622,10 @@ def update_mt5_account_snapshot(payload: Mt5AccountSnapshotIn):
                  1 if item.is_pending else 0, item.order_type, item.magic, item.comment,
                  item.source, now),
             )
+        conn.execute(
+            "INSERT OR REPLACE INTO heartbeats(component,status,details,updated_at) VALUES(?,?,?,?)",
+            ("mt5-account-snapshot", "online", f"{len(payload.items)} lệnh/vị thế", now),
+        )
     return {"ok": True, "items": len(payload.items), "updated_at": now}
 
 
@@ -928,9 +932,10 @@ def dashboard_data():
              "status": "Đang chờ trên MT5"}
             for p in mt5_account_items if p["is_pending"]
         ]
-        mt5_snapshot_updated_at = (
-            mt5_account_items[0]["updated_at"] if mt5_account_items else None
-        )
+        snapshot_state = conn.execute(
+            "SELECT updated_at FROM heartbeats WHERE component='mt5-account-snapshot'"
+        ).fetchone()
+        mt5_snapshot_updated_at = snapshot_state["updated_at"] if snapshot_state else None
         paper_history = [dict(r) for r in conn.execute(
             "SELECT id,symbol,timeframe,direction,entry,sl,tp,volume,risk,profit,outcome,opened_at,closed_at "
             "FROM paper_history ORDER BY closed_at DESC LIMIT 50").fetchall()]
