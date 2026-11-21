@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026"
 #property link      "https://www.mql5.com"
-#property version   "1.02"
+#property version   "1.03"
 #property indicator_chart_window
 #property indicator_buffers 1
 #property indicator_plots   1
@@ -251,6 +251,14 @@ bool IsSymbolExcluded(string sym)
    return false;
 }
 
+bool IsValidSLForDirection(string type, double entryPrice, double slPrice)
+{
+   if(entryPrice <= 0 || slPrice <= 0) return false;
+   if(type == "SELL") return (slPrice > entryPrice);
+   if(type == "BUY")  return (slPrice < entryPrice);
+   return false;
+}
+
 //+------------------------------------------------------------------+
 //| RSI & VOLUME FUNCTIONS                                           |
 //+------------------------------------------------------------------+
@@ -306,7 +314,7 @@ bool IsReversalCandle(string sym, ENUM_TIMEFRAMES tf, int shift)
 {
    double open=iOpen(sym,tf,shift),close=iClose(sym,tf,shift),high=iHigh(sym,tf,shift),low=iLow(sym,tf,shift);
    double body=MathAbs(close-open),range=high-low;
-   if(range==0)return false;
+   if(range<=0)return false;
    double upperWick=high-MathMax(open,close),lowerWick=MathMin(open,close)-low;
    if(body/range<0.3)return true;
    if(upperWick>body*2&&lowerWick<body*0.5)return true;
@@ -324,7 +332,7 @@ bool IsReversalCandle(string sym, ENUM_TIMEFRAMES tf, int shift)
 
 double CalcVolumeRatio(string sym, ENUM_TIMEFRAMES tf, int shift, int bars, int maLen)
 {
-   if(shift+maLen>bars)return 0;
+   if(shift+maLen>bars || maLen<=0)return 0;
    double sum=0;
    for(int i=shift;i<shift+maLen;i++)
       sum+=(double)iTickVolume(sym,tf,i);
@@ -352,20 +360,34 @@ bool CheckMiddleValid(string sym, ENUM_TIMEFRAMES tf, int shift2, int shift1, da
 bool IsMonotonicStructure(string sym, ENUM_TIMEFRAMES tf, int shiftNew, int shiftOld, bool isBearish)
 {
    if(shiftNew>=shiftOld)return false;
+   int reqBars = MathMax(1, RT_ConsecutiveBars);
+   int streak = 0;
    if(isBearish)
    {
       double oldHigh=iHigh(sym,tf,shiftOld);
-      for(int i=shiftNew;i<shiftOld;i++)
+      for(int i=shiftOld-1;i>=shiftNew;i--)
+      {
          if(iHigh(sym,tf,i)>oldHigh)
+            streak++;
+         else
+            streak=0;
+         if(streak>=reqBars)
             return true;
+      }
       return false;
    }
    else
    {
       double oldLow=iLow(sym,tf,shiftOld);
-      for(int i=shiftNew;i<shiftOld;i++)
+      for(int i=shiftOld-1;i>=shiftNew;i--)
+      {
          if(iLow(sym,tf,i)<oldLow)
+            streak++;
+         else
+            streak=0;
+         if(streak>=reqBars)
             return true;
+      }
       return false;
    }
 }
@@ -439,8 +461,10 @@ void SendDivergenceNotify(string sym, string tfStr, string divType, string direc
 void WriteStrongSignalToGV(string sym, string tfStr, string type, double entryPrice, double slPrice, double highPrice, double lowPrice, bool isStrong, string divType, datetime signalTime, double score=0)
 {
    if(!EnableSignalOutput||!isStrong)return;
+   if(!IsValidSLForDirection(type, entryPrice, slPrice))return;
    string prefix="DIVSIGNAL_";
    GlobalVariableSet(prefix+"TYPE",type=="SELL"?-1:1);
+   GlobalVariableSet(prefix+"ORDER_TYPE",0); // 0 = MARKET (realtime signal)
    GlobalVariableSet(prefix+"ENTRY",entryPrice);
    GlobalVariableSet(prefix+"SL",slPrice);
    GlobalVariableSet(prefix+"HIGH",highPrice);
@@ -603,7 +627,9 @@ void PrintStrongSignalOnce(SSymbolTFData &data, string sym, string tfStr, string
 {
    if(signalKey==data.lastStrongSignalKey)return;
    datetime gmt7Time=ServerTimeToGMT7(signalTime);
-   Print("STRONG SIGNAL SENT: ",sym," ",tfStr," ",type," ",divType," Entry=",DoubleToString(entryPrice,5)," SL=",DoubleToString(slPrice,5)," Time=",TimeToString(gmt7Time,TIME_DATE|TIME_MINUTES));
+   int digits=(int)SymbolInfoInteger(sym,SYMBOL_DIGITS);
+   if(digits<=0) digits=5;
+   Print("STRONG SIGNAL SENT: ",sym," ",tfStr," ",type," ",divType," Entry=",DoubleToString(entryPrice,digits)," SL=",DoubleToString(slPrice,digits)," Time=",TimeToString(gmt7Time,TIME_DATE|TIME_MINUTES));
    data.lastStrongSignalKey=signalKey;
    data.lastStrongSignalPrintTime=TimeCurrent();
 }
@@ -929,7 +955,7 @@ int OnInit()
    if(tfList == "") tfList = "NONE!";
    
    Print("═══════════════════════════════════════════");
-   Print("RSI Divergence Realtime v1.02");
+   Print("RSI Divergence Realtime v1.03");
    Print("   Timeframes: ", tfList);
    Print("═══════════════════════════════════════════");
    
@@ -1138,6 +1164,8 @@ void OnDeinit(const int reason)
    ENUM_TIMEFRAMES tfs[];
    string tfStrs[];
    GetEnabledTimeframes(tfs,tfStrs);
+   for(int i=0;i<ArraySize(arrSymTF);i++)
+      ClearAllDivergenceData(arrSymTF[i].sym,arrSymTF[i].tfStr);
    for(int s=0;s<SymbolsTotal(true);s++)
    {
       string sym=SymbolName(s,true);
@@ -1433,7 +1461,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   if(gmt7Time >= todayStartGMT7)
                      AddTodaySignal(sym, tfStr, "BEAR", "Reg", "RT", lastHighTime, timeAtMaxHigh, lastHighPrice, rtMaxHigh, lastHighRSI, rsiAtMaxHigh);
                   
-                  if(isStrong && timeAtMaxHigh >= g_initTime && IsNewsSafe() && shouldTrack)
+                  if(isStrong && timeAtMaxHigh >= g_initTime && IsNewsSafe() && shouldTrack && IsValidSLForDirection("SELL", currentPrice, rtMaxHigh))
                   {
                      WriteStrongSignalToGV(sym, tfStr, "SELL", currentPrice, rtMaxHigh, rtMaxHigh, lastHighPrice, true, "REG", timeAtMaxHigh);
                      string sigKey = sym + "|" + tfStr + "|SELL|Reg|" + IntegerToString(timeAtMaxHigh);
@@ -1497,9 +1525,12 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   if(isStrong && timeAtMaxRSI >= g_initTime && IsNewsSafe() && shouldTrack)
                   {
                      double sl = MathMax(lastHighPrice, priceAtMaxRSI);
-                     WriteStrongSignalToGV(sym, tfStr, "SELL", currentPrice, sl, lastHighPrice, lastHighPrice, true, "HID", timeAtMaxRSI);
-                     string sigKey = sym + "|" + tfStr + "|SELL|Hid|" + IntegerToString(timeAtMaxRSI);
-                     PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "SELL", "Hid", currentPrice, sl, timeAtMaxRSI, sigKey);
+                     if(IsValidSLForDirection("SELL", currentPrice, sl))
+                     {
+                        WriteStrongSignalToGV(sym, tfStr, "SELL", currentPrice, sl, lastHighPrice, lastHighPrice, true, "HID", timeAtMaxRSI);
+                        string sigKey = sym + "|" + tfStr + "|SELL|Hid|" + IntegerToString(timeAtMaxRSI);
+                        PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "SELL", "Hid", currentPrice, sl, timeAtMaxRSI, sigKey);
+                     }
                   }
                   
                   if(timeAtMaxRSI >= g_initTime && timeAtMaxRSI != arrSymTF[idx].lastBearNotifyBar)
@@ -1580,7 +1611,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   if(gmt7Time >= todayStartGMT7)
                      AddTodaySignal(sym, tfStr, "BULL", "Reg", "RT", lastLowTime, timeAtMinLow, lastLowPrice, rtMinLow, lastLowRSI, rsiAtMinLow);
                   
-                  if(isStrong && timeAtMinLow >= g_initTime && IsNewsSafe() && shouldTrack)
+                  if(isStrong && timeAtMinLow >= g_initTime && IsNewsSafe() && shouldTrack && IsValidSLForDirection("BUY", currentPrice, rtMinLow))
                   {
                      WriteStrongSignalToGV(sym, tfStr, "BUY", currentPrice, rtMinLow, lastHighPrice, rtMinLow, true, "REG", timeAtMinLow);
                      string sigKey = sym + "|" + tfStr + "|BUY|Reg|" + IntegerToString(timeAtMinLow);
@@ -1644,9 +1675,12 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   if(isStrong && timeAtMinRSI >= g_initTime && IsNewsSafe() && shouldTrack)
                   {
                      double sl = MathMin(lastLowPrice, priceAtMinRSI);
-                     WriteStrongSignalToGV(sym, tfStr, "BUY", currentPrice, sl, lastHighPrice, lastLowPrice, true, "HID", timeAtMinRSI);
-                     string sigKey = sym + "|" + tfStr + "|BUY|Hid|" + IntegerToString(timeAtMinRSI);
-                     PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "BUY", "Hid", currentPrice, sl, timeAtMinRSI, sigKey);
+                     if(IsValidSLForDirection("BUY", currentPrice, sl))
+                     {
+                        WriteStrongSignalToGV(sym, tfStr, "BUY", currentPrice, sl, lastHighPrice, lastLowPrice, true, "HID", timeAtMinRSI);
+                        string sigKey = sym + "|" + tfStr + "|BUY|Hid|" + IntegerToString(timeAtMinRSI);
+                        PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "BUY", "Hid", currentPrice, sl, timeAtMinRSI, sigKey);
+                     }
                   }
                   
                   if(timeAtMinRSI >= g_initTime && timeAtMinRSI != arrSymTF[idx].lastBullNotifyBar)
