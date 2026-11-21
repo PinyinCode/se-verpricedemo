@@ -571,16 +571,16 @@ body.trade-fullscreen .chart-overlay-bottom .trade-footer{max-height:none!import
 </dialog>
 
 <dialog id="positionsDialog" class="positions-dialog">
- <div class="positions-dialog-head"><div><strong>VỊ THẾ ĐANG MỞ &amp; VỊ THẾ CHỜ</strong><div class="small">Đồng bộ từ MT5 / Trade V9 · hỗ trợ đóng vị thế &amp; hủy lệnh chờ</div></div><button type="button" id="closePositionsDialog" aria-label="Đóng">✕</button></div>
+ <div class="positions-dialog-head"><div><strong>VỊ THẾ ĐANG MỞ &amp; VỊ THẾ CHỜ</strong><div class="small">Lệnh PAPER có thể thao tác · lệnh MT5 ngoài luồng chỉ xem</div></div><button type="button" id="closePositionsDialog" aria-label="Đóng">✕</button></div>
  <div class="positions-dialog-body">
   <div id="positionsUpdated" class="small">Đang đồng bộ...</div>
   <section class="positions-section">
    <div class="positions-section-head"><strong>VỊ THẾ ĐANG MỞ</strong><span id="openPositionsMeta" class="small">0 vị thế</span></div>
-   <div class="positions-table-wrap"><table><thead><tr><th>Mã</th><th>TF</th><th>Hướng</th><th>Entry</th><th>SL</th><th>TP</th><th>Lot</th><th>P/L</th><th>Thao tác</th></tr></thead><tbody id="chartPositions"><tr><td colspan="9" class="empty">Đang tải vị thế...</td></tr></tbody></table></div>
+   <div class="positions-table-wrap"><table><thead><tr><th>Mã</th><th>TF / Nguồn</th><th>Hướng</th><th>Entry</th><th>SL</th><th>TP</th><th>Lot</th><th>P/L</th><th>Thao tác</th></tr></thead><tbody id="chartPositions"><tr><td colspan="9" class="empty">Đang tải vị thế...</td></tr></tbody></table></div>
   </section>
   <section class="positions-section">
    <div class="positions-section-head"><strong>VỊ THẾ CHỜ (PENDING)</strong><span id="pendingOrdersMeta" class="small">0 lệnh chờ</span></div>
-   <div class="positions-table-wrap"><table><thead><tr><th>Mã</th><th>TF</th><th>Loại lệnh</th><th>Giá chờ</th><th>SL</th><th>TP</th><th>Lot</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody id="chartPendingOrders"><tr><td colspan="9" class="empty">Đang tải vị thế chờ...</td></tr></tbody></table></div>
+   <div class="positions-table-wrap"><table><thead><tr><th>Mã</th><th>TF / Nguồn</th><th>Loại lệnh</th><th>Giá chờ</th><th>SL</th><th>TP</th><th>Lot</th><th>Trạng thái</th><th>Thao tác</th></tr></thead><tbody id="chartPendingOrders"><tr><td colspan="9" class="empty">Đang tải vị thế chờ...</td></tr></tbody></table></div>
   </section>
  </div>
 </dialog>
@@ -894,16 +894,16 @@ async function refreshChartPositions(){
   if(!r.ok)throw new Error('HTTP '+r.status);
   const d=await r.json();
   const mergedOpen=new Map();
-  (Array.isArray(d.mt5_positions)?d.mt5_positions:[]).forEach(p=>mergedOpen.set(String(getPositionId(p)),p));
   (Array.isArray(d.paper_positions)?d.paper_positions:[]).forEach(p=>mergedOpen.set(String(getPositionId(p)),p));
+  (Array.isArray(d.mt5_positions)?d.mt5_positions:[]).forEach(p=>mergedOpen.set(String(getPositionId(p)),p));
   const openList=Array.from(mergedOpen.values());
   const mergedPending=new Map();
   (Array.isArray(d.mt5_pending_orders)?d.mt5_pending_orders:[]).forEach(o=>mergedPending.set(String(getPendingId(o)),o));
   (Array.isArray(d.paper_pending_orders)?d.paper_pending_orders:[]).forEach(o=>mergedPending.set(String(getPendingId(o)),o));
   const pendingList=Array.from(mergedPending.values());
   const snapshotAge=d.mt5_snapshot_updated_at?Math.max(0,Math.round((Date.now()-Date.parse(d.mt5_snapshot_updated_at))/1000)):null;
-  $('positionsUpdated').textContent='Đồng bộ '+new Date().toLocaleTimeString('vi-VN')+' · '+openList.length+' vị thế mở · '+pendingList.length+' lệnh chờ'+(snapshotAge!==null?(snapshotAge>15?' · Dữ liệu MT5 cũ '+snapshotAge+'s':' · MT5 '+snapshotAge+'s'):' · Chưa nhận snapshot MT5');
   renderChartPositions(openList,pendingList);
+  $('positionsUpdated').textContent='Đồng bộ '+new Date().toLocaleTimeString('vi-VN')+' · '+openList.length+' vị thế mở · '+pendingList.length+' lệnh chờ'+(snapshotAge!==null?(snapshotAge>15?' · Dữ liệu MT5 cũ '+snapshotAge+'s':' · MT5 '+snapshotAge+'s'):' · Chưa nhận snapshot MT5');
  }catch(e){$('positionsUpdated').textContent='Không thể đồng bộ vị thế: '+e.message}
 }
 $('settingsButton').addEventListener('click',()=>$('tradeSettingsDialog').showModal());
