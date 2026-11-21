@@ -710,7 +710,8 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:10px}
 </dialog>
 
 <script>
-const API_BASE = String(window.FOREX_API_BASE || '').replace(/\\/+$/, '');
+let API_BASE = String(window.FOREX_API_BASE || '');
+while (API_BASE.endsWith('/')) API_BASE = API_BASE.slice(0, -1);
 const $ = id => document.getElementById(id);
 let mt5Digits = 5, mt5TickSize = 0.00001, mt5TickValue = 0, mt5VolumeMin = 0, mt5VolumeMax = 0, mt5VolumeStep = 0, latestMarketPrice = 0;
 
