@@ -187,55 +187,76 @@ void PublishCommissionSnapshot()
    if(!EnableCommissionSync) return;
 
    string symbols[];
-   string accountId=IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN));
-   int count=StringSplit(CommissionSymbols,',',symbols);
-   if(count<=0) return;
+   string accountId = IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN));
 
-   string items="[";
-   int sent=0;
-   for(int i=0;i<count;i++)
+   int count = StringSplit(CommissionSymbols, ',', symbols);
+   if(count <= 0) return;
+
+   string items = "[";
+   int sent = 0;
+
+   for(int i = 0; i < count; i++)
    {
-      string symbol=symbols[i];
+      string symbol = symbols[i];
+
       StringTrimLeft(symbol);
       StringTrimRight(symbol);
       StringToUpper(symbol);
-      if(symbol=="" || !SymbolSelect(symbol,true)) continue;
 
-      bool hasHistory=false;
-      double commission=ReadCommissionPerLotFromHistory(symbol,hasHistory);
-      if(!hasHistory) continue;
+      if(symbol == "" || !SymbolSelect(symbol, true))
+         continue;
 
-      double point=SymbolInfoDouble(symbol,SYMBOL_POINT);
-      double tickSize=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_SIZE);
-      double tickValue=SymbolInfoDouble(symbol,SYMBOL_TRADE_TICK_VALUE);
-      double contractSize=SymbolInfoDouble(symbol,SYMBOL_TRADE_CONTRACT_SIZE);
-      if(point<=0) continue;
+      bool hasHistory = false;
+      double commission = ReadCommissionPerLotFromHistory(symbol, hasHistory);
 
-      // Preserve broker-reported swap units; conversion depends on SYMBOL_SWAP_MODE.
-      double swapLong=SymbolInfoDouble(symbol,SYMBOL_SWAP_LONG);
-      double swapShort=SymbolInfoDouble(symbol,SYMBOL_SWAP_SHORT);
+      if(!hasHistory)
+         continue;
 
-      if(sent>0) items+=",";
-      items+="{\\"symbol\\":\\""+JsonEscape(symbol)+"\\"";
-      items+=",\\"commission_per_lot\\":"+DoubleToString(commission,6);
-      items+=",\\"swap_long\\":"+DoubleToString(swapLong,8);
-      items+=",\\"swap_short\\":"+DoubleToString(swapShort,8);
-      items+=",\\"contract_size\\":"+DoubleToString(contractSize,2);
-      items+=",\\"tick_value\\":"+DoubleToString(tickValue,8);
-      items+=",\\"point_size\\":"+DoubleToString(point,10);
-      items+=",\\"source_updated_at\\":"+IntegerToString((int)TimeCurrent())+"}";
+      double point        = SymbolInfoDouble(symbol, SYMBOL_POINT);
+      double tickValue    = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
+      double contractSize = SymbolInfoDouble(symbol, SYMBOL_TRADE_CONTRACT_SIZE);
+
+      if(point <= 0)
+         continue;
+
+      double swapLong  = SymbolInfoDouble(symbol, SYMBOL_SWAP_LONG);
+      double swapShort = SymbolInfoDouble(symbol, SYMBOL_SWAP_SHORT);
+
+      if(sent > 0)
+         items += ",";
+
+      items += "{\"symbol\":\"" + JsonEscape(symbol) + "\"";
+      items += ",\"commission_per_lot\":" + DoubleToString(commission, 6);
+      items += ",\"swap_long\":" + DoubleToString(swapLong, 8);
+      items += ",\"swap_short\":" + DoubleToString(swapShort, 8);
+      items += ",\"contract_size\":" + DoubleToString(contractSize, 2);
+      items += ",\"tick_value\":" + DoubleToString(tickValue, 8);
+      items += ",\"point_size\":" + DoubleToString(point, 10);
+      items += ",\"source_updated_at\":" + IntegerToString((int)TimeCurrent()) + "}";
+
       sent++;
    }
-   items+="]";
-   if(sent<=0) return;
 
-   string body="{\\"account_id\\":\\""+accountId+"\\",\\"items\\":"+items+"}";
+   items += "]";
+
+   if(sent <= 0)
+      return;
+
+   string body = "{\"account_id\":\"" + accountId + "\",\"items\":" + items + "}";
+
    string response;
-   int status=0;
-   if(HttpRequest("POST","/api/mt5/commissions",body,response,status))
-      Print("[COMMISSION] History snapshot synced: ",sent," symbols for account ",accountId);
+   int status = 0;
+
+   if(HttpRequest("POST", "/api/mt5/commissions", body, response, status))
+   {
+      Print("[COMMISSION] History snapshot synced: ",
+            sent, " symbols for account ", accountId);
+   }
    else
-      Print("[COMMISSION] Sync failed. HTTP=",status," response=",response);
+   {
+      Print("[COMMISSION] Sync failed. HTTP=", status,
+            " response=", response);
+   }
 }
 
 void SendHeartbeat()
