@@ -69,6 +69,7 @@ uint lastHistorySyncMs   = 0;
 
 //--- Forward declarations -------------------------------------------
 void SendPaperPositions();
+void SendAccountSnapshot();
 void PublishRealClosedDeals();
 
 //--- JSON & string helpers ------------------------------------------
@@ -947,6 +948,91 @@ void SendPaperPositions()
             " body=",body," response=",response);
 }
 
+void SendAccountSnapshot()
+{
+   string itemsJson="";
+   bool first=true;
+
+   // Broker positions: include manual trades and trades from other EAs too.
+   for(int i=PositionsTotal()-1;i>=0;i--)
+   {
+      ulong ticket=PositionGetTicket(i);
+      if(ticket==0) continue;
+
+      string symbol=PositionGetString(POSITION_SYMBOL);
+      long magic=PositionGetInteger(POSITION_MAGIC);
+      string comment=PositionGetString(POSITION_COMMENT);
+      string source=(magic==MagicNumber || comment==OrderComment)?"TRADE_V9":"MT5_EXTERNAL";
+      long type=PositionGetInteger(POSITION_TYPE);
+      string direction=(type==POSITION_TYPE_BUY?"BUY":"SELL");
+      double entry=PositionGetDouble(POSITION_PRICE_OPEN);
+      double sl=PositionGetDouble(POSITION_SL);
+      double tp=PositionGetDouble(POSITION_TP);
+      double volume=PositionGetDouble(POSITION_VOLUME);
+      double profit=PositionGetDouble(POSITION_PROFIT)
+                    +PositionGetDouble(POSITION_SWAP);
+      datetime opened=(datetime)PositionGetInteger(POSITION_TIME);
+
+      if(!first) itemsJson+=",";
+      first=false;
+      itemsJson+=StringFormat(
+         "{\"id\":\"%I64u\",\"ticket\":\"%I64u\",\"symbol\":\"%s\","
+         "\"timeframe\":\"MT5\",\"direction\":\"%s\",\"entry\":%.10f,"
+         "\"sl\":%.10f,\"tp\":%.10f,\"volume\":%.8f,\"profit\":%.2f,"
+         "\"opened_at\":%I64d,\"is_pending\":false,\"order_type\":\"MARKET\","
+         "\"magic\":%I64d,\"comment\":\"%s\",\"source\":\"%s\"}",
+         ticket,ticket,JsonEscape(symbol),direction,entry,sl,tp,volume,
+         NormalizeDouble(profit,2),(long)opened,magic,JsonEscape(comment),source
+      );
+   }
+
+   // Active pending orders from the terminal, regardless of where they were created.
+   for(int i=OrdersTotal()-1;i>=0;i--)
+   {
+      ulong ticket=OrderGetTicket(i);
+      if(ticket==0) continue;
+
+      ENUM_ORDER_TYPE type=(ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+      string orderType="";
+      string direction="";
+      if(type==ORDER_TYPE_BUY_LIMIT) { orderType="BUY_LIMIT"; direction="BUY"; }
+      else if(type==ORDER_TYPE_SELL_LIMIT) { orderType="SELL_LIMIT"; direction="SELL"; }
+      else if(type==ORDER_TYPE_BUY_STOP) { orderType="BUY_STOP"; direction="BUY"; }
+      else if(type==ORDER_TYPE_SELL_STOP) { orderType="SELL_STOP"; direction="SELL"; }
+      else if(type==ORDER_TYPE_BUY_STOP_LIMIT) { orderType="BUY_STOP_LIMIT"; direction="BUY"; }
+      else if(type==ORDER_TYPE_SELL_STOP_LIMIT) { orderType="SELL_STOP_LIMIT"; direction="SELL"; }
+      else continue;
+
+      string symbol=OrderGetString(ORDER_SYMBOL);
+      long magic=OrderGetInteger(ORDER_MAGIC);
+      string comment=OrderGetString(ORDER_COMMENT);
+      string source=(magic==MagicNumber || comment==OrderComment)?"TRADE_V9":"MT5_EXTERNAL";
+      double entry=OrderGetDouble(ORDER_PRICE_OPEN);
+      double sl=OrderGetDouble(ORDER_SL);
+      double tp=OrderGetDouble(ORDER_TP);
+      double volume=OrderGetDouble(ORDER_VOLUME_CURRENT);
+      datetime opened=(datetime)OrderGetInteger(ORDER_TIME_SETUP);
+      if(entry<=0 || volume<=0) continue;
+
+      if(!first) itemsJson+=",";
+      first=false;
+      itemsJson+=StringFormat(
+         "{\"id\":\"%I64u\",\"ticket\":\"%I64u\",\"symbol\":\"%s\","
+         "\"timeframe\":\"MT5\",\"direction\":\"%s\",\"entry\":%.10f,"
+         "\"sl\":%.10f,\"tp\":%.10f,\"volume\":%.8f,\"profit\":0,"
+         "\"opened_at\":%I64d,\"is_pending\":true,\"order_type\":\"%s\","
+         "\"magic\":%I64d,\"comment\":\"%s\",\"source\":\"%s\"}",
+         ticket,ticket,JsonEscape(symbol),direction,entry,sl,tp,volume,
+         (long)opened,orderType,magic,JsonEscape(comment),source
+      );
+   }
+
+   string body="{\"items\":["+itemsJson+"]}";
+   string response; int status;
+   if(!Request("POST","/api/mt5/account-snapshot",body,response,status))
+      Print("[V9] Account snapshot sync failed HTTP=",status," response=",response);
+}
+
 void PublishRealClosedDeals()
 {
    if(UsePaperSimulation || !SyncRealHistory) return;
@@ -1040,6 +1126,7 @@ void OnTimer()
    {
       lastPositionsSyncMs=nowMs;
       SendPaperPositions();
+      SendAccountSnapshot();
    }
 
    if(!UsePaperSimulation && SyncRealHistory &&
