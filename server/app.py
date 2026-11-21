@@ -1241,7 +1241,7 @@ def chart_data(
     }
 
 
-@app.get("/api/dashboard")
+@app.get("/api/dashboard", dependencies=[Depends(require_key)])
 def dashboard_data():
     _cleanup_recently_acked()
     with db() as conn:
