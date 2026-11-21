@@ -623,6 +623,25 @@ function nearestTime(t,bars){if(!bars.length)return t;let best=bars[0].time,delt
 function renderSignals(signals,bars){const list=signals||[];$('signalCount').textContent=list.length+' tín hiệu';const markers=list.map(s=>({time:nearestTime(Number(s.signal_time),bars),position:s.direction==='BUY'?'belowBar':'aboveBar',color:s.direction==='BUY'?'#22c58b':'#f06478',shape:s.direction==='BUY'?'arrowUp':'arrowDown',text:s.direction+' '+s.divergence+' '+s.signal_type}));candleSeries.setMarkers(bars.length?markers:[]);
 $('signalTable').innerHTML=list.length?'<table><thead><tr><th>Thời gian</th><th>Hướng</th><th>Loại</th><th>Phân kỳ</th><th>Giá</th></tr></thead><tbody>'+list.map((s,i)=>'<tr data-i="'+i+'"><td>'+esc(new Date(Number(s.signal_time)*1000).toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh'}))+'</td><td class="'+(s.direction==='BUY'?'buy':'sell')+'">'+esc(s.direction)+'</td><td>'+esc(s.signal_type)+'</td><td>'+esc(s.divergence)+'</td><td>'+fmt(s.price2)+'</td></tr>').join('')+'</tbody></table>':'<div class="empty">Không có tín hiệu AI OOP V8 cho lựa chọn này.</div>';
 $('signalTable').querySelectorAll('tr[data-i]').forEach(row=>row.addEventListener('click',()=>{const s=list[Number(row.dataset.i)];$('signalDetails').innerHTML='<b class="'+(s.direction==='BUY'?'buy':'sell')+'">'+esc(s.direction)+' · '+esc(s.divergence)+' · '+esc(s.signal_type)+'</b><p>'+esc(s.symbol)+' / '+esc(s.timeframe)+'</p><p>Thời gian: '+esc(new Date(Number(s.signal_time)*1000).toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh'}))+'</p><p>Price 1: '+fmt(s.price1)+'<br>Price 2: '+fmt(s.price2)+'</p><p>RSI 1: '+fmt(s.rsi1)+'<br>RSI 2: '+fmt(s.rsi2)+'</p>'; }));}
+function defaultGap(ref){
+ const tick=mt5TickSize>0?mt5TickSize:Math.pow(10,-mt5Digits);
+ return Math.max(tick*20,Math.abs(Number(ref)||0)*0.001);
+}
+function applyLimitDefaults(ref,limitType='BUY_LIMIT'){
+ const base=Number(ref),gap=defaultGap(base);
+ if(!(base>0))return;
+ if(limitType==='SELL_LIMIT'){
+  const entry=base+gap;
+  $('entryPrice').value=entry.toFixed(mt5Digits);
+  $('slPrice').value=(entry+gap).toFixed(mt5Digits);
+  $('tpPrice').value=(entry-gap).toFixed(mt5Digits);
+ }else{
+  const entry=base-gap;
+  $('entryPrice').value=entry.toFixed(mt5Digits);
+  $('slPrice').value=(entry-gap).toFixed(mt5Digits);
+  $('tpPrice').value=(entry+gap).toFixed(mt5Digits);
+ }
+}
 async function load(){const symbol=$('symbol').value,tf=$('tf').value;$('chartTitle').textContent=symbol+' · '+tf;$('feedState').textContent='Đang tải...';try{const res=await fetch('/api/chart/data?symbol='+encodeURIComponent(symbol)+'&timeframe='+encodeURIComponent(tf)+'&limit=1000',{cache:'no-store'});if(!res.ok)throw new Error('HTTP '+res.status);const data=await res.json();mt5Digits=Math.max(0,Math.min(10,Number(data.digits??5)));mt5TickSize=Number(data.tick_size??0.00001);mt5TickValue=Number(data.tick_value??0);mt5VolumeMin=Number(data.volume_min??0);mt5VolumeMax=Number(data.volume_max??0);mt5VolumeStep=Number(data.volume_step??0);candleSeries.applyOptions({priceFormat:{type:'price',precision:mt5Digits,minMove:mt5TickSize>0?mt5TickSize:Math.pow(10,-mt5Digits)}});for(const id of ['entryPrice','slPrice','tpPrice'])if($(id).value!==''&&Number.isFinite(Number($(id).value)))$(id).value=Number($(id).value).toFixed(mt5Digits);$('contractMeta').textContent='Tick '+mt5TickSize.toFixed(mt5Digits)+' · Tick value loss/lot '+mt5TickValue+' · Lot min/max/step '+mt5VolumeMin+'/'+mt5VolumeMax+'/'+mt5VolumeStep;const bars=(data.candles||[]).map(c=>({time:Number(c.time),open:Number(c.open),high:Number(c.high),low:Number(c.low),close:Number(c.close),volume:Number(c.volume??0)}));if(bars.length)latestMarketPrice=bars[bars.length-1].close;const oldRange=firstLoad?null:priceChart.timeScale().getVisibleLogicalRange();const signature=JSON.stringify(bars);
 if(signature!==lastBarsSignature){
  candleSeries.setData(bars);
@@ -630,7 +649,7 @@ if(signature!==lastBarsSignature){
  rsiSeries.setData(rsi(bars));
  lastBarsSignature=signature;
 }
-renderSignals(data.signals||[],bars);renderRsiDivergences(data.signals||[],bars);if(bars.length){const symbolChanged=lastLoadedSymbol!==symbol;if(symbolChanged){const base=Number(bars[bars.length-1].close),gap=Math.max(mt5TickSize*20,Math.abs(base)*0.001);latestMarketPrice=base;if($('orderMode').value==='PENDING'){$('entryPrice').value=(base-gap).toFixed(mt5Digits);$('slPrice').value=(base-gap*2).toFixed(mt5Digits);$('tpPrice').value=base.toFixed(mt5Digits)}else{$('entryPrice').value=base.toFixed(mt5Digits);if(autoDirection==='BUY'){$('slPrice').value=(base-gap).toFixed(mt5Digits);$('tpPrice').value=(base+gap).toFixed(mt5Digits)}else{$('slPrice').value=(base+gap).toFixed(mt5Digits);$('tpPrice').value=(base-gap).toFixed(mt5Digits)}}lastLoadedSymbol=symbol}if($('orderMode').value==='MARKET')$('entryPrice').value=Number(bars[bars.length-1].close).toFixed(mt5Digits);if(firstLoad){priceChart.timeScale().fitContent();priceChart.timeScale().applyOptions({rightOffset:10});rsiChart.timeScale().applyOptions({rightOffset:10});firstLoad=false}else if(oldRange){priceChart.timeScale().setVisibleLogicalRange(oldRange)}calcLot();$('feedState').textContent=bars.length+' nến · cập nhật '+new Date().toLocaleTimeString()}else{$('feedState').textContent='Chưa có nến MT5 được gửi lên server';$('signalDetails').textContent='API đã kết nối, đang chờ MT5 gửi dữ liệu OHLC.'} }catch(e){$('feedState').textContent='Lỗi tải dữ liệu: '+e.message}}
+renderSignals(data.signals||[],bars);renderRsiDivergences(data.signals||[],bars);if(bars.length){const symbolChanged=lastLoadedSymbol!==symbol;if(symbolChanged){const base=Number(bars[bars.length-1].close),gap=defaultGap(base);latestMarketPrice=base;if($('orderMode').value==='PENDING'){applyLimitDefaults(base,pendingOrderType)}else{$('entryPrice').value=base.toFixed(mt5Digits);if(autoDirection==='BUY'){$('slPrice').value=(base-gap).toFixed(mt5Digits);$('tpPrice').value=(base+gap).toFixed(mt5Digits)}else{$('slPrice').value=(base+gap).toFixed(mt5Digits);$('tpPrice').value=(base-gap).toFixed(mt5Digits)}}lastLoadedSymbol=symbol}if($('orderMode').value==='MARKET')$('entryPrice').value=Number(bars[bars.length-1].close).toFixed(mt5Digits);if(firstLoad){priceChart.timeScale().fitContent();priceChart.timeScale().applyOptions({rightOffset:10});rsiChart.timeScale().applyOptions({rightOffset:10});firstLoad=false}else if(oldRange){priceChart.timeScale().setVisibleLogicalRange(oldRange)}calcLot();$('feedState').textContent=bars.length+' nến · cập nhật '+new Date().toLocaleTimeString()}else{$('feedState').textContent='Chưa có nến MT5 được gửi lên server';$('signalDetails').textContent='API đã kết nối, đang chờ MT5 gửi dữ liệu OHLC.'} }catch(e){$('feedState').textContent='Lỗi tải dữ liệu: '+e.message}}
 
 let chartOpenPositions=[],positionLines=[],positionSignature='',closingIds=new Set();
 function getPositionId(p){return p&&(p.id??p.ticket??p.position_id??p.order_id??p.deal_id??'')}
@@ -775,6 +794,7 @@ function setLevelLines(){
 function getLimitValidation(){
  const entry=Number($('entryPrice').value);
  const sl=Number($('slPrice').value);
+ const tp=Number($('tpPrice').value);
  const ref=Number(latestMarketPrice);
  if(!(entry>0)||!(ref>0)){
   return {
@@ -812,6 +832,24 @@ function getLimitValidation(){
    };
   }
  }
+ if(tp>0){
+  if(pendingType==='BUY_LIMIT'&&tp<=entry){
+   return {
+    pendingType,
+    direction,
+    valid:false,
+    reason:'BUY LIMIT yêu cầu TP > Entry Limit ('+fmt(entry)+').'
+   };
+  }
+  if(pendingType==='SELL_LIMIT'&&tp>=entry){
+   return {
+    pendingType,
+    direction,
+    valid:false,
+    reason:'SELL LIMIT yêu cầu TP < Entry Limit ('+fmt(entry)+').'
+   };
+  }
+ }
  return {pendingType,direction,valid:true,reason:''};
 }
 
@@ -829,8 +867,8 @@ function updateDirectionFromSL(){
   $('sendBuy').style.display=isBuyLimit?'':'none';
   $('sendSell').style.display=!isBuyLimit?'':'none';
   $('requestState').textContent=info.valid
-   ?('Chế độ Pending: '+(isBuyLimit?'BUY LIMIT (Entry < giá hiện tại)':'SELL LIMIT (Entry > giá hiện tại)')+' · chỉ gửi PAPER.')
-   :('Pending: '+info.reason);
+   ?('Chế độ Limit: '+(isBuyLimit?'BUY LIMIT (Entry < giá hiện tại)':'SELL LIMIT (Entry > giá hiện tại)')+' · chỉ gửi PAPER.')
+   :('Limit: '+info.reason);
   return;
  }
 
@@ -885,9 +923,8 @@ function syncOrderModeFromEntry(){
   $('entryPrice').value=latestMarketPrice.toFixed(mt5Digits);
  }else if(pending&&latestMarketPrice>0){
   const curEntry=Number($('entryPrice').value);
-  const gap=Math.max(mt5TickSize*20,Math.abs(latestMarketPrice)*0.001);
   if(!(curEntry>0)||curEntry===latestMarketPrice){
-   $('entryPrice').value=(latestMarketPrice-gap).toFixed(mt5Digits);
+   applyLimitDefaults(latestMarketPrice,pendingOrderType);
   }
  }
  setLevelLines();
@@ -917,10 +954,11 @@ async function sendPaper(direction){
   const info=getLimitValidation();
   if(!info.valid){$('requestState').textContent=info.reason;return;}
   if(info.direction!==direction){$('requestState').textContent='Vị trí Entry Limit hiện tại thuộc về '+info.pendingType.replace('_',' ')+'.';return;}
-  const limitLabel=info.pendingType.replace('_',' ');
+  const orderType=info.pendingType;
+  const limitLabel=orderType.replace('_',' ');
   const summary=`XÁC NHẬN YÊU CẦU PAPER (${limitLabel})\n\nLoại lệnh: ${limitLabel}\nSymbol: ${$('symbol').value} / ${$('tf').value}\nGiá hiện tại: ${fmt(latestMarketPrice)}\nEntry Limit: ${c.e.toFixed(mt5Digits)}\nSL: ${c.s.toFixed(mt5Digits)}\nTP hiển thị: ${tp>0?tp.toFixed(mt5Digits):'Chưa đặt'}\nLot MT5: ${c.lot.toFixed(volumeDigits(mt5VolumeStep))}\nRisk dự kiến tại SL: ${c.actualRisk.toFixed(2)} / ${c.risk.toFixed(2)}\n\nChỉ gửi yêu cầu ${limitLabel} vào hàng đợi PAPER; không đặt lệnh broker. Tiếp tục?`;
   if(!window.confirm(summary))return;
-  const payload={symbol:$('symbol').value,timeframe:$('tf').value,direction,entry:c.e,sl:c.s,tp,risk_money:c.risk,requested_lot:c.lot,score:0,source:'web-chart'};
+  const payload={symbol:$('symbol').value,timeframe:$('tf').value,direction,mode:'PENDING',order_type:orderType,entry:c.e,sl:c.s,tp,risk_money:c.risk,requested_lot:c.lot,score:0,source:'web-chart'};
   $('requestState').textContent='Đang gửi yêu cầu '+limitLabel+' PAPER...';
   try{
    const r=await fetch('/api/chart/request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
@@ -934,7 +972,7 @@ async function sendPaper(direction){
  if((direction==='BUY'&&c.s>=c.e)||(direction==='SELL'&&c.s<=c.e)){$('requestState').textContent='SL phải nằm dưới Entry với BUY và trên Entry với SELL.';return}
  const summary=`XÁC NHẬN YÊU CẦU PAPER\n\n${direction} · ${mode}\nSymbol: ${$('symbol').value} / ${$('tf').value}\nEntry: ${c.e.toFixed(mt5Digits)}\nSL: ${c.s.toFixed(mt5Digits)}\nTP hiển thị: ${tp>0?tp.toFixed(mt5Digits):'Chưa đặt'}\nLot MT5: ${c.lot.toFixed(volumeDigits(mt5VolumeStep))}\nRisk dự kiến tại SL: ${c.actualRisk.toFixed(2)} / ${c.risk.toFixed(2)}\n\nChỉ truyền Risk và Lot đã tính sang Trade V9 PAPER; không đặt lệnh broker. Tiếp tục?`;
  if(!window.confirm(summary))return;
- const payload={symbol:$('symbol').value,timeframe:$('tf').value,direction,entry:c.e,sl:c.s,tp,risk_money:c.risk,requested_lot:c.lot,score:0,source:'web-chart'};
+ const payload={symbol:$('symbol').value,timeframe:$('tf').value,direction,mode:'MARKET',order_type:'MARKET',entry:c.e,sl:c.s,tp,risk_money:c.risk,requested_lot:c.lot,score:0,source:'web-chart'};
  $('requestState').textContent='Đang gửi yêu cầu PAPER...';
  try{
   const r=await fetch('/api/chart/request',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
