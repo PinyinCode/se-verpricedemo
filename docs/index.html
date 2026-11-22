@@ -115,7 +115,6 @@ button.locked{background:rgba(251,191,36,.14);border-color:var(--amber);color:#f
 .emergency-modal-warning.off strong{color:#68ddb2}
 .emergency-modal-warning.unknown{border-color:#8a6a2c;border-left-color:#fbbf24;background:rgba(251,191,36,.08);color:#f8df9a}
 .emergency-modal-warning.unknown strong{color:#fbbf24}
-.chart-actions .control-link:hover{background:rgba(96,165,250,.18);border-color:#60a5fa}
 .chart-actions .control-link:focus-visible{outline:none;border-color:#4b9be8;box-shadow:0 0 0 2px rgba(75,155,232,.16)}
 body.trade-fullscreen .chart-head{flex-wrap:nowrap;min-width:0;gap:5px}
 body.trade-fullscreen .chart-pickers{flex:0 1 auto;flex-wrap:nowrap;gap:4px}
@@ -435,7 +434,6 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
 .lot-controls{display:flex;align-items:center;gap:8px 12px;margin-top:2px;flex-wrap:wrap}
 .limit-preset-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 
-/* Trạng thái TẮT (mặc định): tối màu, dịu mắt giống MARKET hiện tại */
 .btn-limit-preset{
   padding:clamp(4px,calc(2px + .02 * var(--lot-panel-h, 110px)),7px) clamp(8px,calc(6px + .03 * var(--lot-panel-h, 110px)),12px);
   font-size:clamp(10px,calc(9px + .015 * var(--lot-panel-h, 110px)),12px);
@@ -470,7 +468,6 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
   color:#7f96b3;
 }
 
-/* Trạng thái BẬT (.selected): nút to lên + highlight màu rõ rệt */
 .btn-limit-preset.selected{
   opacity:1;
   transform:scale(1.07);
@@ -505,7 +502,7 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
 .trade-submit button{min-width:clamp(96px,calc(84px + .15 * var(--lot-panel-h, 110px)),144px);min-height:clamp(32px,calc(26px + .08 * var(--lot-panel-h, 110px)),44px);font-weight:750;padding:8px 12px;border-radius:8px;white-space:nowrap}
 #sendBuy{background:rgba(39,201,149,.12);border-color:#217c62;color:#6de3b8}
 #sendSell{background:rgba(240,107,126,.1);border-color:#8c4050;color:#ff9aaa}
-.request-state{text-align:right;line-height:1.4;max-width:320px;align-self:center}
+.request-state{text-align:right;line-height:1.4;max-width:340px;align-self:center}
 .statusline{padding:5px 10px;color:#8195ad;font-size:11px;border-top:1px solid var(--line);background:#0d1929}
 
 .side{padding:12px;background:linear-gradient(180deg,#111e31,#0e1929)}
@@ -1157,7 +1154,36 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
 let API_BASE = String(window.FOREX_API_BASE || '');
 while (API_BASE.endsWith('/')) API_BASE = API_BASE.slice(0, -1);
 const $ = id => document.getElementById(id);
+
+/* Đổi thành true nếu EA bật input bool CommissionIsRoundTurn = true */
+const COMMISSION_IS_ROUND_TURN = false;
+
 let mt5Digits = 5, mt5TickSize = 0.00001, mt5TickValue = 0, mt5VolumeMin = 0, mt5VolumeMax = 0, mt5VolumeStep = 0, latestMarketPrice = 0;
+
+/* Đồng bộ theo SSettings & SCommission của TRADE_V9_PAPER.mq5 */
+const eaState = {
+  settings: {
+    auto_trade_enabled: true,
+    emergency_stop: false,
+    time_filter_enabled: true,
+    risk_money: 25.0,
+    max_positions: 3,
+    reward_risk_ratio: 2.0,
+    risk_tolerance_pct: 0.5,
+    commission_fallback: 0.0,
+    spread_buffer_points: 20,
+    trading_start_hour: 7,
+    trading_end_hour: 23,
+  },
+  commission: {
+    symbol: '',
+    commission_per_lot: 0.0,
+    point_size: 0.0,
+    tick_value: 0.0,
+    has_data: false,
+  },
+  lastCalc: null,
+};
 
 /* ================= API KEY ================= */
 const API_KEY_STORAGE = 'chartApiKey';
@@ -1219,10 +1245,88 @@ async function apiFetch(url, options = {}) {
   return response;
 }
 
-
 function commissionNumber(value) {
   const n = Number(value);
   return Number.isFinite(n) ? n.toLocaleString('en-US', { maximumFractionDigits: 8 }) : '—';
+}
+
+/* Poll settings giống PollSettings() của EA */
+async function syncEaSettings() {
+  try {
+    const r = await fetch(API_BASE + '/api/settings', { cache: 'no-store' });
+    if (!r.ok) return;
+    const d = await r.json();
+    const s = d && d.settings ? d.settings : null;
+    if (!s) return;
+    const riskMoney = Number(s.risk_money);
+    const rr = Number(s.reward_risk_ratio);
+    const tol = Number(s.risk_tolerance_pct);
+    const fallback = Number(s.commission_fallback);
+    const spreadBuf = Number(s.spread_buffer_points);
+    const maxPos = Number(s.max_positions);
+    const startH = Number(s.trading_start_hour);
+    const endH = Number(s.trading_end_hour);
+
+    eaState.settings.auto_trade_enabled = s.auto_trade_enabled !== false;
+    eaState.settings.emergency_stop = !!s.emergency_stop;
+    eaState.settings.time_filter_enabled = s.time_filter_enabled !== false;
+    eaState.settings.risk_money = riskMoney > 0 ? riskMoney : 25.0;
+    eaState.settings.max_positions = Number.isFinite(maxPos) && maxPos >= 0 ? Math.floor(maxPos) : 3;
+    eaState.settings.reward_risk_ratio = rr > 0 ? rr : 2.0;
+    eaState.settings.risk_tolerance_pct = Number.isFinite(tol) && tol >= 0 ? tol : 0.5;
+    eaState.settings.commission_fallback = Number.isFinite(fallback) ? fallback : 0.0;
+    eaState.settings.spread_buffer_points = Number.isFinite(spreadBuf) && spreadBuf >= 0 ? Math.floor(spreadBuf) : 20;
+    eaState.settings.trading_start_hour = Number.isFinite(startH) ? Math.floor(startH) : 7;
+    eaState.settings.trading_end_hour = Number.isFinite(endH) ? Math.floor(endH) : 23;
+
+    /* Đồng bộ input Risk trên chart nếu người dùng chưa tự sửa hoặc khớp EA */
+    const riskInput = $('riskMoney');
+    if (riskInput && document.activeElement !== riskInput && eaState.settings.risk_money > 0) {
+      riskInput.value = String(eaState.settings.risk_money);
+    }
+    calcLot();
+  } catch (_) {}
+}
+
+/* Poll commission cache giống PollCommissions() & GetCommissionPerLot() của EA */
+async function syncSymbolCommission(symbol) {
+  const sym = String(symbol || $('symbol').value || '').trim().toUpperCase();
+  eaState.commission.symbol = sym;
+  if (!chartApiKey || !sym) {
+    eaState.commission.has_data = false;
+    eaState.commission.commission_per_lot = eaState.settings.commission_fallback;
+    eaState.commission.point_size = 0;
+    eaState.commission.tick_value = 0;
+    calcLot();
+    return null;
+  }
+  try {
+    const response = await apiFetch(API_BASE + '/api/mt5/commissions?symbol=' + encodeURIComponent(sym), { cache: 'no-store' });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.detail || ('HTTP ' + response.status));
+    const rows = Array.isArray(data.items) ? data.items : [];
+    const item = rows.filter(row => String(row.symbol || '').toUpperCase() === sym)
+      .sort((a, b) => Date.parse(b.received_at || 0) - Date.parse(a.received_at || 0))[0];
+    if (!item) {
+      eaState.commission.has_data = false;
+      eaState.commission.commission_per_lot = eaState.settings.commission_fallback;
+      eaState.commission.point_size = 0;
+      eaState.commission.tick_value = 0;
+      calcLot();
+      return null;
+    }
+    eaState.commission.has_data = true;
+    eaState.commission.commission_per_lot = Number(item.commission_per_lot) || 0;
+    eaState.commission.point_size = Number(item.point_size) || 0;
+    eaState.commission.tick_value = Number(item.tick_value) || 0;
+    calcLot();
+    return item;
+  } catch (_) {
+    eaState.commission.has_data = false;
+    eaState.commission.commission_per_lot = eaState.settings.commission_fallback;
+    calcLot();
+    return null;
+  }
 }
 
 async function refreshCommissionInfo() {
@@ -1237,22 +1341,18 @@ async function refreshCommissionInfo() {
     state.textContent = 'Cần API key';
     state.className = 'small warn';
     meta.textContent = 'Nhập API key hợp lệ để đọc snapshot commission từ MT5.';
+    await syncSymbolCommission(symbol);
     return;
   }
   state.textContent = 'Đang tải…';
   state.className = 'small';
   try {
-    const response = await apiFetch(API_BASE + '/api/mt5/commissions?symbol=' + encodeURIComponent(symbol), { cache: 'no-store' });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.detail || ('HTTP ' + response.status));
-    const rows = Array.isArray(data.items) ? data.items : [];
-    const item = rows.filter(row => String(row.symbol || '').toUpperCase() === symbol)
-      .sort((a,b) => Date.parse(b.received_at || 0) - Date.parse(a.received_at || 0))[0];
+    const item = await syncSymbolCommission(symbol);
     if (!item) {
       resetValues();
       state.textContent = 'Chưa có dữ liệu';
       state.className = 'small warn';
-      meta.textContent = symbol + ': MT5 chưa gửi commission snapshot lên server.';
+      meta.textContent = symbol + ': MT5 chưa gửi commission snapshot · đang dùng fallback $' + Number(eaState.settings.commission_fallback || 0).toFixed(2) + '/lot.';
       return;
     }
     $('commissionValue').textContent = commissionNumber(item.commission_per_lot);
@@ -2266,7 +2366,14 @@ async function load(forceNetwork = false) {
     for (const id of ['entryPrice', 'slPrice', 'tpPrice']) {
       if ($(id).value !== '' && Number.isFinite(Number($(id).value))) $(id).value = Number($(id).value).toFixed(mt5Digits);
     }
-    $('contractMeta').textContent = 'Tick ' + mt5TickSize.toFixed(mt5Digits) + ' · Tick value loss/lot ' + mt5TickValue + ' · Lot min/max/step ' + mt5VolumeMin + '/' + mt5VolumeMax + '/' + mt5VolumeStep;
+    const commPerLot = getCommissionPerLotForChart(symbol);
+    const spreadBufPts = Number(eaState.settings.spread_buffer_points) || 0;
+    $('contractMeta').textContent =
+      'Tick ' + mt5TickSize.toFixed(mt5Digits)
+      + ' · TickVal ' + mt5TickValue
+      + ' · Comm/lot $' + commPerLot.toFixed(2)
+      + ' · Buf ' + spreadBufPts + ' pts'
+      + ' · Lot ' + mt5VolumeMin + '/' + mt5VolumeMax + '/' + mt5VolumeStep;
 
     const bars = (data.candles || []).map(c => ({
       time: Number(c.time), open: Number(c.open), high: Number(c.high), low: Number(c.low), close: Number(c.close), volume: Number(c.volume ?? 0),
@@ -2496,6 +2603,8 @@ function setTradePanelVisible(visible) {
       const savedHeight = Number(localStorage.getItem('chartLotPanelHeight'));
       if (Number.isFinite(savedHeight) && savedHeight >= 84) setLotHeight(savedHeight);
     } catch (_) {}
+    void syncEaSettings();
+    void syncSymbolCommission($('symbol').value);
   }
   try { localStorage.setItem('chartTradePanelVisible', visible ? '1' : '0'); } catch (_) {}
   requestAnimationFrame(() => {
@@ -2681,6 +2790,107 @@ function volumeDigits(step) {
   return 8;
 }
 
+function getCommissionPerLotForChart(symbol) {
+  const curSym = String(symbol || $('symbol').value || '').trim().toUpperCase();
+  const baseComm = (eaState.commission.has_data && eaState.commission.symbol === curSym)
+    ? Number(eaState.commission.commission_per_lot)
+    : Number(eaState.settings.commission_fallback);
+  const safeBase = Number.isFinite(baseComm) ? baseComm : 0;
+  return COMMISSION_IS_ROUND_TURN ? safeBase / 2.0 : safeBase;
+}
+
+/* Tương đương SRiskBreakdown ComputeRiskBreakdown(symbol, slDistance, volume) của EA */
+function computeEaRiskBreakdown(symbol, slDistance, volume) {
+  const tickSize = Number(mt5TickSize);
+  const tickValue = Number(mt5TickValue);
+  const point = (eaState.commission.has_data && Number(eaState.commission.point_size) > 0)
+    ? Number(eaState.commission.point_size)
+    : (tickSize > 0 ? tickSize : Math.pow(10, -mt5Digits));
+
+  if (!(tickSize > 0 && tickValue > 0 && point > 0)) {
+    return { valid: false, error: 'Thiếu thông số TickSize/TickValue từ MT5.' };
+  }
+  if (!(slDistance > 0 && volume > 0)) {
+    return { valid: false, error: 'Khoảng cách SL hoặc volume <= 0.' };
+  }
+
+  /* Chart không có live Ask/Bid từng tick nên spread thực tế lấy 0 + spread_buffer_points của EA */
+  const spreadPoints = Number(eaState.settings.spread_buffer_points) || 0;
+  const commPerLot = getCommissionPerLotForChart(symbol);
+
+  const slRisk = (slDistance / tickSize) * tickValue * volume;
+  const commission = commPerLot * volume;
+  const spreadCost = ((spreadPoints * point) / tickSize) * tickValue * volume;
+  const total = slRisk + commission + spreadCost;
+  const riskPerLot = total / volume;
+
+  if (!(riskPerLot > 0 && Number.isFinite(riskPerLot))) {
+    return { valid: false, error: 'Không tính được riskPerLot hợp lệ.' };
+  }
+  return { valid: true, slRisk, commission, spreadCost, total, riskPerLot };
+}
+
+/* Tương đương CalculateLotWithCommission + logic giảm lot khi vượt budget trong OpenTrade() của EA */
+function calculateEaLot(symbol, slDistance, targetRiskMoney) {
+  const baseProbe = computeEaRiskBreakdown(symbol, slDistance, 1.0);
+  if (!baseProbe.valid) {
+    return { ok: false, reason: baseProbe.error };
+  }
+  if (!(mt5VolumeMin > 0 && mt5VolumeMax >= mt5VolumeMin && mt5VolumeStep > 0)) {
+    return { ok: false, reason: 'Thiếu thông số Min/Max/Step lot từ MT5.' };
+  }
+
+  const step = mt5VolumeStep;
+  const stepDigits = volumeDigits(step);
+  const rawLot = targetRiskMoney / baseProbe.riskPerLot;
+  let lot = Math.floor((rawLot + step * 0.5) / step) * step;
+  lot = Number(Math.min(lot, mt5VolumeMax).toFixed(stepDigits));
+
+  if (lot < mt5VolumeMin) {
+    return {
+      ok: false,
+      reason: 'Không đủ lot tối thiểu — lot tính ra ' + rawLot.toFixed(4) + ' (risk/lot $' + baseProbe.riskPerLot.toFixed(2) + '), thấp hơn min ' + mt5VolumeMin + '.',
+    };
+  }
+
+  let rb = computeEaRiskBreakdown(symbol, slDistance, lot);
+  if (!rb.valid) return { ok: false, reason: rb.error };
+
+  const tolPct = Number(eaState.settings.risk_tolerance_pct) || 0;
+  const budget = targetRiskMoney * (1.0 + tolPct / 100.0);
+  let reduced = false;
+
+  if (rb.total > budget) {
+    const maxLotForBudget = budget / baseProbe.riskPerLot;
+    let reducedLot = Math.floor((maxLotForBudget + step * 0.5) / step) * step;
+    reducedLot = Number(Math.min(reducedLot, mt5VolumeMax).toFixed(stepDigits));
+    if (reducedLot < mt5VolumeMin) {
+      return {
+        ok: false,
+        reason: 'Risk $' + baseProbe.riskPerLot.toFixed(2) + '/lot -> lot tối đa ' + reducedLot.toFixed(stepDigits) + ' < min ' + mt5VolumeMin + ' (budget $' + budget.toFixed(2) + ').',
+      };
+    }
+    lot = reducedLot;
+    reduced = true;
+    rb = computeEaRiskBreakdown(symbol, slDistance, lot);
+    if (!rb.valid) return { ok: false, reason: rb.error };
+  }
+
+  return {
+    ok: true,
+    lot,
+    lotDigits: stepDigits,
+    slDistance,
+    slRisk: rb.slRisk,
+    commission: rb.commission,
+    spreadCost: rb.spreadCost,
+    actualRisk: rb.total,
+    riskPerLot: rb.riskPerLot,
+    budget,
+    reduced,
+  };
+}
+
 function setLotStatus(message, isError = true) {
   $('lotResult').textContent = message;
   const modalStatus = $('modalLotStatus');
@@ -2691,7 +2901,9 @@ function setLotStatus(message, isError = true) {
 }
 
 function calcLot() {
-  const risk = Number($('riskMoney').value);
+  const inputRisk = Number($('riskMoney').value);
+  /* Trong PollServer() của EA: double useRisk = g_settings.risk_money > 0 ? g_settings.risk_money : riskMoney; */
+  const effectiveRisk = eaState.settings.risk_money > 0 ? eaState.settings.risk_money : inputRisk;
   const sl = Number($('slPrice').value);
   const e = $('orderMode').value === 'MARKET' && Number(latestMarketPrice) > 0
     ? Number(latestMarketPrice)
@@ -2701,18 +2913,22 @@ function calcLot() {
   setLevelLines();
 
   if (!$('showSL').checked) {
+    eaState.lastCalc = null;
     setLotStatus('SL đang tắt — bật mục SL để tính khối lượng.');
     return null;
   }
   if (!(sl > 0) || !Number.isFinite(sl)) {
+    eaState.lastCalc = null;
     setLotStatus('Chưa nhập SL hợp lệ — nhập mức SL để tính khối lượng.');
     return null;
   }
   if (!(e > 0) || !Number.isFinite(e)) {
+    eaState.lastCalc = null;
     setLotStatus('Chưa có Entry/giá hiện tại hợp lệ — chưa thể tính khối lượng.');
     return null;
   }
   if (e === sl) {
+    eaState.lastCalc = null;
     setLotStatus('SL không hợp lệ — SL phải khác Entry/giá hiện tại.');
     return null;
   }
@@ -2720,35 +2936,62 @@ function calcLot() {
     const invalidBuy = pendingOrderType === 'BUY_LIMIT' && sl >= e;
     const invalidSell = pendingOrderType === 'SELL_LIMIT' && sl <= e;
     if (invalidBuy || invalidSell) {
+      eaState.lastCalc = null;
       setLotStatus(pendingOrderType + ' có SL không hợp lệ — kiểm tra lại vị trí SL so với Entry.');
       return null;
     }
   }
-  if (!(risk > 0 && mt5TickSize > 0 && mt5TickValue > 0 && mt5VolumeMin > 0 && mt5VolumeMax >= mt5VolumeMin && mt5VolumeStep > 0)) {
-    setLotStatus('Thiếu Risk hợp lệ hoặc thông số Tick/Min-Max-Step lot từ MT5.');
+  if (!(effectiveRisk > 0)) {
+    eaState.lastCalc = null;
+    setLotStatus('Thiếu Risk hợp lệ từ server/form.');
     return null;
   }
+
   const distance = Math.abs(e - sl);
-  const lossPerLot = (distance / mt5TickSize) * mt5TickValue;
-  if (!(lossPerLot > 0 && Number.isFinite(lossPerLot))) {
-    setLotStatus('Không tính được mức lỗ cho 1 lot — kiểm tra thông số giá và Tick từ MT5.');
+  const calc = calculateEaLot($('symbol').value, distance, effectiveRisk);
+  if (!calc.ok) {
+    eaState.lastCalc = null;
+    $('lotResult').innerHTML = '<div class="lot-value" style="color:var(--red)">KHÔNG ĐỦ ĐIỀU KIỆN</div><div>' + esc(calc.reason) + '</div>';
+    if ($('modalLotStatus')) {
+      $('modalLotStatus').textContent = calc.reason;
+      $('modalLotStatus').style.color = 'var(--red)';
+    }
     return null;
   }
-  const rawLot = risk / lossPerLot, lotDigits = volumeDigits(mt5VolumeStep);
-  let lot = Math.floor((rawLot + 1e-10) / mt5VolumeStep) * mt5VolumeStep;
-  lot = Number(Math.min(lot, mt5VolumeMax).toFixed(lotDigits));
-  if (lot < mt5VolumeMin) {
-    const message = 'Không đủ lot tối thiểu — lot tính ra ' + rawLot.toFixed(6) + ', thấp hơn min ' + mt5VolumeMin + '.';
-    $('lotResult').innerHTML = '<div class="lot-value">KHÔNG ĐỦ LOT TỐI THIỂU</div><div>' + message + '</div>';
-    if ($('modalLotStatus')) { $('modalLotStatus').textContent = message; $('modalLotStatus').style.color = 'var(--red)'; }
-    return null;
-  }
-  const actualRisk = lot * lossPerLot;
+
   const modeTag = $('orderMode').value === 'PENDING' ? ' · ' + pendingOrderType.replace('_', ' ') : '';
-  const lotSummary = lot.toFixed(lotDigits) + ' LOT · Risk thực tế ' + actualRisk.toFixed(2) + ' / ' + risk.toFixed(2) + modeTag;
-  $('lotResult').innerHTML = '<div class="lot-value">' + lot.toFixed(lotDigits) + ' LOT</div><div>|Entry - SL|: ' + distance.toFixed(mt5Digits) + ' · Lỗ/lot: ' + lossPerLot.toFixed(2) + ' · Risk: ' + actualRisk.toFixed(2) + ' / ' + risk.toFixed(2) + modeTag + '</div>';
-  if ($('modalLotStatus')) { $('modalLotStatus').textContent = lotSummary; $('modalLotStatus').style.color = 'var(--green)'; }
-  return { risk, e, s: sl, lot, actualRisk };
+  const adjTag = calc.reduced ? ' · đã hạ lot theo budget' : '';
+  const summary =
+    calc.lot.toFixed(calc.lotDigits) + ' LOT'
+    + ' · Tổng Risk $' + calc.actualRisk.toFixed(2) + ' / $' + effectiveRisk.toFixed(2)
+    + ' (SL $' + calc.slRisk.toFixed(2) + ' + Phí/Buf $' + (calc.commission + calc.spreadCost).toFixed(2) + ')'
+    + adjTag + modeTag;
+
+  $('lotResult').innerHTML =
+    '<div class="lot-value">' + calc.lot.toFixed(calc.lotDigits) + ' LOT</div>'
+    + '<div>Tổng Risk: <b>$' + calc.actualRisk.toFixed(2) + '</b> / $' + effectiveRisk.toFixed(2)
+    + ' · SL: $' + calc.slRisk.toFixed(2)
+    + ' · Comm: $' + calc.commission.toFixed(2)
+    + ' · Buf: $' + calc.spreadCost.toFixed(2)
+    + adjTag + modeTag + '</div>';
+
+  if ($('modalLotStatus')) {
+    $('modalLotStatus').textContent = summary;
+    $('modalLotStatus').style.color = 'var(--green)';
+  }
+
+  const result = {
+    risk: effectiveRisk,
+    e,
+    s: sl,
+    lot: calc.lot,
+    actualRisk: calc.actualRisk,
+    slRisk: calc.slRisk,
+    commission: calc.commission,
+    spreadCost: calc.spreadCost,
+  };
+  eaState.lastCalc = result;
+  return result;
 }
 
 function syncOrderModeFromEntry() {
@@ -2836,10 +3079,13 @@ async function sendOrder(direction) {
     $('apiKeyInput').focus();
     return;
   }
+  await syncEaSettings();
+  await syncSymbolCommission($('symbol').value);
   const c = calcLot();
   if (!c) return;
   const mode = $('orderMode').value;
   const tp = Number($('tpPrice').value) || 0;
+  const volStr = c.lot.toFixed(volumeDigits(mt5VolumeStep));
 
   if (mode === 'PENDING') {
     const requestedLimitType = direction === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT';
@@ -2859,7 +3105,17 @@ async function sendOrder(direction) {
     if (error) { $('requestState').textContent = error; return; }
     const orderType = requestedLimitType;
     const limitLabel = orderType.replace('_', ' ');
-    const summary = `XÁC NHẬN LỆNH (${limitLabel})\n\nLoại lệnh: ${limitLabel}\nSymbol: ${$('symbol').value} / ${$('tf').value}\nGiá hiện tại: ${fmt(latestMarketPrice)}\nEntry Limit: ${entry.toFixed(mt5Digits)}\nSL: ${c.s.toFixed(mt5Digits)}\nTP: ${tp > 0 ? tp.toFixed(mt5Digits) : 'Chưa đặt'}\nLot MT5: ${c.lot.toFixed(volumeDigits(mt5VolumeStep))}\nRisk dự kiến tại SL: ${c.actualRisk.toFixed(2)} / ${c.risk.toFixed(2)}\n\nGửi lệnh ${limitLabel} lên MT5 thật? Tiếp tục?`;
+    const summary =
+      `XÁC NHẬN LỆNH (${limitLabel})\n\n`
+      + `Loại lệnh: ${limitLabel}\n`
+      + `Symbol: ${$('symbol').value} / ${$('tf').value}\n`
+      + `Giá hiện tại: ${fmt(latestMarketPrice)}\n`
+      + `Entry Limit: ${entry.toFixed(mt5Digits)}\n`
+      + `SL: ${c.s.toFixed(mt5Digits)}\n`
+      + `TP: ${tp > 0 ? tp.toFixed(mt5Digits) : 'Chưa đặt'}\n`
+      + `Lot MT5: ${volStr}\n`
+      + `Tổng Risk dự kiến: $${c.actualRisk.toFixed(2)} / $${c.risk.toFixed(2)} (SL $${c.slRisk.toFixed(2)} + Comm $${c.commission.toFixed(2)} + Buf $${c.spreadCost.toFixed(2)})\n\n`
+      + `Gửi lệnh ${limitLabel} lên MT5 thật? Tiếp tục?`;
     if (!window.confirm(summary)) return;
     const payload = { symbol: $('symbol').value, timeframe: $('tf').value, direction, mode: 'PENDING', order_type: orderType, entry, sl: c.s, tp, risk_money: c.risk, requested_lot: c.lot, score: 0, source: 'web-chart' };
     $('requestState').textContent = 'Đang gửi yêu cầu ' + limitLabel + '...';
@@ -2881,7 +3137,16 @@ async function sendOrder(direction) {
     $('requestState').textContent = 'SL phải nằm dưới giá hiện tại với BUY và trên giá hiện tại với SELL.';
     return;
   }
-  const summary = `XÁC NHẬN LỆNH\n\n${direction} · ${mode}\nSymbol: ${$('symbol').value} / ${$('tf').value}\nEntry: ${refPrice.toFixed(mt5Digits)}\nSL: ${c.s.toFixed(mt5Digits)}\nTP: ${tp > 0 ? tp.toFixed(mt5Digits) : 'Chưa đặt'}\nLot MT5: ${c.lot.toFixed(volumeDigits(mt5VolumeStep))}\nRisk dự kiến tại SL: ${c.actualRisk.toFixed(2)} / ${c.risk.toFixed(2)}\n\nGửi lệnh ${direction} lên MT5 thật? Tiếp tục?`;
+  const summary =
+    `XÁC NHẬN LỆNH\n\n`
+    + `${direction} · ${mode}\n`
+    + `Symbol: ${$('symbol').value} / ${$('tf').value}\n`
+    + `Entry: ${refPrice.toFixed(mt5Digits)}\n`
+    + `SL: ${c.s.toFixed(mt5Digits)}\n`
+    + `TP: ${tp > 0 ? tp.toFixed(mt5Digits) : 'Chưa đặt'}\n`
+    + `Lot MT5: ${volStr}\n`
+    + `Tổng Risk dự kiến: $${c.actualRisk.toFixed(2)} / $${c.risk.toFixed(2)} (SL $${c.slRisk.toFixed(2)} + Comm $${c.commission.toFixed(2)} + Buf $${c.spreadCost.toFixed(2)})\n\n`
+    + `Gửi lệnh ${direction} lên MT5 thật? Tiếp tục?`;
   if (!window.confirm(summary)) return;
   const payload = { symbol: $('symbol').value, timeframe: $('tf').value, direction, mode: 'MARKET', order_type: 'MARKET', entry: refPrice, sl: c.s, tp, risk_money: c.risk, requested_lot: c.lot, score: 0, source: 'web-chart' };
   $('requestState').textContent = 'Đang gửi yêu cầu...';
@@ -2899,9 +3164,9 @@ async function sendOrder(direction) {
 
 $('sendBuy').addEventListener('click', () => sendOrder('BUY'));
 $('sendSell').addEventListener('click', () => sendOrder('SELL'));
-$('symbol').addEventListener('change', () => { firstLoad = true; lastBarsSignature = ''; load(); refreshCommissionInfo(); });
+$('symbol').addEventListener('change', () => { firstLoad = true; lastBarsSignature = ''; load(); void syncSymbolCommission($('symbol').value); refreshCommissionInfo(); });
 $('tf').addEventListener('change', () => { firstLoad = true; lastBarsSignature = ''; load(); });
-$('refresh').addEventListener('click', () => { lastBarsSignature = ''; load(); });
+$('refresh').addEventListener('click', () => { lastBarsSignature = ''; load(); void syncEaSettings(); void syncSymbolCommission($('symbol').value); });
 
 const rsiResizeHandle = $('rsiResizeHandle');
 const lotResizeHandle = $('lotResizeHandle');
@@ -3008,8 +3273,11 @@ async function checkServerStatus() {
 ensureApiAuthWarnings();
 if (!chartApiKey) setApiAuthWarning('error', 'Chưa nhập API Key. Mở Cài đặt để nhập khóa được cấp.');
 refreshApiKeyBox();
+void syncEaSettings();
+void syncSymbolCommission($('symbol').value);
 refreshCommissionInfo();
-setInterval(refreshCommissionInfo, 60000);
+setInterval(() => { void syncEaSettings(); }, 10000);
+setInterval(() => { void syncSymbolCommission($('symbol').value); refreshCommissionInfo(); }, 60000);
 refreshEmergencyModalWarning();
 setInterval(refreshEmergencyModalWarning, 10000);
 syncRealLayerToggles();
@@ -3021,6 +3289,7 @@ $('apiKeySave').addEventListener('click', () => {
   saveApiKey($('apiKeyInput').value);
   setApiAuthWarning('', '');
   $('requestState').textContent = 'Đã lưu API key (' + maskKey(chartApiKey) + ').';
+  void syncSymbolCommission($('symbol').value);
   refreshCommissionInfo();
 });
 $('apiKeyInput').addEventListener('keydown', e => {
@@ -3029,6 +3298,8 @@ $('apiKeyInput').addEventListener('keydown', e => {
     setApiAuthWarning('', '');
     $('apiKeyInput').blur();
     $('requestState').textContent = 'Đã lưu API key (' + maskKey(chartApiKey) + ').';
+    void syncSymbolCommission($('symbol').value);
+    refreshCommissionInfo();
   }
 });
 $('commissionRefresh').addEventListener('click', refreshCommissionInfo);
