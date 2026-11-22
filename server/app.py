@@ -105,6 +105,7 @@ def _init_settings_table(conn: sqlite3.Connection) -> None:
         breakeven_enabled     INTEGER NOT NULL DEFAULT 1,
         news_filter_enabled   INTEGER NOT NULL DEFAULT 1,
         time_filter_enabled   INTEGER NOT NULL DEFAULT 1,
+        telegram_notifications_enabled INTEGER NOT NULL DEFAULT 1,
         emergency_stop        INTEGER NOT NULL DEFAULT 0,
         emergency_close_all   INTEGER NOT NULL DEFAULT 1,
         risk_money            REAL    NOT NULL DEFAULT 25,
@@ -123,6 +124,10 @@ def _init_settings_table(conn: sqlite3.Connection) -> None:
         updated_by            TEXT    NOT NULL DEFAULT 'system'
     )
     """)
+    settings_cols = {row[1] for row in conn.execute("PRAGMA table_info(settings)")}
+    if "telegram_notifications_enabled" not in settings_cols:
+        conn.execute("ALTER TABLE settings ADD COLUMN telegram_notifications_enabled INTEGER NOT NULL DEFAULT 1")
+
     now = utc_now()
     conn.execute(
         "INSERT OR IGNORE INTO settings(id, updated_at, updated_by) VALUES(1, ?, 'system')",
@@ -591,6 +596,7 @@ class SettingsIn(BaseModel):
     time_filter_enabled: bool | None = None
     emergency_stop: bool | None = None
     emergency_close_all: bool | None = None
+    telegram_notifications_enabled: bool | None = None
 
     risk_money: float | None = Field(default=None, gt=0, le=100000)
     max_positions: int | None = Field(default=None, ge=0, le=50)
@@ -649,7 +655,7 @@ def _settings_row_to_dict(row: sqlite3.Row) -> dict:
     for k in (
         "auto_trade_enabled", "trailing_enabled", "breakeven_enabled",
         "news_filter_enabled", "time_filter_enabled",
-        "emergency_stop", "emergency_close_all",
+        "telegram_notifications_enabled", "emergency_stop", "emergency_close_all",
     ):
         if k in d:
             d[k] = bool(d[k])
@@ -1358,13 +1364,23 @@ def update_today_signals(payload: TodaySignalsIn):
             if cur.rowcount == 1 and item.signal_type == "RT":
                 new_rt_signals.append(item)
 
-    telegram_sent = sum(1 for item in new_rt_signals if send_telegram_rt_signal(item))
+    with db() as conn:
+        telegram_enabled_row = conn.execute(
+            "SELECT telegram_notifications_enabled FROM settings WHERE id=1"
+        ).fetchone()
+        telegram_enabled = bool(telegram_enabled_row["telegram_notifications_enabled"]) if telegram_enabled_row else True
+
+    telegram_sent = (
+        sum(1 for item in new_rt_signals if send_telegram_rt_signal(item))
+        if telegram_enabled else 0
+    )
     return {
         "ok": True,
         "count": len(payload.signals),
         "new_realtime": len(new_rt_signals),
         "telegram_sent": telegram_sent,
         "telegram_configured": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
+        "telegram_enabled": telegram_enabled,
         "updated_at": now,
     }
 
