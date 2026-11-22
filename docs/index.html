@@ -413,12 +413,12 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
   flex:1 1 auto;
   min-height:0;
   display:grid;
-  grid-template-columns:minmax(220px,1.35fr) auto minmax(170px,.85fr);
-  gap:10px 14px;
-  align-content:stretch;
+  grid-template-columns:minmax(240px,1.55fr) auto minmax(175px,.85fr);
+  gap:clamp(8px,calc(4px + .04 * var(--lot-panel-h, 110px)),16px) clamp(10px,calc(6px + .06 * var(--lot-panel-h, 110px)),20px);
+  align-content:center;
   align-items:center;
-  padding:9px 11px;
-  background:linear-gradient(180deg,#101e31,#0d1929);
+  padding:clamp(8px,calc(5px + .04 * var(--lot-panel-h, 110px)),14px) clamp(10px,calc(8px + .05 * var(--lot-panel-h, 110px)),16px);
+  background:linear-gradient(180deg,#101e31,#0c1726);
   border-top:1px solid #2a3b53;
   overflow:auto;
 }
@@ -427,12 +427,48 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
   height:100%;
   display:flex;
   flex-direction:column;
-  justify-content:space-between;
-  gap:4px;
+  justify-content:center;
+  gap:clamp(5px,calc(3px + .04 * var(--lot-panel-h, 110px)),10px);
 }
-.lot-block #lotResult{margin-top:0;display:flex;align-items:center;flex-wrap:wrap;gap:6px}
-.lot-block .lot-value{display:inline-block;font-size:clamp(16px,calc(12px + .06 * var(--lot-panel-h, 110px)),26px);font-weight:800;color:#62dfb3;margin:0 6px 0 0;line-height:1.15}
-.lot-controls{display:flex;align-items:center;gap:8px 12px;margin-top:2px;flex-wrap:wrap}
+.lot-block #lotResult{
+  margin-top:0;
+  display:flex;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:8px 10px;
+}
+.lot-block .lot-meta{
+  display:inline-flex;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:4px 8px;
+  font-size:clamp(10.5px,calc(9.5px + .018 * var(--lot-panel-h, 110px)),13px);
+  color:#b6c6dc;
+  font-variant-numeric:tabular-nums;
+}
+.lot-block .lot-value{
+  display:inline-flex;
+  align-items:center;
+  font-size:clamp(18px,calc(13px + .11 * var(--lot-panel-h, 110px)),34px);
+  font-weight:900;
+  letter-spacing:.35px;
+  color:#7cf0c7;
+  background:linear-gradient(135deg,rgba(39,201,149,.20),rgba(16,185,129,.08));
+  border:1px solid rgba(39,201,149,.48);
+  border-radius:9px;
+  padding:clamp(3px,calc(1px + .025 * var(--lot-panel-h, 110px)),7px) clamp(8px,calc(6px + .04 * var(--lot-panel-h, 110px)),14px);
+  margin:0;
+  line-height:1.1;
+  font-variant-numeric:tabular-nums;
+  box-shadow:0 4px 16px rgba(16,185,129,.16),inset 0 1px 0 rgba(255,255,255,.08);
+}
+.lot-block .lot-value.lot-alert{
+  color:#ff9aaa;
+  background:linear-gradient(135deg,rgba(240,107,126,.22),rgba(244,63,94,.10));
+  border-color:rgba(240,107,126,.52);
+  box-shadow:0 4px 14px rgba(244,63,94,.16);
+}
+.lot-controls{display:flex;align-items:center;gap:8px 14px;margin-top:2px;flex-wrap:wrap}
 .limit-preset-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 
 /* Trạng thái TẮT (mặc định): tối màu, dịu mắt giống MARKET hiện tại */
@@ -502,10 +538,10 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
 .level-toggles input{accent-color:var(--blue);margin:0}
 
 .trade-submit{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:center}
-.trade-submit button{min-width:clamp(96px,calc(84px + .15 * var(--lot-panel-h, 110px)),144px);min-height:clamp(32px,calc(26px + .08 * var(--lot-panel-h, 110px)),44px);font-weight:750;padding:8px 12px;border-radius:8px;white-space:nowrap}
+.trade-submit button{min-width:clamp(104px,calc(88px + .18 * var(--lot-panel-h, 110px)),162px);min-height:clamp(36px,calc(28px + .10 * var(--lot-panel-h, 110px)),52px);font-size:clamp(12px,calc(10.5px + .02 * var(--lot-panel-h, 110px)),14px);font-weight:800;padding:8px 14px;border-radius:8px;white-space:nowrap}
 #sendBuy{background:rgba(39,201,149,.12);border-color:#217c62;color:#6de3b8}
 #sendSell{background:rgba(240,107,126,.1);border-color:#8c4050;color:#ff9aaa}
-.request-state{text-align:right;line-height:1.4;max-width:320px;align-self:center}
+.request-state{text-align:right;line-height:1.4;max-width:340px;align-self:center;font-size:clamp(10.5px,calc(9.5px + .015 * var(--lot-panel-h, 110px)),12.5px)}
 .statusline{padding:5px 10px;color:#8195ad;font-size:11px;border-top:1px solid var(--line);background:#0d1929}
 
 .side{padding:12px;background:linear-gradient(180deg,#111e31,#0e1929)}
@@ -815,12 +851,12 @@ body.trade-fullscreen .chart-overlay-bottom .trade-footer{
   gap:8px 10px;
   border-top:0;
   background:transparent;
-  grid-template-columns:minmax(0,1.35fr) auto minmax(130px,.75fr);
+  grid-template-columns:minmax(0,1.55fr) auto minmax(135px,.8fr);
   overflow:auto;
 }
-body.trade-fullscreen .chart-overlay-bottom .lot-value{font-size:clamp(16px,calc(12px + .06 * var(--lot-panel-h, 110px)),25px)}
-body.trade-fullscreen .chart-overlay-bottom .trade-submit button{min-width:clamp(92px,calc(78px + .14 * var(--lot-panel-h, 110px)),136px);min-height:clamp(32px,calc(26px + .07 * var(--lot-panel-h, 110px)),42px);padding:6px 10px;font-size:11px}
-body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,calc(9.5px + .01 * var(--lot-panel-h, 110px)),12px)}
+body.trade-fullscreen .chart-overlay-bottom .lot-value{font-size:clamp(18px,calc(13px + .11 * var(--lot-panel-h, 110px)),32px)}
+body.trade-fullscreen .chart-overlay-bottom .trade-submit button{min-width:clamp(98px,calc(82px + .16 * var(--lot-panel-h, 110px)),152px);min-height:clamp(34px,calc(27px + .09 * var(--lot-panel-h, 110px)),48px);padding:6px 12px;font-size:11.5px}
+body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,calc(9.5px + .012 * var(--lot-panel-h, 110px)),12px)}
 
 @media(max-width:600px){
   body.trade-fullscreen .chart-overlay-top{top:5px;left:5px;right:5px}
@@ -2682,7 +2718,7 @@ function volumeDigits(step) {
 }
 
 function setLotStatus(message, isError = true) {
-  $('lotResult').textContent = message;
+  $('lotResult').innerHTML = '<div class="lot-value lot-alert">LOT —</div><div class="lot-meta">' + esc(message) + '</div>';
   const modalStatus = $('modalLotStatus');
   if (modalStatus) {
     modalStatus.textContent = message;
@@ -2739,14 +2775,14 @@ function calcLot() {
   lot = Number(Math.min(lot, mt5VolumeMax).toFixed(lotDigits));
   if (lot < mt5VolumeMin) {
     const message = 'Không đủ lot tối thiểu — lot tính ra ' + rawLot.toFixed(6) + ', thấp hơn min ' + mt5VolumeMin + '.';
-    $('lotResult').innerHTML = '<div class="lot-value">KHÔNG ĐỦ LOT TỐI THIỂU</div><div>' + message + '</div>';
+    $('lotResult').innerHTML = '<div class="lot-value lot-alert">MIN LOT</div><div class="lot-meta">' + esc(message) + '</div>';
     if ($('modalLotStatus')) { $('modalLotStatus').textContent = message; $('modalLotStatus').style.color = 'var(--red)'; }
     return null;
   }
   const actualRisk = lot * lossPerLot;
   const modeTag = $('orderMode').value === 'PENDING' ? ' · ' + pendingOrderType.replace('_', ' ') : '';
   const lotSummary = lot.toFixed(lotDigits) + ' LOT · Risk thực tế ' + actualRisk.toFixed(2) + ' / ' + risk.toFixed(2) + modeTag;
-  $('lotResult').innerHTML = '<div class="lot-value">' + lot.toFixed(lotDigits) + ' LOT</div><div>|Entry - SL|: ' + distance.toFixed(mt5Digits) + ' · Lỗ/lot: ' + lossPerLot.toFixed(2) + ' · Risk: ' + actualRisk.toFixed(2) + ' / ' + risk.toFixed(2) + modeTag + '</div>';
+  $('lotResult').innerHTML = '<div class="lot-value">' + lot.toFixed(lotDigits) + ' LOT</div><div class="lot-meta">|Entry - SL|: ' + distance.toFixed(mt5Digits) + ' · Lỗ/lot: ' + lossPerLot.toFixed(2) + ' · Risk: ' + actualRisk.toFixed(2) + ' / ' + risk.toFixed(2) + modeTag + '</div>';
   if ($('modalLotStatus')) { $('modalLotStatus').textContent = lotSummary; $('modalLotStatus').style.color = 'var(--green)'; }
   return { risk, e, s: sl, lot, actualRisk };
 }
