@@ -104,7 +104,8 @@ button.locked{background:rgba(251,191,36,.14);border-color:var(--amber);color:#f
 .chart-actions button{padding:6px 9px}
 .chart-actions .control-link{display:inline-flex;align-items:center;justify-content:center;min-width:30px;padding:6px 9px;border:1px solid #47708f;border-radius:7px;background:transparent;color:#b8dcff;text-decoration:none;font:inherit;line-height:1.4;white-space:nowrap}
 .chart-actions .control-link.primary-chart-action,.chart-actions #tradePanelToggle.primary-chart-action{min-height:36px;min-width:88px;padding:7px 14px;font-size:12px;font-weight:800;letter-spacing:.45px;border:1px solid #5b91c4;border-radius:8px;background:rgba(96,165,250,.13);color:#c6e3ff}
-.chart-actions #tradePanelToggle.primary-chart-action{border-color:#5b91c4}
+.chart-actions #tradePanelToggle.primary-chart-action{background:transparent;color:#b8dcff;border-color:#47708f;transition:min-width .16s ease,min-height .16s ease,padding .16s ease,background .16s ease,border-color .16s ease}
+.chart-actions #tradePanelToggle.primary-chart-action[aria-expanded="true"]{min-width:108px;min-height:40px;padding:9px 18px;background:rgba(96,165,250,.24);border-color:#60a5fa;color:#d8ecff;box-shadow:0 0 0 2px rgba(96,165,250,.12),0 0 14px rgba(96,165,250,.14)}
 .chart-actions .primary-chart-action:hover{background:rgba(96,165,250,.22);border-color:#80baff}
 .chart-actions .control-link:hover{background:rgba(96,165,250,.10);border-color:#80baff}
 .emergency-modal-warning{display:none;margin:0 12px 12px;padding:12px 13px;border:1px solid #a83242;border-left:5px solid #ef5368;border-radius:9px;background:linear-gradient(100deg,rgba(130,25,42,.34),rgba(75,20,32,.24));color:#ffd2d8;font-size:12px;line-height:1.5}
