@@ -5,7 +5,7 @@
 //| Tự tính SL/TP/Lot, tự trailing/BE, đọc settings từ server.       |
 //+------------------------------------------------------------------+
 #property strict
-#property version "3.10"
+#property version "3.11"
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
@@ -25,6 +25,9 @@ input int    SlippagePoints      = 20;
 input string OrderComment        = "TRADE-V9";
 input bool   SyncRealHistory     = true;
 input bool   AllowCancelExternalPending = false;
+
+// Nếu server báo commission dạng round-turn (vào+ra) nhưng MT5 tính per-side -> bật true
+input bool   CommissionIsRoundTurn = false;
 
 //--- Globals --------------------------------------------------------
 CTrade        trade;
@@ -68,6 +71,17 @@ struct SCommission {
 };
 SCommission g_commissionCache[];
 
+// ===== Risk breakdown (nguồn duy nhất cho mọi phép tính risk) =====
+struct SRiskBreakdown {
+   bool   valid;
+   double slRisk;         // $
+   double commission;     // $
+   double spreadCost;     // $
+   double total;          // $
+   double riskPerLot;     // $/lot
+   string error;
+};
+
 // ===== Trailing state =====
 struct STrailState {
    ulong  ticket;
@@ -86,9 +100,6 @@ string   processedSignalIds[];
 string   processedSltpRequestIds[];
 string   processedPendingModifyIds[];
 string   lastHistoryDigest = "";
-
-// ===== Internal tickets =====
-string   realTicketIds[];
 
 // ===== Timers =====
 uint lastPollMs              = 0;
@@ -116,6 +127,7 @@ void PollSettings();
 void PollCommissions();
 void ManageTrailing();
 void CheckEmergencyStop();
+SRiskBreakdown ComputeRiskBreakdown(string symbol, double slDistance, double volume);
 
 //--- Time helpers ---------------------------------------------------
 void CalculateServerGMTOffset()
@@ -479,14 +491,18 @@ void PollCommissions()
    Print("[V9 COMM] Updated cache: ", ArraySize(g_commissionCache), " symbols");
 }
 
+// Commission per side (theo cách MT5 tính), cùng đơn vị riskMoney.
+// Nếu server báo round-turn và CommissionIsRoundTurn=true -> chia 2.
 double GetCommissionPerLot(string symbol)
 {
    string symUp = symbol;
    StringToUpper(symUp);
+   double c = g_settings.commission_fallback;
    for(int i = 0; i < ArraySize(g_commissionCache); i++)
       if(g_commissionCache[i].symbol == symUp)
-         return g_commissionCache[i].commission_per_lot;
-   return g_settings.commission_fallback;
+      { c = g_commissionCache[i].commission_per_lot; break; }
+   if(CommissionIsRoundTurn) c /= 2.0;
+   return c;
 }
 
 //--- Volume normalization ------------------------------------------
@@ -497,9 +513,19 @@ double NormalizeVolume(string symbol, double raw)
    double step = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
    if(step <= 0) step = 0.01;
    if(raw < vmin || raw > vmax) return 0;
-   double v = MathFloor((raw + 1e-10) / step) * step;
+   double v = MathFloor((raw + step*0.5) / step) * step;
    if(v < vmin) return 0;
    return NormalizeDouble(v, 8);
+}
+
+int VolumeStepDigits(string symbol)
+{
+   double step = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+   if(step <= 0) return 2;
+   int d = 0;
+   double tmp = step;
+   while(tmp < 1.0 && d < 8) { tmp *= 10; d++; }
+   return d;
 }
 
 ENUM_ORDER_TYPE_FILLING PickFilling(string symbol)
@@ -510,45 +536,71 @@ ENUM_ORDER_TYPE_FILLING PickFilling(string symbol)
    return ORDER_FILLING_RETURN;
 }
 
-//--- Lot size calculation with commission + spread ------------------
-double CalculateLotWithCommission(string symbol, double slDistance, double riskMoney)
+//--- Unified risk breakdown ----------------------------------------
+// Công thức DUY NHẤT cho SL + commission + spread.
+// Dùng cho: tính lot ban đầu, verify budget, giảm lot khi vượt.
+SRiskBreakdown ComputeRiskBreakdown(string symbol, double slDistance, double volume)
 {
-   double tickSize = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
+   SRiskBreakdown r;
+   r.valid = false;
+   r.slRisk = r.commission = r.spreadCost = r.total = r.riskPerLot = 0;
+
+   double tickSize  = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
    double tickValue = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE_LOSS);
    if(tickValue <= 0) tickValue = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
    double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+   double ask   = SymbolInfoDouble(symbol, SYMBOL_ASK);
+   double bid   = SymbolInfoDouble(symbol, SYMBOL_BID);
 
-   if(tickSize <= 0 || tickValue <= 0 || point <= 0) return 0;
-   if(slDistance <= 0 || riskMoney <= 0) return 0;
+   if(tickSize <= 0 || tickValue <= 0 || point <= 0 || ask <= 0 || bid <= 0)
+   {
+      r.error = StringFormat("Bad symbol params %s (tickSize=%.10f tickVal=%.10f point=%.10f ask=%.5f bid=%.5f)",
+         symbol, tickSize, tickValue, point, ask, bid);
+      return r;
+   }
+   if(slDistance <= 0 || volume <= 0)
+   {
+      r.error = "slDistance/volume <= 0";
+      return r;
+   }
 
-   // Risk per 1.0 lot từ SL distance
-   double slRiskPerLot = (slDistance / tickSize) * tickValue;
+   // Spread buffer cộng đúng 1 lần tại đây.
+   double spreadPoints = (ask - bid) / point + g_settings.spread_buffer_points;
 
-   // Commission per lot
-   double commission = GetCommissionPerLot(symbol);
+   r.slRisk     = (slDistance / tickSize) * tickValue * volume;
+   r.commission = GetCommissionPerLot(symbol) * volume;
+   r.spreadCost = (spreadPoints * point / tickSize) * tickValue * volume;
+   r.total      = r.slRisk + r.commission + r.spreadCost;
+   r.riskPerLot = r.total / volume;
+   r.valid      = true;
+   return r;
+}
 
-   // Spread cost per lot (tính theo giá hiện tại)
-   double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
-   double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
-   double spreadPoints = (ask > 0 && bid > 0) ? (ask - bid) / point : 0;
-   spreadPoints += g_settings.spread_buffer_points;  // buffer an toàn
-   double spreadCostPerLot = (spreadPoints * point / tickSize) * tickValue;
+//--- Lot calc (dùng ComputeRiskBreakdown) --------------------------
+double CalculateLotWithCommission(string symbol, double slDistance, double riskMoney)
+{
+   if(riskMoney <= 0) return 0;
 
-   double riskPerLot = slRiskPerLot + commission + spreadCostPerLot;
-   if(riskPerLot <= 0) return 0;
+   SRiskBreakdown rb = ComputeRiskBreakdown(symbol, slDistance, 1.0);
+   if(!rb.valid) { Print("[V9 LOT] ", rb.error); return 0; }
 
-   double lot = riskMoney / riskPerLot;
+   double lot = riskMoney / rb.riskPerLot;
    double vmin = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
    double vmax = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
    double step = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
-   if(step <= 0) step = 0.01;
+   if(step <= 0)
+   {
+      Print("[V9 LOT] symbol ", symbol, " VOLUME_STEP invalid=", step);
+      return 0;
+   }
 
-   lot = MathFloor((lot + 1e-10) / step) * step;
+   int stepDigits = VolumeStepDigits(symbol);
+   lot = MathFloor((lot + step*0.5) / step) * step;
+   lot = NormalizeDouble(lot, stepDigits);
 
-   if(lot < vmin) return 0;  // Không đủ lot tối thiểu → reject
+   if(lot < vmin) return 0;
    if(lot > vmax) lot = vmax;
-
-   return NormalizeDouble(lot, 8);
+   return lot;
 }
 
 //--- Count positions -----------------------------------------------
@@ -638,7 +690,6 @@ void ManageTrailing()
       int stopLevel = (int)SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL);
       double minDist = stopLevel * point;
 
-      // Tìm hoặc tạo state
       int idx = FindTrailIndex(ticket);
       if(idx < 0)
       {
@@ -667,7 +718,6 @@ void ManageTrailing()
       bool needModify = false;
       string modifyReason = "";
 
-      // Break-even
       if(g_settings.breakeven_enabled && !state.breakEvenDone && rAchieved >= g_settings.breakeven_trigger_rr)
       {
          double beSL = isBuy ? (entryPrice + 0.2 * state.oneR) : (entryPrice - 0.2 * state.oneR);
@@ -682,7 +732,6 @@ void ManageTrailing()
          }
       }
 
-      // Trailing
       if(g_settings.trailing_enabled && rAchieved >= g_settings.trailing_trigger_rr)
       {
          double trailDist = g_settings.trailing_lock_rr * state.oneR;
@@ -708,7 +757,7 @@ void ManageTrailing()
                if(modifyReason == "") modifyReason = "TS";
             }
          }
-         else // dynamic
+         else
          {
             double trailSL = isBuy ? (currentPrice - trailDist) : (currentPrice + trailDist);
             bool tsBetter = isBuy ? (trailSL > currentSL + point) : (trailSL < currentSL - point);
@@ -873,40 +922,82 @@ bool OpenTrade(string id, string symbol, string tf, string direction, string raw
    double slDistance = MathAbs(entry - sl);
    if(slDistance <= 0) { Ack(id, "REJECTED", "SL distance zero"); return false; }
 
-   // Validate SL geometry
    if((direction == "BUY" && sl >= entry) || (direction == "SELL" && sl <= entry))
    { Ack(id, "REJECTED", "Invalid SL geometry"); return false; }
 
-   // Tự tính lot từ risk
+   // 1) Tính lot ban đầu (dùng công thức thống nhất)
    double volume = CalculateLotWithCommission(symbol, slDistance, riskMoney);
    if(volume <= 0)
    {
       Ack(id, "REJECTED", StringFormat(
-         "Cannot compute valid lot for risk $%.2f, SL dist %.5f (below min volume or risk too tight)",
+         "Cannot compute valid lot for risk $%.2f, SL dist %.5f (below min volume or bad symbol params)",
          riskMoney, slDistance));
       return false;
    }
 
-   // Verify total risk bao gồm commission + spread
-   double tickSize = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
-   double tickValue = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE_LOSS);
-   if(tickValue <= 0) tickValue = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
-   double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
-
-   double slRisk = (slDistance / tickSize) * tickValue * volume;
-   double commission = GetCommissionPerLot(symbol) * volume;
-   double spreadPoints = (ask - bid) / point + g_settings.spread_buffer_points;
-   double spreadCost = (spreadPoints * point / tickSize) * tickValue * volume;
-   double totalRisk = slRisk + commission + spreadCost;
-   double budget = riskMoney * (1 + g_settings.risk_tolerance_pct / 100.0);
-
-   if(totalRisk > budget)
+   // 2) Verify risk cho volume đã chọn
+   SRiskBreakdown rb = ComputeRiskBreakdown(symbol, slDistance, volume);
+   if(!rb.valid)
    {
-      Ack(id, "REJECTED", StringFormat(
-         "Total risk $%.2f (SL $%.2f + Comm $%.2f + Spread $%.2f) > budget $%.2f",
-         totalRisk, slRisk, commission, spreadCost, budget));
+      Ack(id, "REJECTED", rb.error);
       return false;
    }
+
+   double budget = riskMoney * (1 + g_settings.risk_tolerance_pct / 100.0);
+
+   // 3) Nếu vượt budget -> GIẢM LOT (không huỷ)
+   if(rb.total > budget)
+   {
+      double vmin = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+      double vmax = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+      double step = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+      if(step <= 0)
+      {
+         Ack(id, "REJECTED", "Symbol VOLUME_STEP invalid");
+         return false;
+      }
+      int stepDigits = VolumeStepDigits(symbol);
+
+      double maxLotForBudget = budget / rb.riskPerLot;
+      double reducedLot = MathFloor((maxLotForBudget + step*0.5) / step) * step;
+      reducedLot = NormalizeDouble(reducedLot, stepDigits);
+
+      if(reducedLot < vmin)
+      {
+         Ack(id, "REJECTED", StringFormat(
+            "Risk $%.2f/lot -> max lot %.4f < min %.4f (budget $%.2f). Reduce risk or widen budget.",
+            rb.riskPerLot, reducedLot, vmin, budget));
+         return false;
+      }
+      if(reducedLot > vmax) reducedLot = vmax;
+
+      Print("[V9 LOT REDUCE] signal=", id,
+            " risk/lot=$", DoubleToString(rb.riskPerLot, 4),
+            " budget=$", DoubleToString(budget, 2),
+            " lot ", DoubleToString(volume, 4), " -> ", DoubleToString(reducedLot, 4),
+            " total ", DoubleToString(rb.total, 2), " -> $",
+            DoubleToString(rb.riskPerLot * reducedLot, 2));
+
+      volume = reducedLot;
+
+      rb = ComputeRiskBreakdown(symbol, slDistance, volume);
+      if(!rb.valid)
+      {
+         Ack(id, "REJECTED", rb.error);
+         return false;
+      }
+   }
+
+   // 4) Sanity: nếu vẫn vượt (bug logic) -> reject
+   if(rb.total > budget + 1e-9)
+   {
+      Ack(id, "REJECTED", StringFormat(
+         "Total risk $%.2f > budget $%.2f (lot=%.4f)",
+         rb.total, budget, volume));
+      return false;
+   }
+
+   double totalRisk = rb.total;
 
    // TP: dùng signal nếu có, không thì tính từ RR
    double tp = tpRequested > 0
@@ -1213,7 +1304,6 @@ void PollPendingModifyRequests()
 //--- Poll signal ----------------------------------------------------
 void PollServer()
 {
-   // Nếu emergency ON hoặc auto_trade OFF, vẫn poll để ack reject (tránh kẹt queue)
    string path = "/api/mt5/next?consumer=" + ConsumerId;
    string response; int status;
    if(!Request("GET", path, "", response, status)) return;
@@ -1243,7 +1333,6 @@ void PollServer()
       return;
    }
 
-   // Check emergency
    if(g_settings.emergency_stop)
    {
       MarkProcessedSignal(id);
@@ -1251,7 +1340,6 @@ void PollServer()
       return;
    }
 
-   // Check auto trade
    if(!g_settings.auto_trade_enabled)
    {
       MarkProcessedSignal(id);
@@ -1259,7 +1347,6 @@ void PollServer()
       return;
    }
 
-   // Check time filter
    if(!IsInTradingHours())
    {
       MarkProcessedSignal(id);
@@ -1268,7 +1355,6 @@ void PollServer()
       return;
    }
 
-   // Check news filter
    if(IsNewsBlocked())
    {
       MarkProcessedSignal(id);
@@ -1276,7 +1362,6 @@ void PollServer()
       return;
    }
 
-   // Check max positions
    int openCount = CountRealExposure();
    if(openCount >= g_settings.max_positions)
    {
@@ -1285,7 +1370,6 @@ void PollServer()
       return;
    }
 
-   // Determine risk_money: ưu tiên settings dashboard, fallback signal
    double useRisk = g_settings.risk_money > 0 ? g_settings.risk_money : riskMoney;
    if(useRisk <= 0) useRisk = 25.0;
 
@@ -1427,15 +1511,15 @@ int OnInit()
    InitDefaultSettings();
    CalculateServerGMTOffset();
 
-   // Initial poll
    PollSettings();
    PollCommissions();
 
    EventSetTimer(1);
-   Print("[V9] Started v3.10 REAL HUB. magic=", MagicNumber,
+   Print("[V9] Started v3.11 REAL HUB. magic=", MagicNumber,
          " | AutoTrade=", g_settings.auto_trade_enabled ? "ON" : "OFF",
          " | Trailing=", g_settings.trailing_enabled ? "ON" : "OFF",
-         " | Risk=$", DoubleToString(g_settings.risk_money, 2));
+         " | Risk=$", DoubleToString(g_settings.risk_money, 2),
+         " | CommRoundTurn=", CommissionIsRoundTurn ? "Y" : "N");
    return INIT_SUCCEEDED;
 }
 
@@ -1446,11 +1530,9 @@ void OnTimer()
 {
    uint nowMs = GetTickCount();
 
-   // Recalc GMT offset mỗi giờ
    if(TimeCurrent() - g_lastOffsetCalcTime > 3600)
       CalculateServerGMTOffset();
 
-   // Settings poll
    if(lastSettingsPollMs == 0 ||
       (uint)(nowMs - lastSettingsPollMs) >= (uint)(SettingsPollSeconds * 1000))
    {
@@ -1458,10 +1540,8 @@ void OnTimer()
       PollSettings();
    }
 
-   // Emergency check
    CheckEmergencyStop();
 
-   // Commission poll
    if(lastCommissionPollMs == 0 ||
       (uint)(nowMs - lastCommissionPollMs) >= (uint)(CommissionPollSeconds * 1000))
    {
@@ -1469,12 +1549,10 @@ void OnTimer()
       PollCommissions();
    }
 
-   // Heartbeat
    if(lastHeartbeatMs == 0 ||
       (uint)(nowMs - lastHeartbeatMs) >= (uint)(HeartbeatSeconds * 1000))
       SendHeartbeat();
 
-   // Trailing check
    if(lastTrailingCheckMs == 0 ||
       (uint)(nowMs - lastTrailingCheckMs) >= (uint)(TrailingCheckSeconds * 1000))
    {
@@ -1482,7 +1560,6 @@ void OnTimer()
       ManageTrailing();
    }
 
-   // Poll signal + close
    if(lastPollMs == 0 ||
       (uint)(nowMs - lastPollMs) >= (uint)(PollSeconds * 1000))
    {
@@ -1491,7 +1568,6 @@ void OnTimer()
       PollServer();
    }
 
-   // SLTP poll
    if(lastSltpPollMs == 0 ||
       (uint)(nowMs - lastSltpPollMs) >= (uint)(PollSeconds * 1000))
    {
@@ -1499,7 +1575,6 @@ void OnTimer()
       PollSltpRequests();
    }
 
-   // Pending modify poll
    if(lastPendingModifyPollMs == 0 ||
       (uint)(nowMs - lastPendingModifyPollMs) >= (uint)(PollSeconds * 1000))
    {
@@ -1507,7 +1582,6 @@ void OnTimer()
       PollPendingModifyRequests();
    }
 
-   // Account snapshot
    if(lastPositionsSyncMs == 0 ||
       (uint)(nowMs - lastPositionsSyncMs) >= 3000)
    {
@@ -1515,7 +1589,6 @@ void OnTimer()
       SendAccountSnapshot();
    }
 
-   // History sync
    if(SyncRealHistory &&
       (lastHistorySyncMs == 0 || (uint)(nowMs - lastHistorySyncMs) >= 15000))
    {
