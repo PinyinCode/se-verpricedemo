@@ -2377,7 +2377,8 @@ async function refreshEmergencyModalWarning() {
   if (!banners.length) return;
   const render = (banner, state, message) => {
     banner.classList.remove('unknown', 'off');
-    banner.classList.add('show', state);
+    banner.classList.add('show');
+    if (state) banner.classList.add(state);
     banner.innerHTML = message;
   };
   try {
