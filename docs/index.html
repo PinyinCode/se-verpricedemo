@@ -998,6 +998,12 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
   </div>
 </dialog>
 
+<dialog id="tradeEmergencyDialog" class="confirm-dialog" style="width:min(440px,calc(100vw - 28px));max-width:440px">
+  <div class="cd-head"><strong id="tradeEmergencyTitle">🚨 KHÔNG THỂ MỞ BẢNG GIAO DỊCH</strong></div>
+  <div class="cd-body" id="tradeEmergencyMessage">Emergency Stop đang bật. Hệ thống không cho mở bảng giao dịch.</div>
+  <div class="cd-foot"><button type="button" id="closeTradeEmergency">Đã hiểu</button></div>
+</dialog>
+
 <dialog id="positionsDialog" class="positions-dialog">
   <div class="positions-dialog-head">
     <div><strong>VỊ THẾ ĐANG MỞ &amp; VỊ THẾ CHỜ</strong><div class="small">Lệnh MT5 có thể thao tác</div></div>
@@ -2436,9 +2442,50 @@ function setTradePanelVisible(visible) {
   });
 }
 setTradePanelVisible(false);
-tradePanelToggle.addEventListener('click', () => {
-  setTradePanelVisible(tradePanel.classList.contains('trade-panel-collapsed'));
+async function verifyEmergencyBeforeTradePanel() {
+  try {
+    const response = await fetch(API_BASE + '/api/settings', { cache: 'no-store' });
+    if (!response.ok) throw new Error('HTTP ' + response.status);
+    const data = await response.json();
+    return { known: true, enabled: !!(data.settings && data.settings.emergency_stop) };
+  } catch (error) {
+    return { known: false, enabled: true, detail: String(error.message || error) };
+  }
+}
+function showTradeEmergencyWarning(state) {
+  const dialog = $('tradeEmergencyDialog');
+  const title = $('tradeEmergencyTitle');
+  const message = $('tradeEmergencyMessage');
+  if (!state.known) {
+    title.textContent = '⚠ KHÔNG XÁC MINH ĐƯỢC EMERGENCY';
+    message.textContent = 'Không đọc được trạng thái Emergency Stop từ máy chủ (' + state.detail + '). Vì chưa xác minh được hệ thống có cho phép giao dịch hay không, bảng giao dịch sẽ không mở. Hãy kiểm tra kết nối và Settings.';
+  } else {
+    title.textContent = '🚨 EMERGENCY STOP ĐANG BẬT';
+    message.textContent = 'Hệ thống đang bật chế độ dừng khẩn cấp. Bảng giao dịch không được mở và không thể gửi yêu cầu giao dịch. Hãy vào Settings kiểm tra trạng thái Emergency Stop. Lưu ý: trạng thái này không xác nhận MT5 đã đóng các vị thế hoặc lệnh chờ đang tồn tại.';
+  }
+  if (!dialog.open) dialog.showModal();
+}
+tradePanelToggle.addEventListener('click', async () => {
+  const opening = tradePanel.classList.contains('trade-panel-collapsed');
+  if (!opening) {
+    setTradePanelVisible(false);
+    return;
+  }
+  tradePanelToggle.disabled = true;
+  tradePanelToggle.setAttribute('aria-busy', 'true');
+  try {
+    const state = await verifyEmergencyBeforeTradePanel();
+    if (state.enabled) {
+      showTradeEmergencyWarning(state);
+      return;
+    }
+    setTradePanelVisible(true);
+  } finally {
+    tradePanelToggle.disabled = false;
+    tradePanelToggle.removeAttribute('aria-busy');
+  }
 });
+$('closeTradeEmergency').addEventListener('click', () => $('tradeEmergencyDialog').close());
 $('closeTradeSettings').addEventListener('click', () => $('tradeSettingsDialog').close());
 $('tradeSettingsDialog').addEventListener('click', e => { if (e.target === $('tradeSettingsDialog')) $('tradeSettingsDialog').close(); });
 $('positionsButton').addEventListener('click', () => { refreshChartPositions(); $('positionsDialog').showModal(); });
