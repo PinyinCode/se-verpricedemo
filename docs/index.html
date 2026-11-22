@@ -101,6 +101,15 @@ button.locked{background:rgba(251,191,36,.14);border-color:var(--amber);color:#f
 .chart-actions{margin-left:auto}
 .chart-actions button{padding:6px 9px}
 .chart-actions .control-link{display:inline-flex;align-items:center;justify-content:center;min-width:30px;padding:6px 9px;border:1px solid #47708f;border-radius:7px;background:rgba(96,165,250,.10);color:#b8dcff;text-decoration:none;font:inherit;line-height:1.4;white-space:nowrap}
+.chart-actions .control-link{min-height:36px;min-width:88px;padding:7px 13px;font-weight:750;letter-spacing:.2px;background:rgba(96,165,250,.16);border-color:#5b91c4}
+.chart-actions .control-link:hover{background:rgba(96,165,250,.24);border-color:#80baff}
+.emergency-modal-warning{display:none;margin:0 12px 12px;padding:12px 13px;border:1px solid #a83242;border-left:5px solid #ef5368;border-radius:9px;background:linear-gradient(100deg,rgba(130,25,42,.34),rgba(75,20,32,.24));color:#ffd2d8;font-size:12px;line-height:1.5}
+.emergency-modal-warning.show{display:block}
+.emergency-modal-warning strong{display:block;margin-bottom:3px;color:#ff9eaa;font-size:13px;letter-spacing:.25px}
+.emergency-modal-warning.off{border-color:#276b55;border-left-color:#27c995;background:rgba(39,201,149,.07);color:#a8e8d1}
+.emergency-modal-warning.off strong{color:#68ddb2}
+.emergency-modal-warning.unknown{border-color:#8a6a2c;border-left-color:#fbbf24;background:rgba(251,191,36,.08);color:#f8df9a}
+.emergency-modal-warning.unknown strong{color:#fbbf24}
 .chart-actions .control-link:hover{background:rgba(96,165,250,.18);border-color:#60a5fa}
 .chart-actions .control-link:focus-visible{outline:none;border-color:#4b9be8;box-shadow:0 0 0 2px rgba(75,155,232,.16)}
 body.trade-fullscreen .chart-head{flex-wrap:nowrap;min-width:0;gap:5px}
@@ -807,7 +816,7 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
                 <span class="small" id="feedState">Đang kết nối dữ liệu...</span>
                 <button id="lockButton" type="button" aria-label="Khóa/mở kéo các mức SL/TP" title="Khóa/mở kéo các mức SL/TP">🔓</button>
                 <button id="settingsButton" type="button" aria-label="Cài đặt" title="Cài đặt API key, Risk, Entry">⚙</button>
-                <a class="control-link" href="./settings.html" aria-label="Mở trang điều khiển hệ thống" title="Mở Control Panel">☷</a>
+                <a class="control-link" href="./settings.html" aria-label="Mở Settings - điều khiển hệ thống" title="Mở Settings - điều khiển hệ thống">☷ Settings</a>
                 <button id="positionsButton" type="button" aria-label="Vị thế đang mở và lệnh chờ" title="Xem vị thế đang mở và vị thế chờ">▣<span id="positionCount">0</span></button>
                 <button id="statsButton" type="button" aria-label="Thống kê" title="Thống kê tín hiệu và lịch sử giao dịch">▤</button>
                 <button id="tradePanelToggle" type="button" aria-expanded="false" title="Hiện/ẩn bảng lệnh">Hiện bảng lệnh</button>
@@ -916,6 +925,10 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
     <button type="button" id="closeTradeSettings" aria-label="Đóng">✕</button>
   </div>
   <div class="positions-dialog-body">
+    <div id="emergencyModalWarning" class="emergency-modal-warning unknown show" role="status" aria-live="polite">
+      <strong>ĐANG KIỂM TRA TRẠNG THÁI EMERGENCY</strong>
+      <span>Chưa xác nhận được trạng thái từ máy chủ. Hãy kiểm tra Settings trước khi tiếp tục.</span>
+    </div>
     <div class="settings-fields">
       <label>API key
         <div class="api-key-settings">
@@ -2340,7 +2353,29 @@ async function refreshChartPositions() {
   }
 }
 
-$('settingsButton').addEventListener('click', () => { refreshApiKeyBox(); calcLot(); $('tradeSettingsDialog').showModal(); refreshCommissionInfo(); });
+async function refreshEmergencyModalWarning() {
+  const banner = $('emergencyModalWarning');
+  if (!banner) return;
+  try {
+    const r = await fetch(API_BASE + '/api/settings', { cache: 'no-store' });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const d = await r.json();
+    const enabled = !!(d.settings && d.settings.emergency_stop);
+    banner.classList.remove('unknown', 'off');
+    if (enabled) {
+      banner.classList.add('show');
+      banner.innerHTML = '<strong>🚨 EMERGENCY STOP ĐANG BẬT</strong><span>Hệ thống đang được đánh dấu dừng khẩn cấp theo cấu hình máy chủ. Không gửi yêu cầu giao dịch khi trạng thái này còn bật. Trạng thái này không xác nhận rằng MT5 đã đóng các vị thế hoặc lệnh chờ.</span>';
+    } else {
+      banner.classList.add('show', 'off');
+      banner.innerHTML = '<strong>EMERGENCY STOP ĐANG TẮT</strong><span>Máy chủ hiện ghi nhận chế độ dừng khẩn cấp đã tắt.</span>';
+    }
+  } catch (e) {
+    banner.classList.add('show', 'unknown');
+    banner.classList.remove('off');
+    banner.innerHTML = '<strong>KHÔNG ĐỌC ĐƯỢC TRẠNG THÁI EMERGENCY</strong><span>Không thể xác minh trạng thái từ máy chủ (' + String(e.message || e).replace(/[<>&"]/g, '') + '). Hãy kiểm tra trang Settings.</span>';
+  }
+}
+$('settingsButton').addEventListener('click', () => { refreshApiKeyBox(); calcLot(); $('tradeSettingsDialog').showModal(); refreshCommissionInfo(); refreshEmergencyModalWarning(); });
 
 const tradePanel = document.querySelector('.chart-overlay-bottom');
 const tradePanelToggle = $('tradePanelToggle');
@@ -2829,6 +2864,8 @@ if (!chartApiKey) setApiAuthWarning('error', 'Chưa nhập API Key. Mở Cài đ
 refreshApiKeyBox();
 refreshCommissionInfo();
 setInterval(refreshCommissionInfo, 60000);
+refreshEmergencyModalWarning();
+setInterval(refreshEmergencyModalWarning, 10000);
 syncRealLayerToggles();
 bindRealLayerToggles();
 applyLockState();
