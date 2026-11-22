@@ -98,11 +98,15 @@ button.locked{background:rgba(251,191,36,.14);border-color:var(--amber);color:#f
 .chart-pickers,.chart-actions{display:flex;align-items:center;gap:7px;flex-wrap:wrap;min-width:0}
 .chart-pickers strong{font-size:14px;margin-right:4px;letter-spacing:.2px}
 .chart-pickers select{min-width:80px;padding:6px 9px}
-.chart-actions{margin-left:auto}
+.chart-actions{margin-left:auto;flex:1 1 auto;justify-content:space-between;gap:8px;background:transparent}
+.chart-actions-primary,.chart-actions-tools{display:flex;align-items:center;gap:6px;min-width:0;background:transparent}
+.chart-actions-tools{margin-left:auto;justify-content:flex-end}
 .chart-actions button{padding:6px 9px}
-.chart-actions .control-link{display:inline-flex;align-items:center;justify-content:center;min-width:30px;padding:6px 9px;border:1px solid #47708f;border-radius:7px;background:rgba(96,165,250,.10);color:#b8dcff;text-decoration:none;font:inherit;line-height:1.4;white-space:nowrap}
-.chart-actions .control-link{min-height:36px;min-width:88px;padding:7px 13px;font-weight:750;letter-spacing:.2px;background:rgba(96,165,250,.16);border-color:#5b91c4}
-.chart-actions .control-link:hover{background:rgba(96,165,250,.24);border-color:#80baff}
+.chart-actions .control-link{display:inline-flex;align-items:center;justify-content:center;min-width:30px;padding:6px 9px;border:1px solid #47708f;border-radius:7px;background:transparent;color:#b8dcff;text-decoration:none;font:inherit;line-height:1.4;white-space:nowrap}
+.chart-actions .control-link.primary-chart-action,.chart-actions #tradePanelToggle.primary-chart-action{min-height:36px;min-width:88px;padding:7px 14px;font-size:12px;font-weight:800;letter-spacing:.45px;border:1px solid #5b91c4;border-radius:8px;background:rgba(96,165,250,.13);color:#c6e3ff}
+.chart-actions #tradePanelToggle.primary-chart-action{border-color:#5b91c4}
+.chart-actions .primary-chart-action:hover{background:rgba(96,165,250,.22);border-color:#80baff}
+.chart-actions .control-link:hover{background:rgba(96,165,250,.10);border-color:#80baff}
 .emergency-modal-warning{display:none;margin:0 12px 12px;padding:12px 13px;border:1px solid #a83242;border-left:5px solid #ef5368;border-radius:9px;background:linear-gradient(100deg,rgba(130,25,42,.34),rgba(75,20,32,.24));color:#ffd2d8;font-size:12px;line-height:1.5}
 .emergency-modal-warning.show{display:block}
 .emergency-modal-warning strong{display:block;margin-bottom:3px;color:#ff9eaa;font-size:13px;letter-spacing:.25px}
@@ -114,9 +118,11 @@ button.locked{background:rgba(251,191,36,.14);border-color:var(--amber);color:#f
 .chart-actions .control-link:focus-visible{outline:none;border-color:#4b9be8;box-shadow:0 0 0 2px rgba(75,155,232,.16)}
 body.trade-fullscreen .chart-head{flex-wrap:nowrap;min-width:0;gap:5px}
 body.trade-fullscreen .chart-pickers{flex:0 1 auto;flex-wrap:nowrap;gap:4px}
-body.trade-fullscreen .chart-actions{flex:0 0 auto;flex-wrap:nowrap;gap:clamp(2px,.55vw,6px)}
+body.trade-fullscreen .chart-actions{flex:1 1 auto;min-width:0;flex-wrap:wrap;gap:5px;background:transparent}
+body.trade-fullscreen .chart-actions-primary,body.trade-fullscreen .chart-actions-tools{flex:0 0 auto;gap:3px;background:transparent}
+body.trade-fullscreen .chart-actions-tools{margin-left:auto}
 body.trade-fullscreen .chart-actions button{flex:0 0 auto;min-width:25px;padding:5px 6px;font-size:clamp(9px,2.3vw,12px)}
-body.trade-fullscreen .chart-actions #tradePanelToggle{min-width:0;padding-inline:7px;white-space:nowrap}
+body.trade-fullscreen .chart-actions .primary-chart-action{min-width:72px;min-height:30px;padding:5px 8px;font-size:11px}
 body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clamp(48px,8vw,76px);padding-inline:4px}
 .chart-actions #feedState{max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
@@ -551,7 +557,7 @@ th{color:var(--muted);font-weight:600}
 .api-auth-warning{display:none;margin:10px 12px 0;padding:9px 11px;border:1px solid #9b6b25;border-left:4px solid var(--amber);border-radius:8px;background:rgba(251,191,36,.10);color:#fcd985;font-size:11px;line-height:1.5}
 .api-auth-warning.show{display:block}
 .api-auth-warning.error{border-color:#984253;border-left-color:var(--red);background:rgba(240,107,126,.10);color:#ffb0bc}
-#tradePanelToggle{white-space:nowrap;border-color:#47708f;color:#b8dcff;background:rgba(96,165,250,.10)}
+#tradePanelToggle{white-space:nowrap}
 .chart-overlay-bottom.trade-panel-collapsed{height:0!important;min-height:0!important;flex:0 0 0!important;border:0;overflow:hidden}
 .chart-overlay-bottom.trade-panel-collapsed #lotResizeHandle{display:none!important}
 .chart-overlay-bottom.trade-panel-collapsed>*{display:none!important}
@@ -716,7 +722,9 @@ body.trade-fullscreen .chart-overlay-top .chart-head{
 body.trade-fullscreen .chart-overlay-top .chart-pickers{display:flex;flex:0 0 auto;flex-wrap:nowrap;gap:4px}
 body.trade-fullscreen .chart-overlay-top .chart-pickers strong{white-space:nowrap;font-size:12px;margin-right:2px}
 body.trade-fullscreen .chart-overlay-top .chart-pickers select{min-width:74px;padding:4px 5px;min-height:29px}
-body.trade-fullscreen .chart-overlay-top .chart-actions{display:flex;flex:0 0 auto;flex-wrap:nowrap;margin-left:auto;gap:3px}
+body.trade-fullscreen .chart-overlay-top .chart-actions{display:flex;flex:1 1 auto;flex-wrap:wrap;min-width:0;margin-left:auto;gap:4px;background:transparent}
+body.trade-fullscreen .chart-overlay-top .chart-actions-primary,body.trade-fullscreen .chart-overlay-top .chart-actions-tools{display:flex;flex:0 0 auto;align-items:center;gap:3px;background:transparent}
+body.trade-fullscreen .chart-overlay-top .chart-actions-tools{margin-left:auto}
 body.trade-fullscreen .chart-overlay-top .chart-actions button{min-width:30px;min-height:29px;padding:4px 6px;font-size:11px;white-space:nowrap}
 body.trade-fullscreen .chart-overlay-top .status-strip{display:inline-flex;width:max-content;max-width:100%;flex:0 0 auto;align-self:flex-start;padding:3px 8px;gap:10px;font-size:10px}
 
@@ -747,12 +755,15 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
 
 @media(max-width:600px){
   body.trade-fullscreen .chart-overlay-top{top:5px;left:5px;right:5px}
-  body.trade-fullscreen .chart-head{gap:3px;padding:4px 5px}
+  body.trade-fullscreen .chart-head{gap:3px;padding:4px 5px;flex-wrap:wrap}
   body.trade-fullscreen .chart-overlay-top .chart-pickers strong{display:none}
+  body.trade-fullscreen .chart-overlay-top .chart-actions{flex-basis:100%;width:100%;margin-left:0;justify-content:space-between}
   body.trade-fullscreen .chart-overlay-top .chart-pickers select{width:clamp(45px,15vw,62px);min-width:0;padding:4px 2px;font-size:10px}
-  body.trade-fullscreen .chart-overlay-top .chart-actions{gap:2px}
+  body.trade-fullscreen .chart-overlay-top .chart-actions{flex-wrap:wrap;gap:4px;background:transparent}
+  body.trade-fullscreen .chart-overlay-top .chart-actions-primary,body.trade-fullscreen .chart-overlay-top .chart-actions-tools{gap:3px;background:transparent}
+  body.trade-fullscreen .chart-overlay-top .chart-actions-tools{margin-left:auto}
   body.trade-fullscreen .chart-overlay-top .chart-actions button{min-width:22px;padding:3px 4px;font-size:10px}
-  body.trade-fullscreen .chart-overlay-top .chart-actions #tradePanelToggle{padding-inline:4px;font-size:9px}
+  body.trade-fullscreen .chart-overlay-top .chart-actions .primary-chart-action{min-width:64px;min-height:28px;padding:4px 7px;font-size:10px}
   body.trade-fullscreen .chart-overlay-top .chart-actions #feedState{display:none}
   body.trade-fullscreen .chart-overlay-bottom .trade-footer{grid-template-columns:minmax(0,1fr) auto;gap:5px}
   body.trade-fullscreen .chart-overlay-bottom .request-state{display:none}
@@ -813,15 +824,19 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
                 </select>
               </div>
               <div class="chart-actions">
-                <span class="small" id="feedState">Đang kết nối dữ liệu...</span>
-                <button id="lockButton" type="button" aria-label="Khóa/mở kéo các mức SL/TP" title="Khóa/mở kéo các mức SL/TP">🔓</button>
-                <button id="settingsButton" type="button" aria-label="Cài đặt" title="Cài đặt API key, Risk, Entry">⚙</button>
-                <a class="control-link" href="./settings.html" aria-label="Mở Settings - điều khiển hệ thống" title="Mở Settings - điều khiển hệ thống">☷ Settings</a>
-                <button id="positionsButton" type="button" aria-label="Vị thế đang mở và lệnh chờ" title="Xem vị thế đang mở và vị thế chờ">▣<span id="positionCount">0</span></button>
-                <button id="statsButton" type="button" aria-label="Thống kê" title="Thống kê tín hiệu và lịch sử giao dịch">▤</button>
-                <button id="tradePanelToggle" type="button" aria-expanded="false" title="Hiện/ẩn bảng lệnh">Hiện bảng lệnh</button>
-                <button id="fitChart" type="button" aria-label="Vừa khung" title="Vừa khung biểu đồ">⤢</button>
-                <button id="refresh" type="button" title="Làm mới dữ liệu">↻</button>
+                <div class="chart-actions-primary">
+                  <button id="tradePanelToggle" class="primary-chart-action" type="button" aria-expanded="false" title="Hiện/ẩn bảng lệnh">TRADE</button>
+                  <a class="control-link primary-chart-action" href="./settings.html" aria-label="Mở Settings - điều khiển hệ thống" title="Mở Settings - điều khiển hệ thống">SETTINGS</a>
+                </div>
+                <div class="chart-actions-tools">
+                  <span class="small" id="feedState">Đang kết nối dữ liệu...</span>
+                  <button id="lockButton" type="button" aria-label="Khóa/mở kéo các mức SL/TP" title="Khóa/mở kéo các mức SL/TP">🔓</button>
+                  <button id="settingsButton" type="button" aria-label="Cài đặt" title="Cài đặt API key, Risk, Entry">⚙</button>
+                  <button id="positionsButton" type="button" aria-label="Vị thế đang mở và lệnh chờ" title="Xem vị thế đang mở và vị thế chờ">▣<span id="positionCount">0</span></button>
+                  <button id="statsButton" type="button" aria-label="Thống kê" title="Thống kê tín hiệu và lịch sử giao dịch">▤</button>
+                  <button id="fitChart" type="button" aria-label="Vừa khung" title="Vừa khung biểu đồ">⤢</button>
+                  <button id="refresh" type="button" title="Làm mới dữ liệu">↻</button>
+                </div>
               </div>
             </div>
             <div class="status-strip" id="telemetryBar">
@@ -976,6 +991,10 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
     <button type="button" id="closePositionsDialog" aria-label="Đóng">✕</button>
   </div>
   <div class="positions-dialog-body">
+    <div id="positionsEmergencyWarning" class="emergency-modal-warning unknown show" role="status" aria-live="polite">
+      <strong>ĐANG KIỂM TRA TRẠNG THÁI EMERGENCY</strong>
+      <span>Chưa xác nhận được trạng thái từ máy chủ. Hãy kiểm tra Settings.</span>
+    </div>
     <div id="positionsUpdated" class="small">Đang đồng bộ...</div>
     <section class="positions-section">
       <div class="positions-section-head"><strong>VỊ THẾ ĐANG MỞ</strong><span id="openPositionsMeta" class="small">0 vị thế</span></div>
@@ -2354,25 +2373,28 @@ async function refreshChartPositions() {
 }
 
 async function refreshEmergencyModalWarning() {
-  const banner = $('emergencyModalWarning');
-  if (!banner) return;
+  const banners = [$('emergencyModalWarning'), $('positionsEmergencyWarning')].filter(Boolean);
+  if (!banners.length) return;
+  const render = (banner, state, message) => {
+    banner.classList.remove('unknown', 'off');
+    banner.classList.add('show', state);
+    banner.innerHTML = message;
+  };
   try {
     const r = await fetch(API_BASE + '/api/settings', { cache: 'no-store' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     const enabled = !!(d.settings && d.settings.emergency_stop);
-    banner.classList.remove('unknown', 'off');
-    if (enabled) {
-      banner.classList.add('show');
-      banner.innerHTML = '<strong>🚨 EMERGENCY STOP ĐANG BẬT</strong><span>Hệ thống đang được đánh dấu dừng khẩn cấp theo cấu hình máy chủ. Không gửi yêu cầu giao dịch khi trạng thái này còn bật. Trạng thái này không xác nhận rằng MT5 đã đóng các vị thế hoặc lệnh chờ.</span>';
-    } else {
-      banner.classList.add('show', 'off');
-      banner.innerHTML = '<strong>EMERGENCY STOP ĐANG TẮT</strong><span>Máy chủ hiện ghi nhận chế độ dừng khẩn cấp đã tắt.</span>';
-    }
+    banners.forEach(banner => {
+      if (enabled) {
+        render(banner, '', '<strong>🚨 EMERGENCY STOP ĐANG BẬT</strong><span>Máy chủ đang bật chế độ dừng khẩn cấp. Không gửi yêu cầu giao dịch. Trạng thái này không xác nhận MT5 đã đóng các vị thế hoặc lệnh chờ.</span>');
+      } else {
+        render(banner, 'off', '<strong>EMERGENCY STOP ĐANG TẮT</strong><span>Máy chủ hiện ghi nhận chế độ dừng khẩn cấp đã tắt.</span>');
+      }
+    });
   } catch (e) {
-    banner.classList.add('show', 'unknown');
-    banner.classList.remove('off');
-    banner.innerHTML = '<strong>KHÔNG ĐỌC ĐƯỢC TRẠNG THÁI EMERGENCY</strong><span>Không thể xác minh trạng thái từ máy chủ (' + String(e.message || e).replace(/[<>&"]/g, '') + '). Hãy kiểm tra trang Settings.</span>';
+    const detail = String(e.message || e).replace(/[<>&"]/g, '');
+    banners.forEach(banner => render(banner, 'unknown', '<strong>KHÔNG ĐỌC ĐƯỢC TRẠNG THÁI EMERGENCY</strong><span>Không thể xác minh trạng thái từ máy chủ (' + detail + '). Hãy kiểm tra trang Settings.</span>'));
   }
 }
 $('settingsButton').addEventListener('click', () => { refreshApiKeyBox(); calcLot(); $('tradeSettingsDialog').showModal(); refreshCommissionInfo(); refreshEmergencyModalWarning(); });
@@ -2381,7 +2403,7 @@ const tradePanel = document.querySelector('.chart-overlay-bottom');
 const tradePanelToggle = $('tradePanelToggle');
 function setTradePanelVisible(visible) {
   tradePanel.classList.toggle('trade-panel-collapsed', !visible);
-  tradePanelToggle.textContent = visible ? 'Thu gọn bảng lệnh' : 'Hiện bảng lệnh';
+  tradePanelToggle.textContent = 'TRADE';
   tradePanelToggle.setAttribute('aria-expanded', visible ? 'true' : 'false');
   tradePanelToggle.title = visible ? 'Thu gọn bảng lệnh' : 'Hiện bảng lệnh';
   if (!visible) {
