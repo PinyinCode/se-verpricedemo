@@ -559,6 +559,18 @@ th{color:var(--muted);font-weight:600}
 .api-auth-warning.show{display:block}
 .api-auth-warning.error{border-color:#984253;border-left-color:var(--red);background:rgba(240,107,126,.10);color:#ffb0bc}
 #tradePanelToggle{white-space:nowrap}
+body.trade-fullscreen .chart-stage #tradePanelToggle.floating-trade-toggle{
+  position:absolute;z-index:30;left:8px;bottom:calc(var(--rsi-chart-height,64px) + 22px);
+  min-width:58px;min-height:28px;padding:5px 9px;border:1px solid #47708f;border-radius:7px;
+  background:rgba(8,15,27,.82);backdrop-filter:blur(5px);color:#b8dcff;
+  font-size:10px;font-weight:800;letter-spacing:.4px;box-shadow:0 2px 8px rgba(0,0,0,.25);
+  transition:min-width .16s ease,min-height .16s ease,padding .16s ease,background .16s ease,border-color .16s ease
+}
+body.trade-fullscreen .chart-stage #tradePanelToggle.floating-trade-toggle[aria-expanded="true"]{
+  min-width:72px;min-height:34px;padding:7px 12px;background:rgba(96,165,250,.24);
+  border-color:#60a5fa;color:#d8ecff;box-shadow:0 0 0 2px rgba(96,165,250,.12),0 0 14px rgba(96,165,250,.14)
+}
+body.trade-fullscreen .chart-stage #tradePanelToggle.floating-trade-toggle:hover{background:rgba(96,165,250,.22);border-color:#80baff}
 .chart-overlay-bottom.trade-panel-collapsed{height:0!important;min-height:0!important;flex:0 0 0!important;border:0;overflow:hidden}
 .chart-overlay-bottom.trade-panel-collapsed #lotResizeHandle{display:none!important}
 .chart-overlay-bottom.trade-panel-collapsed>*{display:none!important}
@@ -804,6 +816,7 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
           <div id="priceChart"></div>
           <div id="rsiResizeHandle" role="separator" aria-label="Kéo để thay đổi chiều cao RSI" title="Kéo để thay đổi chiều cao RSI"></div>
           <div id="rsiChart"></div>
+          <button id="tradePanelToggle" class="floating-trade-toggle" type="button" aria-expanded="false" title="Hiện/ẩn bảng lệnh">TRADE</button>
 
           <div class="chart-overlay-top">
             <div class="panel-head chart-head">
@@ -826,7 +839,6 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
               </div>
               <div class="chart-actions">
                 <div class="chart-actions-primary">
-                  <button id="tradePanelToggle" class="primary-chart-action" type="button" aria-expanded="false" title="Hiện/ẩn bảng lệnh">TRADE</button>
                   <a class="control-link primary-chart-action" href="./settings.html" aria-label="Mở Settings - điều khiển hệ thống" title="Mở Settings - điều khiển hệ thống">SETTINGS</a>
                 </div>
                 <div class="chart-actions-tools">
@@ -2793,6 +2805,7 @@ function setRsiHeight(height) {
   const next = Math.max(0, Math.min(max, height));
   chart.style.setProperty('height', next + 'px', 'important');
   chart.style.setProperty('flex', `0 0 ${next}px`, 'important');
+  stage.style.setProperty('--rsi-chart-height', next + 'px');
   rsiChart.applyOptions({ width: chart.clientWidth || 1, height: Math.max(1, next) });
   applyChartDimensions();
   try { localStorage.setItem('chartRsiHeight', String(Math.round(next))); } catch (_) {}
