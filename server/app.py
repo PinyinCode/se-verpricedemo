@@ -42,10 +42,8 @@ def utc_now() -> str:
 
 
 def send_telegram_rt_signal(item: "TodaySignalItem") -> bool:
-    """Send one newly inserted RT signal to Telegram; secrets stay in environment."""
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
-
     local_time = datetime.fromtimestamp(
         item.signal_time, timezone.utc
     ).astimezone(timezone(timedelta(hours=7)))
@@ -96,6 +94,40 @@ def db():
         except Exception:
             conn.rollback()
             raise
+
+
+def _init_settings_table(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+    CREATE TABLE IF NOT EXISTS settings (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        auto_trade_enabled    INTEGER NOT NULL DEFAULT 1,
+        trailing_enabled      INTEGER NOT NULL DEFAULT 1,
+        breakeven_enabled     INTEGER NOT NULL DEFAULT 1,
+        news_filter_enabled   INTEGER NOT NULL DEFAULT 1,
+        time_filter_enabled   INTEGER NOT NULL DEFAULT 1,
+        emergency_stop        INTEGER NOT NULL DEFAULT 0,
+        emergency_close_all   INTEGER NOT NULL DEFAULT 1,
+        risk_money            REAL    NOT NULL DEFAULT 25,
+        max_positions         INTEGER NOT NULL DEFAULT 3,
+        reward_risk_ratio     REAL    NOT NULL DEFAULT 2.0,
+        risk_tolerance_pct    REAL    NOT NULL DEFAULT 0.5,
+        commission_fallback   REAL    NOT NULL DEFAULT 0,
+        spread_buffer_points  INTEGER NOT NULL DEFAULT 20,
+        trailing_trigger_rr   REAL    NOT NULL DEFAULT 1.0,
+        trailing_lock_rr      REAL    NOT NULL DEFAULT 0.5,
+        breakeven_trigger_rr  REAL    NOT NULL DEFAULT 0.5,
+        trailing_mode         TEXT    NOT NULL DEFAULT 'static',
+        trading_start_hour    INTEGER NOT NULL DEFAULT 7,
+        trading_end_hour      INTEGER NOT NULL DEFAULT 23,
+        updated_at            TEXT    NOT NULL,
+        updated_by            TEXT    NOT NULL DEFAULT 'system'
+    )
+    """)
+    now = utc_now()
+    conn.execute(
+        "INSERT OR IGNORE INTO settings(id, updated_at, updated_by) VALUES(1, ?, 'system')",
+        (now,),
+    )
 
 
 def init_db() -> None:
@@ -223,6 +255,7 @@ def init_db() -> None:
           received_at TEXT NOT NULL,
           PRIMARY KEY(account_id, symbol)
         )""")
+        _init_settings_table(conn)
 
 
 @asynccontextmanager
@@ -240,8 +273,8 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Forex AI Server",
-    version="0.4.0",
-    description="Signal analysis and MT5 real-order bridge.",
+    version="0.5.0",
+    description="Signal analysis and MT5 real-order bridge with runtime control panel.",
     lifespan=lifespan,
 )
 
@@ -252,7 +285,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=_frontend_origins,
     allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_methods=["GET", "POST", "PUT", "OPTIONS"],
     allow_headers=["Content-Type", "X-API-Key"],
 )
 app.mount("/static", StaticFiles(directory=str(BASE_DIR / "dashboard")), name="static")
@@ -550,6 +583,34 @@ class CommissionBatchIn(BaseModel):
     items: list[CommissionItemIn] = Field(min_length=1, max_length=200)
 
 
+class SettingsIn(BaseModel):
+    auto_trade_enabled: bool | None = None
+    trailing_enabled: bool | None = None
+    breakeven_enabled: bool | None = None
+    news_filter_enabled: bool | None = None
+    time_filter_enabled: bool | None = None
+    emergency_stop: bool | None = None
+    emergency_close_all: bool | None = None
+
+    risk_money: float | None = Field(default=None, gt=0, le=100000)
+    max_positions: int | None = Field(default=None, ge=0, le=50)
+    reward_risk_ratio: float | None = Field(default=None, ge=0.1, le=20)
+    risk_tolerance_pct: float | None = Field(default=None, ge=0, le=5)
+
+    commission_fallback: float | None = Field(default=None, ge=0, le=10000)
+    spread_buffer_points: int | None = Field(default=None, ge=0, le=10000)
+
+    trailing_trigger_rr: float | None = Field(default=None, ge=0, le=10)
+    trailing_lock_rr: float | None = Field(default=None, ge=0, le=10)
+    breakeven_trigger_rr: float | None = Field(default=None, ge=0, le=10)
+    trailing_mode: Literal["static", "dynamic"] | None = None
+
+    trading_start_hour: int | None = Field(default=None, ge=0, le=23)
+    trading_end_hour: int | None = Field(default=None, ge=0, le=23)
+
+    updated_by: str = Field(default="dashboard", max_length=40)
+
+
 # ============ Routes ============
 
 @app.get("/", response_class=HTMLResponse)
@@ -580,6 +641,111 @@ def health():
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"database_error: {type(exc).__name__}")
 
+
+# ---- SETTINGS endpoints ----
+
+def _settings_row_to_dict(row: sqlite3.Row) -> dict:
+    d = dict(row)
+    for k in (
+        "auto_trade_enabled", "trailing_enabled", "breakeven_enabled",
+        "news_filter_enabled", "time_filter_enabled",
+        "emergency_stop", "emergency_close_all",
+    ):
+        if k in d:
+            d[k] = bool(d[k])
+    return d
+
+
+@app.get("/api/settings")
+def get_settings():
+    """Public read: dashboard cần đọc trước khi hiển thị toggle."""
+    with db() as conn:
+        row = conn.execute("SELECT * FROM settings WHERE id=1").fetchone()
+        if row is None:
+            raise HTTPException(status_code=500, detail="Settings chưa khởi tạo")
+        return {"ok": True, "settings": _settings_row_to_dict(row)}
+
+
+@app.put("/api/settings", dependencies=[Depends(require_key)])
+def update_settings(payload: SettingsIn):
+    updates: dict[str, object] = {}
+    for field, value in payload.model_dump(exclude_none=True).items():
+        if field == "updated_by":
+            continue
+        if isinstance(value, bool):
+            updates[field] = 1 if value else 0
+        else:
+            updates[field] = value
+
+    if not updates:
+        raise HTTPException(status_code=422, detail="Không có field nào để cập nhật")
+
+    now = utc_now()
+    updates["updated_at"] = now
+    updates["updated_by"] = payload.updated_by
+
+    set_clause = ", ".join(f"{k}=?" for k in updates.keys())
+    values = list(updates.values())
+
+    with db() as conn:
+        conn.execute(f"UPDATE settings SET {set_clause} WHERE id=1", values)
+        conn.execute(
+            "INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
+            ("settings_updated",
+             f"by={payload.updated_by} fields={list(updates.keys())}",
+             now),
+        )
+        row = conn.execute("SELECT * FROM settings WHERE id=1").fetchone()
+
+    return {"ok": True, "settings": _settings_row_to_dict(row), "updated_at": now}
+
+
+@app.get("/api/settings/commission", dependencies=[Depends(require_key)])
+def get_commission_for_symbol(
+    symbol: str = Query(min_length=3, max_length=32),
+):
+    """Helper cho TRADE_V9: trả commission_per_lot mới nhất cho 1 symbol."""
+    sym = symbol.strip().upper()
+    with db() as conn:
+        row = conn.execute(
+            "SELECT account_id, commission_per_lot, swap_long, swap_short, "
+            "contract_size, tick_value, point_size, received_at "
+            "FROM symbol_commissions WHERE symbol=? "
+            "ORDER BY received_at DESC LIMIT 1",
+            (sym,),
+        ).fetchone()
+
+        fallback_row = conn.execute(
+            "SELECT commission_fallback FROM settings WHERE id=1"
+        ).fetchone()
+        fallback = float(fallback_row["commission_fallback"]) if fallback_row else 0.0
+
+    if row is None:
+        return {
+            "ok": True,
+            "symbol": sym,
+            "has_data": False,
+            "commission_per_lot": fallback,
+            "source": "fallback",
+        }
+
+    return {
+        "ok": True,
+        "symbol": sym,
+        "has_data": True,
+        "commission_per_lot": float(row["commission_per_lot"]),
+        "swap_long": float(row["swap_long"]),
+        "swap_short": float(row["swap_short"]),
+        "contract_size": float(row["contract_size"]),
+        "tick_value": float(row["tick_value"]),
+        "point_size": float(row["point_size"]),
+        "account_id": row["account_id"],
+        "received_at": row["received_at"],
+        "source": "server_cache",
+    }
+
+
+# ---- Original signal endpoints ----
 
 def _validate_limit_against_market(conn: sqlite3.Connection, payload: SignalIn) -> None:
     if payload.order_type not in ("BUY_LIMIT", "SELL_LIMIT"):
@@ -1257,7 +1423,6 @@ def update_commissions(payload: CommissionBatchIn):
 
 @app.get("/api/mt5/commissions", dependencies=[Depends(require_key)])
 def get_commissions(symbol: str | None = Query(default=None, min_length=3, max_length=32)):
-    """Return read-only MT5 commission snapshots for the requested symbol."""
     sql = (
         "SELECT account_id,symbol,commission_per_lot,swap_long,swap_short,"
         "contract_size,tick_value,point_size,source_updated_at,received_at "
@@ -1383,6 +1548,8 @@ def dashboard_data():
         today_signals = [dict(r) for r in conn.execute(
             "SELECT symbol,timeframe,direction,divergence,signal_type,signal_time,price1,price2,rsi1,rsi2,time1,time2 "
             "FROM today_signals ORDER BY signal_time DESC LIMIT 200").fetchall()]
+        settings_row = conn.execute("SELECT * FROM settings WHERE id=1").fetchone()
+        settings_dict = _settings_row_to_dict(settings_row) if settings_row else {}
     return {
         "mode": "REAL_ONLY",
         "signals": signals,
@@ -1396,5 +1563,6 @@ def dashboard_data():
         "scan_status": scans,
         "counts": counts,
         "events": events,
+        "settings": settings_dict,
         "server_time": utc_now(),
     }
