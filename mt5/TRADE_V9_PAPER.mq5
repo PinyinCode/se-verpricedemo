@@ -1123,7 +1123,7 @@ void ExecuteSltpCommand(string cmdJson)
       trade.SetTypeFilling(PickFilling(sym));
       trade.SetAsyncMode(false);
       if(trade.PositionModify(tk, sl, tp))
-      { ok = true; detail = StringFormat("SL/TP updated"); }
+      { ok = true; detail = "SL/TP updated"; }
       else
          detail = StringFormat("PositionModify failed retcode=%d", trade.ResultRetcode());
    }
