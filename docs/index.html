@@ -49,7 +49,7 @@ select,button,input{
   font:inherit;
   color:var(--text);
   border-radius:7px;
-  transition:border-color .15s,background .15s,box-shadow .15s;
+  transition:border-color .15s,background .15s,box-shadow .15s,transform .16s ease,padding .16s ease,font-size .16s ease,color .15s ease;
 }
 select,input{
   background:#111f33;
@@ -433,13 +433,69 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
 .lot-block #lotResult{margin-top:0;display:flex;align-items:center;flex-wrap:wrap;gap:6px}
 .lot-block .lot-value{display:inline-block;font-size:clamp(16px,calc(12px + .06 * var(--lot-panel-h, 110px)),26px);font-weight:800;color:#62dfb3;margin:0 6px 0 0;line-height:1.15}
 .lot-controls{display:flex;align-items:center;gap:8px 12px;margin-top:2px;flex-wrap:wrap}
-.limit-preset-bar{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-.btn-limit-preset{padding:clamp(4px,calc(2px + .02 * var(--lot-panel-h, 110px)),7px) clamp(8px,calc(6px + .03 * var(--lot-panel-h, 110px)),12px);font-size:clamp(10px,calc(9px + .015 * var(--lot-panel-h, 110px)),12px);font-weight:700;border-radius:6px;background:#162438;border-color:#3a5273}
-.btn-limit-preset.buy-preset{border-color:#237a60;color:#6de3b8}
-.btn-limit-preset.buy-preset.selected{background:rgba(39,201,149,.18);border-color:var(--green)}
-.btn-limit-preset.sell-preset{border-color:#8c4050;color:#ff9aaa}
-.btn-limit-preset.sell-preset.selected{background:rgba(240,107,126,.2);border-color:var(--red)}
-.btn-limit-preset.mkt-preset.selected{background:rgba(96,165,250,.18);border-color:var(--blue);color:#93c5fd}
+.limit-preset-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+
+/* Trạng thái TẮT (mặc định): tối màu, dịu mắt giống MARKET hiện tại */
+.btn-limit-preset{
+  padding:clamp(4px,calc(2px + .02 * var(--lot-panel-h, 110px)),7px) clamp(8px,calc(6px + .03 * var(--lot-panel-h, 110px)),12px);
+  font-size:clamp(10px,calc(9px + .015 * var(--lot-panel-h, 110px)),12px);
+  font-weight:700;
+  border-radius:6px;
+  background:#121e30;
+  border:1px solid #2a3b52;
+  color:#7f92aa;
+  opacity:.82;
+  transform:scale(1);
+  transform-origin:center;
+}
+.btn-limit-preset:hover:not(:disabled){
+  background:#18273d;
+  border-color:#3a506e;
+  color:#a8b9cf;
+  opacity:.95;
+}
+.btn-limit-preset.buy-preset{
+  background:#11202c;
+  border-color:#264552;
+  color:#6ea39a;
+}
+.btn-limit-preset.sell-preset{
+  background:#201424;
+  border-color:#4b2b3b;
+  color:#a87886;
+}
+.btn-limit-preset.mkt-preset{
+  background:#121f32;
+  border-color:#2b3e58;
+  color:#7f96b3;
+}
+
+/* Trạng thái BẬT (.selected): nút to lên + highlight màu rõ rệt */
+.btn-limit-preset.selected{
+  opacity:1;
+  transform:scale(1.07);
+  padding:clamp(5px,calc(3px + .025 * var(--lot-panel-h, 110px)),8px) clamp(11px,calc(8px + .035 * var(--lot-panel-h, 110px)),15px);
+  font-size:clamp(11px,calc(10px + .018 * var(--lot-panel-h, 110px)),13px);
+  letter-spacing:.35px;
+}
+.btn-limit-preset.mkt-preset.selected{
+  background:rgba(96,165,250,.24);
+  border-color:#60a5fa;
+  color:#dbeafe;
+  box-shadow:0 0 0 2px rgba(96,165,250,.18),0 6px 16px rgba(59,130,246,.28);
+}
+.btn-limit-preset.buy-preset.selected{
+  background:rgba(39,201,149,.24);
+  border-color:#27c995;
+  color:#a7f3d0;
+  box-shadow:0 0 0 2px rgba(39,201,149,.18),0 6px 16px rgba(16,185,129,.28);
+}
+.btn-limit-preset.sell-preset.selected{
+  background:rgba(240,107,126,.26);
+  border-color:#f06b7e;
+  color:#fecdd3;
+  box-shadow:0 0 0 2px rgba(240,107,126,.20),0 6px 16px rgba(244,63,94,.30);
+}
 
 .level-toggles{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
 .level-toggles label{display:inline-flex;gap:4px;align-items:center;color:#aebdd0;font-size:clamp(10px,calc(9px + .012 * var(--lot-panel-h, 110px)),12px);cursor:pointer}
@@ -907,9 +963,9 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
               <div id="contractMeta" class="small">Đang chờ thông số hợp đồng từ MT5...</div>
               <div class="lot-controls">
                 <div class="limit-preset-bar">
-                  <button type="button" id="presetMarket" class="btn-limit-preset mkt-preset">MARKET</button>
-                  <button type="button" id="presetBuyLimit" class="btn-limit-preset buy-preset">+ BUY LIMIT</button>
-                  <button type="button" id="presetSellLimit" class="btn-limit-preset sell-preset">+ SELL LIMIT</button>
+                  <button type="button" id="presetMarket" class="btn-limit-preset mkt-preset" aria-pressed="false">MARKET</button>
+                  <button type="button" id="presetBuyLimit" class="btn-limit-preset buy-preset" aria-pressed="false">+ BUY LIMIT</button>
+                  <button type="button" id="presetSellLimit" class="btn-limit-preset sell-preset" aria-pressed="false">+ SELL LIMIT</button>
                 </div>
                 <div class="level-toggles">
                   <label><input id="showEntry" type="checkbox"> Entry (form mới)</label>
@@ -2022,9 +2078,15 @@ function applyLimitDefaults(ref, limitType = 'BUY_LIMIT') {
   }
 }
 function syncPresetButtons() {
-  $('presetMarket').classList.toggle('selected', activePreset === 'MARKET');
-  $('presetBuyLimit').classList.toggle('selected', activePreset === 'BUY_LIMIT');
-  $('presetSellLimit').classList.toggle('selected', activePreset === 'SELL_LIMIT');
+  const isMarket = activePreset === 'MARKET';
+  const isBuyLimit = activePreset === 'BUY_LIMIT';
+  const isSellLimit = activePreset === 'SELL_LIMIT';
+  $('presetMarket').classList.toggle('selected', isMarket);
+  $('presetMarket').setAttribute('aria-pressed', String(isMarket));
+  $('presetBuyLimit').classList.toggle('selected', isBuyLimit);
+  $('presetBuyLimit').setAttribute('aria-pressed', String(isBuyLimit));
+  $('presetSellLimit').classList.toggle('selected', isSellLimit);
+  $('presetSellLimit').setAttribute('aria-pressed', String(isSellLimit));
 }
 
 function clearPresetSelection() {
