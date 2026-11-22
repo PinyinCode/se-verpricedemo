@@ -1187,7 +1187,7 @@ void ExecutePendingModify(string cmdJson)
       trade.SetDeviationInPoints(SlippagePoints);
       trade.SetTypeFilling(PickFilling(sym));
       trade.SetAsyncMode(false);
-      if(trade.OrderModify(tk, price, sl, tp, ORDER_TIME_GTC, expiration, OrderComment))
+      if(trade.OrderModify(tk, price, sl, tp, ORDER_TIME_GTC, expiration, 0.0))
       { ok = true; detail = "Pending modified"; }
       else
          detail = StringFormat("OrderModify failed retcode=%d", trade.ResultRetcode());
