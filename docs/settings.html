@@ -11,7 +11,10 @@
     background: #0f1419; color: #e6e6e6; min-height: 100vh; padding: 24px;
   }
   .container { max-width: 1100px; margin: 0 auto; }
-  h1 { font-size: 24px; margin-bottom: 8px; color: #4fc3f7; }
+  .page-header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px; }
+  h1 { font-size: 24px; margin-bottom: 0; color: #4fc3f7; }
+  .back-btn { display:inline-flex; align-items:center; gap:6px; padding:7px 11px; border:1px solid #374151; border-radius:7px; color:#cbd5e1; text-decoration:none; font-size:12px; white-space:nowrap; background:#1a1f29; }
+  .back-btn:hover { background:#252d3a; border-color:#4fc3f7; color:#fff; }
   .subtitle { color: #8a8f99; font-size: 13px; margin-bottom: 24px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
   .card {
@@ -47,15 +50,17 @@
   }
   .input-row input:focus, .input-row select:focus { outline: none; border-color: #4fc3f7; }
   .emergency {
-    background: linear-gradient(135deg, #7f1d1d, #991b1b);
-    border: 2px solid #ef4444; border-radius: 12px; padding: 20px;
-    margin-bottom: 24px;
+    display:flex; align-items:center; justify-content:space-between; gap:16px;
+    background: linear-gradient(135deg, #431b20, #581f25);
+    border: 1px solid #9f343b; border-radius: 9px; padding: 12px 14px;
+    margin-bottom: 18px;
   }
-  .emergency h2 { color: #fca5a5; }
+  .emergency h2 { color: #fca5a5; font-size:13px; }
+  .emergency p { margin:4px 0 0 !important; font-size:11px !important; }
   .emergency-btn {
-    width: 100%; padding: 16px; background: #dc2626; color: white;
-    border: none; border-radius: 8px; font-size: 18px; font-weight: 700;
-    cursor: pointer; letter-spacing: 1px; transition: background 0.2s;
+    flex:0 0 auto; width:auto; padding:8px 12px; background:#dc2626; color:white;
+    border: none; border-radius: 6px; font-size:12px; font-weight:700;
+    cursor:pointer; letter-spacing:0; white-space:nowrap; transition:background 0.2s;
   }
   .emergency-btn:hover { background: #b91c1c; }
   .emergency-btn.active { background: #991b1b; animation: pulse 1.5s infinite; }
@@ -89,7 +94,10 @@
 </head>
 <body>
 <div class="container">
-  <h1>⚙️ Control Panel</h1>
+  <div class="page-header">
+    <h1>⚙️ Control Panel</h1>
+    <a class="back-btn" href="./index.html" title="Quay lại giao diện biểu đồ">← Quay lại</a>
+  </div>
   <div class="subtitle">Điều khiển EA từ xa · Thay đổi áp dụng sau ~5 giây</div>
 
   <div class="status-bar">
