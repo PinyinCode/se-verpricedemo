@@ -100,6 +100,9 @@ button.locked{background:rgba(251,191,36,.14);border-color:var(--amber);color:#f
 .chart-pickers select{min-width:80px;padding:6px 9px}
 .chart-actions{margin-left:auto}
 .chart-actions button{padding:6px 9px}
+.chart-actions .control-link{display:inline-flex;align-items:center;justify-content:center;min-width:30px;padding:6px 9px;border:1px solid #47708f;border-radius:7px;background:rgba(96,165,250,.10);color:#b8dcff;text-decoration:none;font:inherit;line-height:1.4;white-space:nowrap}
+.chart-actions .control-link:hover{background:rgba(96,165,250,.18);border-color:#60a5fa}
+.chart-actions .control-link:focus-visible{outline:none;border-color:#4b9be8;box-shadow:0 0 0 2px rgba(75,155,232,.16)}
 body.trade-fullscreen .chart-head{flex-wrap:nowrap;min-width:0;gap:5px}
 body.trade-fullscreen .chart-pickers{flex:0 1 auto;flex-wrap:nowrap;gap:4px}
 body.trade-fullscreen .chart-actions{flex:0 0 auto;flex-wrap:nowrap;gap:clamp(2px,.55vw,6px)}
@@ -804,6 +807,7 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
                 <span class="small" id="feedState">Đang kết nối dữ liệu...</span>
                 <button id="lockButton" type="button" aria-label="Khóa/mở kéo các mức SL/TP" title="Khóa/mở kéo các mức SL/TP">🔓</button>
                 <button id="settingsButton" type="button" aria-label="Cài đặt" title="Cài đặt API key, Risk, Entry">⚙</button>
+                <a class="control-link" href="./settings.html" aria-label="Mở trang điều khiển hệ thống" title="Mở Control Panel">☷</a>
                 <button id="positionsButton" type="button" aria-label="Vị thế đang mở và lệnh chờ" title="Xem vị thế đang mở và vị thế chờ">▣<span id="positionCount">0</span></button>
                 <button id="statsButton" type="button" aria-label="Thống kê" title="Thống kê tín hiệu và lịch sử giao dịch">▤</button>
                 <button id="tradePanelToggle" type="button" aria-expanded="false" title="Hiện/ẩn bảng lệnh">Hiện bảng lệnh</button>
