@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026"
 #property link      "https://www.mql5.com"
-#property version   "1.06"
+#property version   "1.07"
 #property indicator_chart_window
 #property indicator_buffers 1
 #property indicator_plots   1
@@ -185,10 +185,25 @@ string EscapeJson(string s)
 
 bool IsValidSLForDirection(string type, double entryPrice, double slPrice);
 
+string BuildDedupSource(string signalKey)
+{
+   string cleanKey = signalKey;
+   StringReplace(cleanKey, "|", "_");
+   StringReplace(cleanKey, "SELL", "S");
+   StringReplace(cleanKey, "BUY", "B");
+   StringReplace(cleanKey, "Reg", "R");
+   StringReplace(cleanKey, "Hid", "H");
+   string dedupSource = "rt_" + cleanKey;
+   if(StringLen(dedupSource) > 40)
+      dedupSource = StringSubstr(dedupSource, StringLen(dedupSource) - 40, 40);
+   return dedupSource;
+}
+
 void SendRealtimeSignalToServer(string sym, string tfStr, string side, string divType, bool isStrong, double entryPrice, double slPrice, double refPrice1, double refPrice2, double volRatio, datetime signalTime, string signalKey)
 {
    if(!EnableServerSend || ServerSignalUrl == "") return;
    if(SendOnlyStrongSignal && !isStrong) return;
+   if(entryPrice <= 0 || slPrice <= 0) return;
    if(!IsValidSLForDirection(side, entryPrice, slPrice)) return;
 
    datetime now = TimeCurrent();
@@ -199,9 +214,7 @@ void SendRealtimeSignalToServer(string sym, string tfStr, string side, string di
    if(digits <= 0) digits = 5;
 
    double score = isStrong ? MathMin(100.0, 70.0 + volRatio * 10.0) : MathMin(69.0, 40.0 + volRatio * 8.0);
-   string dedupSource = "div-" + signalKey;
-   if(StringLen(dedupSource) > 40)
-      dedupSource = StringSubstr(dedupSource, 0, 40);
+   string dedupSource = BuildDedupSource(signalKey);
 
    string payload = StringFormat(
       "{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\",\"order_type\":\"MARKET\","
@@ -233,7 +246,7 @@ void SendRealtimeSignalToServer(string sym, string tfStr, string side, string di
    {
       g_lastSentSignalKey = signalKey;
       g_lastSentSignalTime = now;
-      Print("SERVER RT SIGNAL SENT [HTTP ", httpCode, "]: ", signalKey, " (", side, " ", divType, ")");
+      Print("SERVER RT SIGNAL SENT [HTTP ", httpCode, "]: ", signalKey, " (", side, " ", divType, ") src=", dedupSource);
    }
    else
    {
@@ -1123,7 +1136,7 @@ int OnInit()
    if(tfList == "") tfList = "NONE!";
 
    Print("═══════════════════════════════════════════");
-   Print("RSI Divergence Realtime v1.06");
+   Print("RSI Divergence Realtime v1.07");
    Print("   Timeframes: ", tfList);
    Print("═══════════════════════════════════════════");
 
