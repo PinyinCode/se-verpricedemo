@@ -868,18 +868,20 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
   body.trade-fullscreen .chart-overlay-bottom .trade-footer{padding:4px 6px}
   body.trade-fullscreen .chart-stage #rsiChart{height:48px}
 }
+
+#paperAuthDock{position:absolute;z-index:35;top:54px;right:10px;display:flex;align-items:center;gap:6px;flex-wrap:wrap;max-width:min(520px,calc(100% - 20px));padding:6px 8px;border:1px solid #3a5273;border-radius:9px;background:rgba(9,18,31,.92);backdrop-filter:blur(10px);box-shadow:0 5px 18px rgba(0,0,0,.28)}
+#paperAuthDock input{width:min(180px,35vw);min-width:100px;padding:6px 8px}#paperAuthDock button{padding:6px 9px;font-size:11px;font-weight:750}#paperAuthDock #liveAuthStatus{max-width:180px}
+.chart-stage #rsiChart{height:105px;flex:0 0 105px}
+.chart-overlay-bottom{height:172px;flex:0 0 172px;transition:none}
+.chart-overlay-bottom .trade-footer{height:calc(100% - 28px);flex:1 1 auto}
+#lotResizeHandle{flex:0 0 14px}
+@media(max-width:600px){#paperAuthDock{top:48px;left:8px;right:8px;max-width:none}#paperAuthDock input{flex:1;min-width:80px;width:auto}#paperAuthDock #liveAuthStatus{flex-basis:100%}}
 </style>
-<script src="./config.js"></script>
 <script src="./config.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.2/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body class="trade-fullscreen">
-<header>
-  <div><span class="brand">Forex AI · Chart</span> <span class="muted">/ PAPER SIMULATION</span></div>
-  <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-    <div style="display:flex;align-items:center;gap:7px;flex-wrap:wrap"><span class="tag">PAPER DEMO · OFFLINE</span><input id="liveApiKey" type="password" placeholder="API key để mở Index" autocomplete="off" spellcheck="false" style="width:min(210px,42vw)"><button id="enterLive" type="button">XÁC THỰC & VÀO INDEX</button><span id="liveAuthStatus" class="small" role="status" aria-live="polite"></span></div>
-  </div>
-</header>
+<header><div><span class="brand">Forex AI · Chart</span> <span class="muted">/ PAPER SIMULATION</span></div><span class="tag">PAPER DEMO · OFFLINE</span></header>
 
 <main>
   <div class="layout">
@@ -887,6 +889,7 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
       <section class="panel chart-workspace">
         <div class="chart-stage">
           <div id="priceChart"></div>
+          <div id="paperAuthDock"><span class="tag">MỞ INDEX</span><input id="liveApiKey" type="password" placeholder="Nhập API key..." autocomplete="off" spellcheck="false"><button id="enterLive" type="button">XÁC THỰC</button><span id="liveAuthStatus" class="small" role="status" aria-live="polite"></span></div>
           <div id="rsiResizeHandle" role="separator" aria-label="Kéo để thay đổi chiều cao RSI" title="Kéo để thay đổi chiều cao RSI"></div>
           <div id="rsiChart"></div>
           <button id="tradePanelToggle" class="floating-trade-toggle" type="button" aria-expanded="false" title="Hiện/ẩn bảng lệnh">TRADE</button>
@@ -1079,7 +1082,7 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
 
 <dialog id="positionsDialog" class="positions-dialog">
   <div class="positions-dialog-head">
-    <div><strong>VỊ THẾ ĐANG MỞ &amp; VỊ THẾ CHỜ</strong><div class="small">Lệnh MT5 có thể thao tác</div></div>
+    <div><strong>VỊ THẾ ĐANG MỞ &amp; VỊ THẾ CHỜ</strong><div class="small">Các vị thế và lệnh chờ mô phỏng cục bộ</div></div>
     <button type="button" id="closePositionsDialog" aria-label="Đóng">✕</button>
   </div>
   <div class="positions-dialog-body">
@@ -1184,6 +1187,7 @@ function init(){
  candles=chart.addCandlestickSeries({upColor:'#22c58b',downColor:'#f06478',borderUpColor:'#22c58b',borderDownColor:'#f06478',wickUpColor:'#22c58b',wickDownColor:'#f06478'});
  rsiChart=LightweightCharts.createChart($('rsiChart'),{...common,width:$('rsiChart').clientWidth,height:$('rsiChart').clientHeight,rightPriceScale:{visible:false},timeScale:{visible:false}});
  rsi=rsiChart.addLineSeries({color:'#a78bfa',lineWidth:2,priceLineVisible:false});
+ bindCrosshair();
  new ResizeObserver(()=>{chart.applyOptions({width:$('priceChart').clientWidth,height:$('priceChart').clientHeight});rsiChart.applyOptions({width:$('rsiChart').clientWidth,height:$('rsiChart').clientHeight});placeLines();}).observe($('priceChart'));
 }
 function seed(){
@@ -1197,16 +1201,44 @@ function header(){
  const ss=$('serverState');if(ss){ss.classList.remove('offline');ss.classList.add('online');ss.title='Dữ liệu mô phỏng cục bộ';ss.innerHTML='<i></i><span>DEMO</span>';}
 }
 function tick(){const last=bars[bars.length-1];if(!last)return;const step=cfg[symbol][1];price=Math.max(step,price+(Math.random()-.49)*step*1.8);const now=Math.floor(Date.now()/(tf*60000))*(tf*60);if(last.time===now){last.close=price;last.high=Math.max(last.high,price);last.low=Math.min(last.low,price);candles.update(last);}else{const b={time:now,open:last.close,high:Math.max(last.close,price),low:Math.min(last.close,price),close:price};bars.push(b);candles.update(b);}header();placeLines();}
+let demoMode='MARKET',resizeDrag=null,crosshairSyncing=false;
+function levelValue(k,fallback){const id={entry:'entryPrice',sl:'slPrice',tp:'tpPrice'}[k],v=Number($(id)?.value);return Number.isFinite(v)&&v>0?v:fallback;}
 function createLines(){
  const el=$('priceChart');let layer=el.querySelector('.paper-drag-layer');if(!layer){layer=document.createElement('div');layer.className='paper-drag-layer';Object.assign(layer.style,{position:'absolute',inset:'0',zIndex:20,pointerEvents:'none'});el.appendChild(layer);}layer.innerHTML='';
- [['entry',price],['sl',price-cfg[symbol][1]*12],['tp',price+cfg[symbol][1]*20]].forEach(([key,val])=>{const line=document.createElement('div');line.dataset.level=key;line.dataset.price=val;Object.assign(line.style,{position:'absolute',left:0,right:0,height:'2px',pointerEvents:'auto',touchAction:'none',cursor:'ns-resize',background:key==='entry'?'#60a5fa':key==='sl'?'#f06478':'#27c995'});const label=document.createElement('span');label.textContent=key.toUpperCase()+' '+fmt(val);Object.assign(label.style,{position:'absolute',left:'8px',top:'-19px',padding:'1px 6px',background:'#17253a',border:'1px solid #3a4e68',borderRadius:'4px',fontSize:'10px',fontWeight:700});line.appendChild(label);layer.appendChild(line);line.addEventListener('pointerdown',e=>{e.preventDefault();drag={line,key,pointerId:e.pointerId};line.setPointerCapture(e.pointerId);});});placeLines();
+ const values=[['entry',levelValue('entry',price)],['sl',levelValue('sl',price-cfg[symbol][1]*12)],['tp',levelValue('tp',price+cfg[symbol][1]*20)]];
+ values.forEach(([key,val])=>{const line=document.createElement('div');line.dataset.level=key;line.dataset.price=val;Object.assign(line.style,{position:'absolute',left:0,right:0,height:'2px',pointerEvents:'auto',touchAction:'none',cursor:'ns-resize',background:key==='entry'?'#60a5fa':key==='sl'?'#f06478':'#27c995'});const label=document.createElement('span');label.textContent=key.toUpperCase()+' '+fmt(val);Object.assign(label.style,{position:'absolute',left:'8px',top:'-19px',padding:'1px 6px',background:'#17253a',border:'1px solid #3a4e68',borderRadius:'4px',fontSize:'10px',fontWeight:700});line.appendChild(label);layer.appendChild(line);line.addEventListener('pointerdown',e=>{if($('lockButton').classList.contains('locked'))return;e.preventDefault();drag={line,key,pointerId:e.pointerId};line.setPointerCapture(e.pointerId);});});placeLines();
 }
 function placeLines(){if(!chart)return;$('priceChart').querySelectorAll('.paper-drag-layer [data-level]').forEach(line=>{const y=chart.priceScale('right').priceToCoordinate(Number(line.dataset.price));if(y!=null)line.style.top=y+'px';line.firstChild.textContent=line.dataset.level.toUpperCase()+' '+fmt(Number(line.dataset.price));});}
-document.addEventListener('pointermove',e=>{if(!drag)return;const y=e.clientY-$('priceChart').getBoundingClientRect().top,p=chart.priceScale('right').coordinateToPrice(y);if(!Number.isFinite(p))return;drag.line.dataset.price=p;const id={entry:'entryPrice',sl:'slPrice',tp:'tpPrice'}[drag.key];if($(id))$(id).value=fmt(p);text('lotResult','Paper Demo · đã kéo '+drag.key.toUpperCase()+' đến '+fmt(p)+' · không tính lot.');placeLines();});
+function syncCrosshair(source,target,sourceSeries,targetSeries,param){
+ if(crosshairSyncing)return;
+ if(!param||!param.time){crosshairSyncing=true;target.clearCrosshairPosition();crosshairSyncing=false;return;}
+ const datum=param.seriesData?.get(sourceSeries);if(!datum)return;
+ const value=sourceSeries===candles?datum.close:datum.value;
+ if(!Number.isFinite(value))return;
+ crosshairSyncing=true;target.setCrosshairPosition(value,param.time,targetSeries);crosshairSyncing=false;
+}
+function bindCrosshair(){chart.subscribeCrosshairMove(p=>syncCrosshair(chart,rsiChart,candles,rsi,p));rsiChart.subscribeCrosshairMove(p=>syncCrosshair(rsiChart,chart,rsi,candles,p));}
+function bindResize(handleId,kind){
+ const h=$(handleId);if(!h)return;
+ h.addEventListener('pointerdown',e=>{e.preventDefault();const el=kind==='rsi'?$('rsiChart'):$('.chart-overlay-bottom');resizeDrag={kind,startY:e.clientY,startHeight:kind==='rsi'?$('rsiChart').getBoundingClientRect().height:$('.chart-overlay-bottom').getBoundingClientRect().height};h.setPointerCapture(e.pointerId);});
+ h.addEventListener('pointermove',e=>{if(!resizeDrag||resizeDrag.kind!==kind)return;const delta=resizeDrag.startY-e.clientY;if(kind==='rsi'){const height=Math.max(48,Math.min(240,resizeDrag.startHeight+delta));$('rsiChart').style.height=height+'px';$('rsiChart').style.flexBasis=height+'px';}else{const height=Math.max(112,Math.min(340,resizeDrag.startHeight-delta));$('.chart-overlay-bottom').style.height=height+'px';$('.chart-overlay-bottom').style.flexBasis=height+'px';}requestAnimationFrame(()=>{chart.applyOptions({width:$('priceChart').clientWidth,height:$('priceChart').clientHeight});rsiChart.applyOptions({width:$('rsiChart').clientWidth,height:$('rsiChart').clientHeight});placeLines();});});
+ const end=()=>{if(resizeDrag?.kind===kind)resizeDrag=null;};h.addEventListener('pointerup',end);h.addEventListener('pointercancel',end);
+}
+document.addEventListener('pointermove',e=>{if(!drag)return;const y=e.clientY-$('priceChart').getBoundingClientRect().top,p=chart.priceScale('right').coordinateToPrice(y);if(!Number.isFinite(p))return;drag.line.dataset.price=p;const id={entry:'entryPrice',sl:'slPrice',tp:'tpPrice'}[drag.key];if($(id))$(id).value=fmt(p);text('lotResult','PAPER · '+drag.key.toUpperCase()+' = '+fmt(p));placeLines();});
 document.addEventListener('pointerup',()=>{if(drag){try{drag.line.releasePointerCapture(drag.pointerId);}catch(_){}drag=null;}});
-function renderPositions(){const rows=positions.map((p,i)=>'<tr><td>'+p.symbol+'</td><td>DEMO</td><td>'+p.side+'</td><td>'+p.entry+'</td><td>—</td><td>—</td><td>—</td><td>—</td><td><button data-demo-close="'+i+'">ĐÓNG DEMO</button></td></tr>').join('');$('chartPositions').innerHTML=rows||'<tr><td colspan="9" class="empty">Chưa có vị thế Demo</td></tr>';text('openPositionsMeta',positions.length+' vị thế');text('positionsUpdated','Dữ liệu mô phỏng cục bộ');text('positionCount',positions.length);}
-function renderHistory(){const rows=history.map(h=>'<tr><td>'+h.time+'</td><td>'+h.symbol+'</td><td>'+h.side+'</td><td>—</td><td>'+h.entry+'</td><td>—</td><td>—</td><td>DEMO</td><td>—</td></tr>').join('');$('statsPaperHistory').innerHTML=rows||'<tr><td colspan="9" class="empty">Chưa có lịch sử Demo</td></tr>';text('statsHistoryMeta',history.length+' bản ghi');text('statsClosedCount',history.length);text('statsSignalCount','—');text('statsWinLoss','—');text('statsTodayPL','—');}
-function demo(side){positions.unshift({symbol,side,entry:fmt(price),time:new Date().toLocaleString('vi-VN')});save();renderPositions();text('requestState','Đã tạo bản ghi '+side+' trong Paper Demo · không gửi API.');}
+function renderPositions(){
+ const open=positions.filter(p=>p.kind!=='PENDING'),pending=positions.filter(p=>p.kind==='PENDING');
+ const row=(p)=>'<tr><td>'+p.symbol+'</td><td>DEMO</td><td>'+p.side+'</td><td>'+p.entry+'</td><td>'+p.sl+'</td><td>'+p.tp+'</td><td>—</td><td>LOCAL</td><td><button data-demo-close="'+positions.indexOf(p)+'">HỦY / ĐÓNG</button></td></tr>';
+ $('chartPositions').innerHTML=open.map(row).join('')||'<tr><td colspan="9" class="empty">Chưa có vị thế Demo</td></tr>';
+ $('chartPendingOrders').innerHTML=pending.map(row).join('')||'<tr><td colspan="9" class="empty">Không có lệnh chờ Demo</td></tr>';
+ text('openPositionsMeta',open.length+' vị thế');text('pendingOrdersMeta',pending.length+' lệnh chờ');text('positionsUpdated','Dữ liệu mô phỏng cục bộ');text('positionCount',positions.length);
+}
+function renderHistory(){const rows=history.map(h=>'<tr><td>'+h.time+'</td><td>'+h.symbol+'</td><td>'+h.side+'</td><td>—</td><td>'+h.entry+'</td><td>'+h.sl+'</td><td>'+h.tp+'</td><td>DEMO</td><td>LOCAL</td></tr>').join('');$('statsPaperHistory').innerHTML=rows||'<tr><td colspan="9" class="empty">Chưa có lịch sử Demo</td></tr>';text('statsHistoryMeta',history.length+' bản ghi');text('statsClosedCount',history.length);text('statsSignalCount','—');text('statsWinLoss','—');text('statsTodayPL','—');}
+function demo(side){
+ const entry=demoMode==='MARKET'?price:levelValue('entry',price),sl=levelValue('sl',price-cfg[symbol][1]*12),tp=levelValue('tp',price+cfg[symbol][1]*20);
+ const item={symbol,side,kind:demoMode==='MARKET'?'MARKET':'PENDING',entry:fmt(entry),sl:fmt(sl),tp:fmt(tp),time:new Date().toLocaleString('vi-VN')};
+ positions.unshift(item);save();renderPositions();text('requestState','Đã tạo '+item.kind+' '+side+' trong Paper Demo · dữ liệu chỉ lưu trên trình duyệt.');
+}
 function closeDemo(i){const p=positions.splice(i,1)[0];if(p)history.unshift({...p,time:new Date().toLocaleString('vi-VN')});save();renderPositions();renderHistory();}
 function dialog(id){const d=$(id);if(d&&!d.open)d.showModal();}
 function close(id){const d=$(id);if(d?.open)d.close();}
@@ -1219,17 +1251,17 @@ function bind(){
  $('settingsButton').addEventListener('click',()=>dialog('tradeSettingsDialog'));$('positionsButton').addEventListener('click',()=>{renderPositions();dialog('positionsDialog');});$('statsButton').addEventListener('click',()=>{renderHistory();dialog('statsDialog');});
  $('lockButton').addEventListener('click',e=>{const locked=e.currentTarget.classList.toggle('locked');e.currentTarget.textContent=locked?'🔒':'🔓';$('priceChart').querySelectorAll('.paper-drag-layer [data-level]').forEach(x=>x.style.pointerEvents=locked?'none':'auto');});
  ['entry','sl','tp'].forEach(k=>{const id={entry:'showEntry',sl:'showSL',tp:'showTP'}[k];$(id).addEventListener('change',()=>{const line=$('priceChart').querySelector('[data-level="'+k+'"]');if(line)line.style.display=$(id).checked?'block':'none';});});
- $('presetMarket').addEventListener('click',()=>text('requestState','MARKET · chỉ minh họa Paper.'));
- $('presetBuyLimit').addEventListener('click',()=>text('requestState','BUY LIMIT · chỉ minh họa Paper.'));
- $('presetSellLimit').addEventListener('click',()=>text('requestState','SELL LIMIT · chỉ minh họa Paper.'));
- $('chartPositions').addEventListener('click',e=>{const b=e.target.closest('[data-demo-close]');if(b)closeDemo(Number(b.dataset.demoClose));});
+ $('presetMarket').addEventListener('click',()=>{demoMode='MARKET';$('orderMode').value='MARKET';text('requestState','Chế độ MARKET Demo đã chọn.');});
+ $('presetBuyLimit').addEventListener('click',()=>{demoMode='PENDING';$('orderMode').value='PENDING';$('entryPrice').value=fmt(price-cfg[symbol][1]*4);text('requestState','BUY LIMIT Demo · kéo Entry/SL/TP để thay đổi mức giá.');createLines();});
+ $('presetSellLimit').addEventListener('click',()=>{demoMode='PENDING';$('orderMode').value='PENDING';$('entryPrice').value=fmt(price+cfg[symbol][1]*4);text('requestState','SELL LIMIT Demo · kéo Entry/SL/TP để thay đổi mức giá.');createLines();});
+ $('positionsDialog').addEventListener('click',e=>{const b=e.target.closest('[data-demo-close]');if(b)closeDemo(Number(b.dataset.demoClose));});
  ['closeTradeSettings','closePositionsDialog','closeStatsDialog'].forEach((id,i)=>$(id).addEventListener('click',()=>close(['tradeSettingsDialog','positionsDialog','statsDialog'][i])));
  $('entryPopupClose').addEventListener('click',()=>$('entryPopup').classList.add('hidden'));$('realPopupClose').addEventListener('click',()=>$('realPopup').classList.add('hidden'));
- $('apiKeyInput').disabled=true;$('apiKeySave').disabled=true;$('apiKeyToggle').disabled=true;text('apiKeyStatus','Paper Demo độc lập · không cần API key.');
+ $('apiKeyInput').disabled=true;$('apiKeySave').disabled=true;$('apiKeyToggle').disabled=true;text('apiKeyStatus','API key chỉ dùng xác thực để mở Index.');
  document.querySelectorAll('.commission-panel').forEach(x=>x.innerHTML='<strong>CHẾ ĐỘ PAPER DEMO</strong><div class="small">Không kết nối MT5 hoặc API.</div>');
  document.querySelectorAll('.settings-fields > label:first-child').forEach(x=>x.style.display='none');
  ['commissionRefresh','apiKeySave','cdOk','cpOk'].forEach(id=>{if($(id))$(id).disabled=true;});
- text('lotResult','Paper Demo · kéo Entry/SL/TP để minh họa giao diện. Không tính lot.');
+ text('lotResult','PAPER DEMO · đặt lệnh giả lập và kéo Entry / SL / TP trực tiếp trên chart.');
  text('contractMeta','Không tải thông số hợp đồng MT5.');text('requestState','MÔ PHỎNG CỤC BỘ · KHÔNG GỬI LỆNH THẬT');
  document.querySelectorAll('.real-layer-title').forEach(x=>x.textContent='Lớp hiển thị Demo:');
 }
