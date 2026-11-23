@@ -25,6 +25,7 @@ input int    SlippagePoints      = 20;
 input string OrderComment        = "TRADE-V9";
 input bool   SyncRealHistory     = true;
 input bool   AllowCancelExternalPending = false;
+input bool   AllowMinLotWhenExceedBudget = false;
 
 // Nếu server báo commission dạng round-turn (vào+ra) nhưng MT5 tính per-side -> bật true
 input bool   CommissionIsRoundTurn = false;
@@ -70,6 +71,7 @@ struct SCommission {
    datetime received_at;
 };
 SCommission g_commissionCache[];
+string g_lastCommissionDigest = "";
 
 // ===== Risk breakdown (nguồn duy nhất cho mọi phép tính risk) =====
 struct SRiskBreakdown {
@@ -288,7 +290,7 @@ void ExtractTopLevelObjects(string arrJson, string &outObjects[])
    for(int i = 0; i < StringLen(arrJson); i++)
    {
       ushort c = StringGetCharacter(arrJson, i);
-      if(c == '"' && (i == 0 || StringGetCharacter(arrJson,i-1) != '\\')) quoted = !quoted;
+      if(c == '"' && (i == 0 || StringGetCharacter(json,i-1) != '\\')) quoted = !quoted;
       if(quoted) continue;
       if(c == '{')
       {
@@ -449,7 +451,6 @@ void PollSettings()
    g_settings.trading_end_hour      = (int)StringToInteger(JsonValue(obj, "trading_end_hour"));
    g_settings.last_synced           = TimeCurrent();
 
-   // Sanity
    if(g_settings.risk_money <= 0) g_settings.risk_money = 25;
    if(g_settings.max_positions < 0) g_settings.max_positions = 0;
    if(g_settings.reward_risk_ratio <= 0) g_settings.reward_risk_ratio = 2.0;
@@ -471,6 +472,7 @@ void PollCommissions()
    string items[];
    ExtractTopLevelObjects(arr, items);
    ArrayResize(g_commissionCache, 0);
+   string digest = "";
 
    for(int i = 0; i < ArraySize(items); i++)
    {
@@ -487,12 +489,15 @@ void PollCommissions()
       int n = ArraySize(g_commissionCache);
       ArrayResize(g_commissionCache, n+1);
       g_commissionCache[n] = c;
+      digest += c.symbol + ":" + DoubleToString(c.commission_per_lot, 4) + ";";
    }
-   Print("[V9 COMM] Updated cache: ", ArraySize(g_commissionCache), " symbols");
+   if(digest != g_lastCommissionDigest)
+   {
+      g_lastCommissionDigest = digest;
+      Print("[V9 COMM] Updated cache: ", ArraySize(g_commissionCache), " symbols");
+   }
 }
 
-// Commission per side (theo cách MT5 tính), cùng đơn vị riskMoney.
-// Nếu server báo round-turn và CommissionIsRoundTurn=true -> chia 2.
 double GetCommissionPerLot(string symbol)
 {
    string symUp = symbol;
@@ -513,7 +518,7 @@ double NormalizeVolume(string symbol, double raw)
    double step = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
    if(step <= 0) step = 0.01;
    if(raw < vmin || raw > vmax) return 0;
-   double v = MathFloor((raw + step*0.5) / step) * step;
+   double v = MathFloor((raw + 1e-9) / step) * step;
    if(v < vmin) return 0;
    return NormalizeDouble(v, 8);
 }
@@ -537,8 +542,6 @@ ENUM_ORDER_TYPE_FILLING PickFilling(string symbol)
 }
 
 //--- Unified risk breakdown ----------------------------------------
-// Công thức DUY NHẤT cho SL + commission + spread.
-// Dùng cho: tính lot ban đầu, verify budget, giảm lot khi vượt.
 SRiskBreakdown ComputeRiskBreakdown(string symbol, double slDistance, double volume)
 {
    SRiskBreakdown r;
@@ -564,7 +567,6 @@ SRiskBreakdown ComputeRiskBreakdown(string symbol, double slDistance, double vol
       return r;
    }
 
-   // Spread buffer cộng đúng 1 lần tại đây.
    double spreadPoints = (ask - bid) / point + g_settings.spread_buffer_points;
 
    r.slRisk     = (slDistance / tickSize) * tickValue * volume;
@@ -576,7 +578,7 @@ SRiskBreakdown ComputeRiskBreakdown(string symbol, double slDistance, double vol
    return r;
 }
 
-//--- Lot calc (dùng ComputeRiskBreakdown) --------------------------
+//--- Lot calc (dùng ComputeRiskBreakdown, làm tròn xuống chuẩn step) -
 double CalculateLotWithCommission(string symbol, double slDistance, double riskMoney)
 {
    if(riskMoney <= 0) return 0;
@@ -595,10 +597,15 @@ double CalculateLotWithCommission(string symbol, double slDistance, double riskM
    }
 
    int stepDigits = VolumeStepDigits(symbol);
-   lot = MathFloor((lot + step*0.5) / step) * step;
+   lot = MathFloor((lot + 1e-9) / step) * step;
    lot = NormalizeDouble(lot, stepDigits);
 
-   if(lot < vmin) return 0;
+   if(lot < vmin)
+   {
+      if(AllowMinLotWhenExceedBudget && vmin > 0 && vmin <= vmax)
+         return NormalizeDouble(vmin, stepDigits);
+      return 0;
+   }
    if(lot > vmax) lot = vmax;
    return lot;
 }
@@ -943,10 +950,10 @@ bool OpenTrade(string id, string symbol, string tf, string direction, string raw
       return false;
    }
 
-   double budget = riskMoney * (1 + g_settings.risk_tolerance_pct / 100.0);
+   double budget = riskMoney * (1.0 + g_settings.risk_tolerance_pct / 100.0);
 
-   // 3) Nếu vượt budget -> GIẢM LOT (không huỷ)
-   if(rb.total > budget)
+   // 3) Nếu vượt budget -> GIẢM LOT theo floor chuẩn của step (không cộng +0.5*step)
+   if(rb.total > budget + 1e-9)
    {
       double vmin = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
       double vmax = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
@@ -959,15 +966,22 @@ bool OpenTrade(string id, string symbol, string tf, string direction, string raw
       int stepDigits = VolumeStepDigits(symbol);
 
       double maxLotForBudget = budget / rb.riskPerLot;
-      double reducedLot = MathFloor((maxLotForBudget + step*0.5) / step) * step;
+      double reducedLot = MathFloor((maxLotForBudget + 1e-9) / step) * step;
       reducedLot = NormalizeDouble(reducedLot, stepDigits);
 
       if(reducedLot < vmin)
       {
-         Ack(id, "REJECTED", StringFormat(
-            "Risk $%.2f/lot -> max lot %.4f < min %.4f (budget $%.2f). Reduce risk or widen budget.",
-            rb.riskPerLot, reducedLot, vmin, budget));
-         return false;
+         if(AllowMinLotWhenExceedBudget && vmin > 0 && vmin <= vmax)
+         {
+            reducedLot = NormalizeDouble(vmin, stepDigits);
+         }
+         else
+         {
+            Ack(id, "REJECTED", StringFormat(
+               "Risk $%.2f/lot -> max lot %.4f < min %.4f (budget $%.2f). Reduce risk or widen budget.",
+               rb.riskPerLot, reducedLot, vmin, budget));
+            return false;
+         }
       }
       if(reducedLot > vmax) reducedLot = vmax;
 
@@ -988,8 +1002,8 @@ bool OpenTrade(string id, string symbol, string tf, string direction, string raw
       }
    }
 
-   // 4) Sanity: nếu vẫn vượt (bug logic) -> reject
-   if(rb.total > budget + 1e-9)
+   // 4) Kiểm tra sau khi giảm lot
+   if(rb.total > budget + 1e-9 && !AllowMinLotWhenExceedBudget)
    {
       Ack(id, "REJECTED", StringFormat(
          "Total risk $%.2f > budget $%.2f (lot=%.4f)",
@@ -999,7 +1013,6 @@ bool OpenTrade(string id, string symbol, string tf, string direction, string raw
 
    double totalRisk = rb.total;
 
-   // TP: dùng signal nếu có, không thì tính từ RR
    double tp = tpRequested > 0
       ? tpRequested
       : ((direction == "BUY")
