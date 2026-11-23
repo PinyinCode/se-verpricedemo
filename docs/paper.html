@@ -22,7 +22,12 @@ main{max-width:1500px;margin:auto;padding:12px;display:grid;gap:10px}.stats{disp
 <body>
 <header>
   <div><div class="brand">Forex AI · Chart <span class="tag">PAPER DEMO</span></div><div class="small">Môi trường mô phỏng độc lập · không kết nối broker</div></div>
-  <div class="toolbar-right"><span class="small" id="clock">--:--:--</span><a href="./index.html?mode=live">MỞ LIVE / NHẬP API KEY</a></div>
+  <div class="toolbar-right" style="gap:7px;flex-wrap:wrap">
+    <span class="small" id="clock">--:--:--</span>
+    <input id="liveApiKey" type="password" placeholder="Nhập API key để mở Index" autocomplete="off" spellcheck="false" style="width:min(240px,52vw)">
+    <button id="enterLive" type="button">XÁC THỰC & VÀO INDEX</button>
+    <span id="liveAuthStatus" class="small" role="status" aria-live="polite"></span>
+  </div>
 </header>
 <main>
   <section class="stats">
@@ -59,6 +64,32 @@ main{max-width:1500px;margin:auto;padding:12px;display:grid;gap:10px}.stats{disp
 <script>
 'use strict';
 const $=id=>document.getElementById(id);
+const API_KEY_STORAGE='chartApiKey';
+const API_BASE=String(window.FOREX_API_BASE||'').replace(/\\/+$/,'');
+const savedApiKey=(()=>{try{return localStorage.getItem(API_KEY_STORAGE)||'';}catch(_){return '';}})();
+$('liveApiKey').value=savedApiKey;
+async function authenticateAndEnterLive(){
+  const key=$('liveApiKey').value.trim();
+  const status=$('liveAuthStatus');
+  if(!key){status.textContent='Vui lòng nhập API key.';status.className='small red';return;}
+  if(!API_BASE){status.textContent='Chưa cấu hình địa chỉ API server.';status.className='small red';return;}
+  const button=$('enterLive');button.disabled=true;status.textContent='Đang xác thực API key...';status.className='small';
+  try{
+    const response=await fetch(API_BASE+'/api/auth/check',{cache:'no-store',headers:{'X-API-Key':key}});
+    if(!response.ok){
+      let message='API key không hợp lệ.';
+      try{const data=await response.json();if(data.detail)message=data.detail;}catch(_){}
+      status.textContent=message;status.className='small red';return;
+    }
+    try{localStorage.setItem(API_KEY_STORAGE,key);}catch(_){}
+    status.textContent='Xác thực thành công. Đang mở Index...';status.className='small green';
+    location.replace('./index.html');
+  }catch(_){
+    status.textContent='Không thể kết nối máy chủ để xác thực.';status.className='small red';
+  }finally{button.disabled=false;}
+}
+$('enterLive').addEventListener('click',authenticateAndEnterLive);
+$('liveApiKey').addEventListener('keydown',e=>{if(e.key==='Enter')authenticateAndEnterLive();});
 const STORE='forexPaperDemo.v1';
 const START_BALANCE=10000;
 const CONFIG={EURUSD:{price:1.085,step:.00012,digits:5},GBPUSD:{price:1.271,step:.00015,digits:5},USDJPY:{price:149.2,step:.018,digits:3},XAUUSD:{price:2325,step:.65,digits:2},BTCUSD:{price:67500,step:38,digits:2}};
