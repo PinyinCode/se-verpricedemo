@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
 //| TRADE_V9_PAPER.mq5                                               |
-//| Đọc tín hiệu trực tiếp từ Indicator qua MT5 Global Variables.    |
-//| Server chỉ cung cấp & đồng bộ thông số (/api/settings).           |
+//| Đọc tín hiệu Indicator qua GV_IND_<SYM>_* + Lệnh tay /api/mt5/next|
+//| Server cung cấp & đồng bộ thông số (/api/settings).              |
 //| Tự tính SL/TP/Lot, chặn tin ±N phút, tự trailing/BE, cache local.|
 //+------------------------------------------------------------------+
 #property strict
-#property version "3.18"
+#property version "3.19"
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
@@ -527,7 +527,7 @@ bool HasProcessedPendingModify(string id)
 }
 void MarkProcessedPendingModify(string id) { PushDedupId(processedPendingModifyIds, id); }
 
-//--- Settings cache & polling (server chỉ gửi thông số) -----------
+//--- Settings cache & polling ---------------------------------------
 void InitDefaultSettings()
 {
    g_settings.auto_trade_enabled             = true;
@@ -808,7 +808,6 @@ SRiskBreakdown ComputeRiskBreakdown(string symbol, double slDistance, double vol
    return r;
 }
 
-//--- Lot calc (dùng ComputeRiskBreakdown, làm tròn xuống chuẩn step) -
 double CalculateLotWithCommission(string symbol, double slDistance, double riskMoney)
 {
    if(riskMoney <= 0) return 0;
@@ -1091,7 +1090,7 @@ void SendHeartbeat()
 {
    int openCount = CountRealExposure();
    string body = StringFormat(
-      "{\"component\":\"TRADE-V9-REAL\",\"status\":\"online\",\"details\":\"DIRECT-IND consumer; positions=%d; emergency=%s; news_block=%s\"}",
+      "{\"component\":\"TRADE-V9-REAL\",\"status\":\"online\",\"details\":\"DIRECT-IND+MANUAL consumer; positions=%d; emergency=%s; news_block=%s\"}",
       openCount, g_settings.emergency_stop ? "ON" : "OFF", IsNewsBlocked() ? "ON" : "OFF");
    string response; int status;
    if(Request("POST", "/api/heartbeat", body, response, status))
@@ -1315,7 +1314,6 @@ void CheckIndicatorSymbolSignal(string symbol)
    string sigKey = symUp + ":" + IntegerToString(seq) + ":" + IntegerToString(sigTime);
    if(HasProcessedSignalKey(sigKey)) return;
 
-   // Bỏ qua tín hiệu quá cũ (> 5 phút) khi EA mới khởi động
    long nowTs = (long)TimeCurrent();
    if(sigTime > 0 && (nowTs - sigTime) > 300)
    {
@@ -1330,7 +1328,6 @@ void CheckIndicatorSymbolSignal(string symbol)
       return;
    }
 
-   // Áp dụng toàn bộ thông số lấy từ server (g_settings) ngay tại chỗ
    if(g_settings.emergency_stop)
    {
       MarkProcessedSignalKey(sigKey);
@@ -1389,6 +1386,176 @@ void PollIndicatorSignals()
       if(s != "" && s != _Symbol)
          CheckIndicatorSymbolSignal(s);
    }
+}
+
+//--- Manual Chart Orders via /api/mt5/next + /api/mt5/ack -----------
+void AckManualSignal(string signalId, string statusStr, string detail)
+{
+   if(signalId == "") return;
+   string body = StringFormat(
+      "{\"signal_id\":\"%s\",\"status\":\"%s\",\"message\":\"%s\"}",
+      JsonEscape(signalId), JsonEscape(statusStr), JsonEscape(detail));
+   string response; int status;
+   Request("POST", "/api/mt5/ack", body, response, status);
+}
+
+void ExecuteManualSignalJson(string sigJson)
+{
+   string sigId = JsonValue(sigJson, "id");
+   if(sigId == "") return;
+   if(HasProcessedSignalKey("manual:" + sigId)) return;
+
+   string symbol    = UpperTrim(JsonValue(sigJson, "symbol"));
+   string direction = UpperTrim(JsonValue(sigJson, "direction"));
+   string orderType = UpperTrim(JsonValue(sigJson, "order_type"));
+   if(orderType == "") orderType = "MARKET";
+
+   double entry        = StringToDouble(JsonValue(sigJson, "entry"));
+   double sl           = StringToDouble(JsonValue(sigJson, "sl"));
+   double tp           = StringToDouble(JsonValue(sigJson, "tp"));
+   double reqLot       = StringToDouble(JsonValue(sigJson, "requested_lot"));
+   double riskMoneyReq = StringToDouble(JsonValue(sigJson, "risk_money"));
+
+   MarkProcessedSignalKey("manual:" + sigId);
+
+   if(g_settings.emergency_stop)
+   {
+      AckManualSignal(sigId, "REJECTED", "Emergency Stop ON");
+      return;
+   }
+   if(!SymbolSelect(symbol, true))
+   {
+      AckManualSignal(sigId, "ERROR", "Symbol unavailable: " + symbol);
+      return;
+   }
+
+   double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
+   double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+   if(bid <= 0 || ask <= 0 || point <= 0)
+   {
+      AckManualSignal(sigId, "ERROR", "No live quote");
+      return;
+   }
+
+   if(g_settings.reject_when_spread_exceeds_buf && g_settings.spread_buffer_points > 0)
+   {
+      double curSpread = (ask - bid) / point;
+      if(curSpread > (double)g_settings.spread_buffer_points)
+      {
+         AckManualSignal(sigId, "REJECTED", "Spread exceeds buffer");
+         return;
+      }
+   }
+
+   if(orderType == "MARKET" && entry <= 0)
+      entry = (direction == "BUY") ? ask : bid;
+
+   int otCode = 0;
+   if(orderType == "BUY_LIMIT") otCode = 1;
+   else if(orderType == "SELL_LIMIT") otCode = 2;
+
+   if(otCode == 1 && entry >= ask)
+   {
+      AckManualSignal(sigId, "REJECTED", "BUY_LIMIT requires entry < Ask");
+      return;
+   }
+   if(otCode == 2 && entry <= bid)
+   {
+      AckManualSignal(sigId, "REJECTED", "SELL_LIMIT requires entry > Bid");
+      return;
+   }
+
+   double slDist = MathAbs(entry - sl);
+   if(slDist <= 0)
+   {
+      AckManualSignal(sigId, "REJECTED", "Invalid SL distance");
+      return;
+   }
+
+   double volume = 0;
+   if(reqLot > 0)
+   {
+      double vmin = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+      double vmax = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+      double step = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+      if(step > 0)
+      {
+         int stepDigits = VolumeStepDigits(symbol);
+         volume = NormalizeDouble(MathFloor((reqLot + 1e-9) / step) * step, stepDigits);
+         if(volume < vmin) volume = NormalizeDouble(vmin, stepDigits);
+         if(volume > vmax) volume = vmax;
+      }
+   }
+   if(volume <= 0)
+   {
+      double rm = riskMoneyReq > 0 ? riskMoneyReq : g_settings.risk_money;
+      volume = CalculateLotWithCommission(symbol, slDist, rm);
+   }
+   if(volume <= 0)
+   {
+      AckManualSignal(sigId, "REJECTED", "Cannot calculate valid lot");
+      return;
+   }
+
+   int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+   double normEntry = NormalizeDouble(entry, digits);
+   double normSl    = NormalizeDouble(sl, digits);
+   double normTp    = tp > 0
+      ? NormalizeDouble(tp, digits)
+      : NormalizeDouble(
+         (direction == "BUY")
+            ? normEntry + slDist * g_settings.reward_risk_ratio
+            : normEntry - slDist * g_settings.reward_risk_ratio,
+         digits
+      );
+
+   if((direction == "BUY" && (normSl >= normEntry || normTp <= normEntry)) ||
+      (direction == "SELL" && (normSl <= normEntry || normTp >= normEntry)))
+   {
+      AckManualSignal(sigId, "REJECTED", "Invalid SL/TP geometry");
+      return;
+   }
+
+   trade.SetExpertMagicNumber(MagicNumber);
+   trade.SetDeviationInPoints(g_settings.slippage_points);
+   trade.SetTypeFilling(PickFilling(symbol));
+   trade.SetAsyncMode(false);
+
+   bool ok = false;
+   if(otCode == 1)
+      ok = trade.BuyLimit(volume, normEntry, symbol, normSl, normTp, ORDER_TIME_GTC, 0, OrderComment);
+   else if(otCode == 2)
+      ok = trade.SellLimit(volume, normEntry, symbol, normSl, normTp, ORDER_TIME_GTC, 0, OrderComment);
+   else
+      ok = (direction == "BUY")
+         ? trade.Buy(volume, symbol, 0.0, normSl, normTp, OrderComment)
+         : trade.Sell(volume, symbol, 0.0, normSl, normTp, OrderComment);
+
+   if(ok && trade.ResultRetcode() == TRADE_RETCODE_DONE)
+   {
+      string msg = StringFormat("Manual %s %s %.4f @ %.*f ticket=%I64u",
+                                symbol, orderType, volume, digits, normEntry, trade.ResultOrder());
+      Print("[V9 MANUAL OPEN] ", msg);
+      AckManualSignal(sigId, "PLACED", msg);
+      SendAccountSnapshot();
+   }
+   else
+   {
+      string errMsg = StringFormat("OrderSend retcode=%d (%s)",
+                                   trade.ResultRetcode(), trade.ResultRetcodeDescription());
+      Print("[V9 MANUAL ERR] ", symbol, " ", errMsg);
+      AckManualSignal(sigId, "ERROR", errMsg);
+   }
+}
+
+void PollManualChartOrders()
+{
+   string response; int status;
+   if(!Request("GET", "/api/mt5/next?consumer=" + ConsumerId, "", response, status)) return;
+   string sigObj = JsonObjectValue(response, "signal");
+   if(sigObj == "") return;
+   ExecuteManualSignalJson(sigObj);
 }
 
 //--- Close / Cancel / SLTP / Pending Modify from Server Bridge ------
@@ -1860,7 +2027,7 @@ int OnInit()
    PollCommissions();
 
    EventSetTimer(1);
-   Print("[V9] Started v3.18 DIRECT-INDICATOR HUB. magic=", MagicNumber,
+   Print("[V9] Started v3.19 DIRECT-INDICATOR + MANUAL HUB. magic=", MagicNumber,
          " | AutoTrade=", g_settings.auto_trade_enabled ? "ON" : "OFF",
          " | Trailing=", g_settings.trailing_enabled ? "ON" : "OFF",
          " | NewsWindow=-", g_settings.news_block_before_min, "m/+", g_settings.news_block_after_min, "m",
@@ -1914,6 +2081,7 @@ void OnTimer()
    {
       lastIndicatorPollMs = nowMs;
       PollIndicatorSignals();
+      PollManualChartOrders();
       PollCloseCommands();
    }
 
