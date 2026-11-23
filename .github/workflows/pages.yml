@@ -28,6 +28,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Check docs directory
+        run: |
+          test -d ./docs
+          ls -la ./docs
+
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 
