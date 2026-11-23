@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026"
 #property link      "https://www.mql5.com"
-#property version   "1.05"
+#property version   "1.06"
 #property indicator_chart_window
 #property indicator_buffers 1
 #property indicator_plots   1
@@ -45,7 +45,8 @@ input string ExcludeSymbols = "";
 // GỬI TÍN HIỆU REALTIME LÊN SERVER
 input group "=== Server Realtime Signal ==="
 input bool   EnableServerSend      = true;
-input string ServerSignalUrl       = "https://your-server.example.com/api/signals/realtime";
+input bool   SendOnlyStrongSignal  = true;
+input string ServerSignalUrl       = "https://investforex.onrender.com/api/signals/realtime";
 input string ServerApiKey          = "";
 input int    ServerTimeoutMs       = 3000;
 input int    ServerResendSeconds   = 30;
@@ -182,9 +183,13 @@ string EscapeJson(string s)
    return s;
 }
 
+bool IsValidSLForDirection(string type, double entryPrice, double slPrice);
+
 void SendRealtimeSignalToServer(string sym, string tfStr, string side, string divType, bool isStrong, double entryPrice, double slPrice, double refPrice1, double refPrice2, double volRatio, datetime signalTime, string signalKey)
 {
    if(!EnableServerSend || ServerSignalUrl == "") return;
+   if(SendOnlyStrongSignal && !isStrong) return;
+   if(!IsValidSLForDirection(side, entryPrice, slPrice)) return;
 
    datetime now = TimeCurrent();
    if(signalKey == g_lastSentSignalKey && (now - g_lastSentSignalTime) < MathMax(1, ServerResendSeconds))
@@ -193,30 +198,21 @@ void SendRealtimeSignalToServer(string sym, string tfStr, string side, string di
    int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
    if(digits <= 0) digits = 5;
 
-   double bid = SymbolInfoDouble(sym, SYMBOL_BID);
-   double ask = SymbolInfoDouble(sym, SYMBOL_ASK);
-   double point = SymbolInfoDouble(sym, SYMBOL_POINT);
-   double spreadPoints = (point > 0 && ask >= bid) ? ((ask - bid) / point) : 0.0;
+   double score = isStrong ? MathMin(100.0, 70.0 + volRatio * 10.0) : MathMin(69.0, 40.0 + volRatio * 8.0);
+   string dedupSource = "div-" + signalKey;
+   if(StringLen(dedupSource) > 40)
+      dedupSource = StringSubstr(dedupSource, 0, 40);
 
    string payload = StringFormat(
-      "{\"source\":\"RSI_Divergence_Realtime\",\"mode\":\"realtime\",\"symbol\":\"%s\",\"timeframe\":\"%s\",\"side\":\"%s\",\"div_type\":\"%s\",\"is_strong\":%s,\"entry_price\":%s,\"sl_price\":%s,\"ref_price_1\":%s,\"ref_price_2\":%s,\"volume_ratio\":%.4f,\"spread_points\":%.1f,\"signal_time_server\":%d,\"signal_time_gmt7\":%d,\"sent_at\":%d,\"signal_key\":\"%s\",\"account_login\":%d,\"account_server\":\"%s\"}",
+      "{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\",\"order_type\":\"MARKET\","
+      "\"entry\":%s,\"sl\":%s,\"tp\":0,\"score\":%.2f,\"source\":\"%s\"}",
       EscapeJson(sym),
       EscapeJson(tfStr),
       EscapeJson(side),
-      EscapeJson(divType),
-      isStrong ? "true" : "false",
       DoubleToString(entryPrice, digits),
       DoubleToString(slPrice, digits),
-      DoubleToString(refPrice1, digits),
-      DoubleToString(refPrice2, digits),
-      volRatio,
-      spreadPoints,
-      (int)signalTime,
-      (int)ServerTimeToGMT7(signalTime),
-      (int)now,
-      EscapeJson(signalKey),
-      (int)AccountInfoInteger(ACCOUNT_LOGIN),
-      EscapeJson(AccountInfoString(ACCOUNT_SERVER))
+      score,
+      EscapeJson(dedupSource)
    );
 
    char postData[];
@@ -237,7 +233,7 @@ void SendRealtimeSignalToServer(string sym, string tfStr, string side, string di
    {
       g_lastSentSignalKey = signalKey;
       g_lastSentSignalTime = now;
-      Print("SERVER RT SIGNAL SENT [HTTP ", httpCode, "]: ", signalKey);
+      Print("SERVER RT SIGNAL SENT [HTTP ", httpCode, "]: ", signalKey, " (", side, " ", divType, ")");
    }
    else
    {
@@ -1127,7 +1123,7 @@ int OnInit()
    if(tfList == "") tfList = "NONE!";
 
    Print("═══════════════════════════════════════════");
-   Print("RSI Divergence Realtime v1.05");
+   Print("RSI Divergence Realtime v1.06");
    Print("   Timeframes: ", tfList);
    Print("═══════════════════════════════════════════");
 
