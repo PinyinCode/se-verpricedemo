@@ -1587,7 +1587,10 @@ for (const key of ['entry', 'sl', 'tp']) {
   line.addEventListener('pointermove', ev => {
     if (line.dataset.drag !== '1') return;
     const rect = $('priceChart').getBoundingClientRect();
-    const p = candleSeries.coordinateToPrice(ev.clientY - rect.top);
+    const pointerY = ev.clientY - rect.top;
+    // Giữ đường hiển thị bám con trỏ ngay trong frame kéo hiện tại.
+    line.style.top = pointerY + 'px';
+    const p = candleSeries.coordinateToPrice(pointerY);
     if (p == null || !Number.isFinite(p)) return;
     const id = key === 'entry' ? 'entryPrice' : key === 'sl' ? 'slPrice' : 'tpPrice';
     $(id).value = Number(p).toFixed(mt5Digits);
@@ -1602,6 +1605,7 @@ for (const key of ['entry', 'sl', 'tp']) {
       openEntryPopupAt(ev.clientX, ev.clientY);
     }
     line.dataset.dragMoved = '0';
+    setLevelLines();
   };
   line.addEventListener('pointerup', stop);
   line.addEventListener('pointercancel', stop);
@@ -2745,6 +2749,8 @@ function setLevelLines() {
     const toggle = $(key === 'entry' ? 'showEntry' : key === 'sl' ? 'showSL' : 'showTP');
     const y = value > 0 ? candleSeries.priceToCoordinate(value) : null;
     const line = dragLevels[key];
+    // Không để cập nhật overlay/crosshair ghi đè vị trí line khi người dùng đang kéo.
+    if (line.dataset.drag === '1') continue;
     const allowed = activePreset !== null && (key !== 'entry' || mode === 'PENDING');
     line.style.display = allowed && toggle.checked && y != null ? 'block' : 'none';
     if (allowed && toggle.checked && y != null) {
