@@ -1,10 +1,10 @@
 //+------------------------------------------------------------------+
 //|                           RSI_Divergence_Realtime.mq5            |
-//|        Realtime Signal Only -> Direct GV to EA + Optional Server |
+//|   Realtime Signal Only -> Direct GV to EA + Full Server Sync     |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026"
 #property link      "https://www.mql5.com"
-#property version   "1.08"
+#property version   "1.09"
 #property indicator_chart_window
 #property indicator_buffers 1
 #property indicator_plots   1
@@ -42,15 +42,19 @@ input int RTPrintCooldownSeconds = 60;
 input double RT_RetrackATRMultiplier = 0.3;
 input string ExcludeSymbols = "";
 
-// GỬI TÍN HIỆU TRỰC TIẾP CHO EA (QUA GLOBAL VARIABLES) & TÙY CHỌN SERVER
-input group "=== Direct EA & Server Signal ==="
-input bool   PublishToDirectEA_GV  = true;  // Ghi tín hiệu trực tiếp vào GV_IND_<SYM>_* cho EA
-input bool   EnableServerSend      = false; // Tùy chọn gửi lên server (mặc định tắt vì EA tự đọc từ Indicator)
-input bool   SendOnlyStrongSignal  = true;
-input string ServerSignalUrl       = "https://investforex.onrender.com/api/signals/realtime";
-input string ServerApiKey          = "";
-input int    ServerTimeoutMs       = 3000;
-input int    ServerResendSeconds   = 30;
+// GỬI TÍN HIỆU TRỰC TIẾP CHO EA (QUA GLOBAL VARIABLES) & ĐỒNG BỘ SERVER
+input group "=== Direct EA & Server Sync ==="
+input bool   PublishToDirectEA_GV    = true;  // Ghi tín hiệu trực tiếp vào GV_IND_<SYM>_* cho EA
+input bool   EnableServerSync        = true;  // Gửi heartbeat, scans & today-signals lên server
+input bool   EnableServerSend        = true;  // Gửi tín hiệu realtime lên /api/signals/realtime
+input bool   SendOnlyStrongSignal    = true;
+input string ServerBaseUrl         = "https://investforex.onrender.com";
+input string ServerSignalUrl         = "https://investforex.onrender.com/api/signals/realtime";
+input string ServerApiKey            = "";
+input int    ServerTimeoutMs         = 3000;
+input int    ServerResendSeconds     = 30;
+input int    HeartbeatIntervalSec    = 15;
+input int    TodaySyncIntervalSec    = 20;
 
 // TIMEZONE
 int g_serverToGMTOffset = 0;
@@ -124,6 +128,9 @@ datetime g_lastNewsCheckTime = 0;
 
 string g_lastSentSignalKey = "";
 datetime g_lastSentSignalTime = 0;
+datetime g_lastServerHeartbeatTime = 0;
+datetime g_lastTodaySyncTime = 0;
+string g_lastSyncedSymbolsJson = "";
 
 // FORWARD DECLARATIONS
 void CalculateServerGMTOffset();
@@ -176,6 +183,9 @@ void PublishScanSymbols(string symbols);
 void PublishTodaySignals();
 void CleanupInvalidRTTodaySignals();
 bool IsValidSLForDirection(string type, double entryPrice, double slPrice);
+void SyncHeartbeatToServer(string status, string details, bool force = false);
+void SyncScansToServer(string scannedSymbols);
+void SyncTodaySignalsToServer(bool force = false);
 
 string EscapeJson(string s)
 {
@@ -184,6 +194,140 @@ string EscapeJson(string s)
    StringReplace(s, "\r", "\\r");
    StringReplace(s, "\n", "\\n");
    return s;
+}
+
+string BuildServerEndpoint(string path)
+{
+   string base = ServerBaseUrl;
+   while(StringLen(base) > 0 && StringGetCharacter(base, StringLen(base) - 1) == '/')
+      base = StringSubstr(base, 0, StringLen(base) - 1);
+   if(StringLen(path) > 0 && StringGetCharacter(path, 0) != '/')
+      path = "/" + path;
+   return base + path;
+}
+
+int PostJsonToServer(string url, string jsonPayload, string &outResponse)
+{
+   outResponse = "";
+   if(url == "") return -1;
+
+   char postData[];
+   int bodyLen = StringToCharArray(jsonPayload, postData, 0, WHOLE_ARRAY, CP_UTF8);
+   if(bodyLen > 0)
+      ArrayResize(postData, bodyLen - 1);
+
+   string headers = "Content-Type: application/json\r\n";
+   if(ServerApiKey != "")
+      headers += "X-API-Key: " + ServerApiKey + "\r\n";
+
+   char result[];
+   string resultHeaders = "";
+   ResetLastError();
+   int httpCode = WebRequest("POST", url, headers, ServerTimeoutMs, postData, result, resultHeaders);
+   if(ArraySize(result) > 0)
+      outResponse = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
+   return httpCode;
+}
+
+void SyncHeartbeatToServer(string status, string details, bool force)
+{
+   if(!EnableServerSync) return;
+   datetime now = TimeCurrent();
+   int interval = MathMax(5, HeartbeatIntervalSec);
+   if(!force && (now - g_lastServerHeartbeatTime) < interval) return;
+
+   g_lastServerHeartbeatTime = now;
+   string url = BuildServerEndpoint("/api/heartbeat");
+   string payload = StringFormat(
+      "{\"component\":\"rsi-divergence-indicator\",\"status\":\"%s\",\"details\":\"%s\"}",
+      EscapeJson(status),
+      EscapeJson(details)
+   );
+   string resp = "";
+   PostJsonToServer(url, payload, resp);
+}
+
+void SyncScansToServer(string scannedSymbols)
+{
+   if(!EnableServerSync) return;
+   string arrJson = "[";
+   if(scannedSymbols != "")
+   {
+      string parts[];
+      int n = StringSplit(scannedSymbols, ';', parts);
+      int added = 0;
+      for(int i = 0; i < n; i++)
+      {
+         string item = parts[i];
+         StringTrimLeft(item);
+         StringTrimRight(item);
+         if(item == "") continue;
+         if(added > 0) arrJson += ",";
+         arrJson += "\"" + EscapeJson(item) + "\"";
+         added++;
+      }
+   }
+   arrJson += "]";
+
+   if(arrJson == g_lastSyncedSymbolsJson) return;
+   g_lastSyncedSymbolsJson = arrJson;
+
+   string url = BuildServerEndpoint("/api/scans");
+   string payload = StringFormat(
+      "{\"component\":\"rsi-divergence-indicator\",\"symbols\":%s}",
+      arrJson
+   );
+   string resp = "";
+   PostJsonToServer(url, payload, resp);
+}
+
+void SyncTodaySignalsToServer(bool force)
+{
+   if(!EnableServerSync) return;
+   datetime now = TimeCurrent();
+   int interval = MathMax(5, TodaySyncIntervalSec);
+   if(!force && (now - g_lastTodaySyncTime) < interval) return;
+
+   g_lastTodaySyncTime = now;
+   string itemsJson = "[";
+   int validCount = 0;
+   for(int i = 0; i < g_todaySignalCount; i++)
+   {
+      if(g_todaySignals[i].signalType == "RT")
+      {
+         string prefix = "DIVDATA_" + g_todaySignals[i].sym + "_" + g_todaySignals[i].tfStr + "_";
+         string tType = g_todaySignals[i].type;
+         if(!GlobalVariableCheck(prefix + tType + "_ACTIVE") || GlobalVariableGet(prefix + tType + "_ACTIVE") == 0)
+            continue;
+      }
+      string dir = (g_todaySignals[i].type == "BEAR") ? "SELL" : "BUY";
+      string divNorm = (g_todaySignals[i].divType == "Hid") ? "Hid" : "Reg";
+      if(validCount > 0) itemsJson += ",";
+      itemsJson += StringFormat(
+         "{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\",\"divergence\":\"%s\","
+         "\"signal_type\":\"%s\",\"signal_time\":%d,\"price1\":%.8f,\"price2\":%.8f,"
+         "\"rsi1\":%.2f,\"rsi2\":%.2f,\"time1\":%d,\"time2\":%d}",
+         EscapeJson(g_todaySignals[i].sym),
+         EscapeJson(g_todaySignals[i].tfStr),
+         dir,
+         divNorm,
+         EscapeJson(g_todaySignals[i].signalType),
+         (int)g_todaySignals[i].time,
+         g_todaySignals[i].price1,
+         g_todaySignals[i].price2,
+         g_todaySignals[i].rsi1,
+         g_todaySignals[i].rsi2,
+         (int)g_todaySignals[i].time1,
+         (int)g_todaySignals[i].time2
+      );
+      validCount++;
+   }
+   itemsJson += "]";
+
+   string url = BuildServerEndpoint("/api/today-signals");
+   string payload = StringFormat("{\"signals\":%s}", itemsJson);
+   string resp = "";
+   PostJsonToServer(url, payload, resp);
 }
 
 string BuildDedupSource(string signalKey)
@@ -253,7 +397,7 @@ void EmitRealtimeSignal(int idx, string sym, string tfStr, string side, string d
    // 1. Luôn đẩy trực tiếp qua GV để EA tự đọc & vào lệnh ngay trên MT5
    PublishDirectSignalToEA_GV(idx, sym, side, "MARKET", entryPrice, slPrice, tpPrice, signalTime, signalKey);
 
-   // 2. Tùy chọn gửi lên server nếu người dùng bật EnableServerSend
+   // 2. Gửi lên server nếu bật EnableServerSend
    if(!EnableServerSend || ServerSignalUrl == "") return;
 
    datetime now = TimeCurrent();
@@ -278,19 +422,8 @@ void EmitRealtimeSignal(int idx, string sym, string tfStr, string side, string d
       EscapeJson(dedupSource)
    );
 
-   char postData[];
-   int bodyLen = StringToCharArray(payload, postData, 0, WHOLE_ARRAY, CP_UTF8);
-   if(bodyLen > 0)
-      ArrayResize(postData, bodyLen - 1);
-
-   string headers = "Content-Type: application/json\r\n";
-   if(ServerApiKey != "")
-      headers += "X-API-Key: " + ServerApiKey + "\r\n";
-
-   char result[];
-   string resultHeaders = "";
-   ResetLastError();
-   int httpCode = WebRequest("POST", ServerSignalUrl, headers, ServerTimeoutMs, postData, result, resultHeaders);
+   string respStr = "";
+   int httpCode = PostJsonToServer(ServerSignalUrl, payload, respStr);
 
    if(httpCode >= 200 && httpCode < 300)
    {
@@ -301,7 +434,6 @@ void EmitRealtimeSignal(int idx, string sym, string tfStr, string side, string d
    else
    {
       int err = GetLastError();
-      string respStr = (ArraySize(result) > 0) ? CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8) : "";
       Print("SERVER RT SIGNAL FAILED [HTTP ", httpCode, ", err=", err, "]: ", signalKey, " | ", respStr);
    }
 }
@@ -924,6 +1056,7 @@ string BuildTodaySignalsDisplay()
 {
    CleanupInvalidRTTodaySignals();
    PublishTodaySignals();
+   SyncTodaySignalsToServer(false);
 
    string display = "\nTODAY SIGNALS - " + IntegerToString(g_todaySignalCount) + " signals\n";
    display += " \n";
@@ -1178,6 +1311,9 @@ int OnInit()
    g_lastNewsCheckTime = 0;
    g_lastSentSignalKey = "";
    g_lastSentSignalTime = 0;
+   g_lastServerHeartbeatTime = 0;
+   g_lastTodaySyncTime = 0;
+   g_lastSyncedSymbolsJson = "";
    ArrayResize(g_todaySignals, 0);
    g_todaySignalCount = 0;
    CleanupOldSignals();
@@ -1188,13 +1324,15 @@ int OnInit()
    if(tfList == "") tfList = "NONE!";
 
    Print("═══════════════════════════════════════════");
-   Print("RSI Divergence Realtime v1.08");
+   Print("RSI Divergence Realtime v1.09");
    Print("   Timeframes: ", tfList);
    Print("   Direct EA GV: ", PublishToDirectEA_GV ? "ON" : "OFF");
+   Print("   Server Sync: ", EnableServerSync ? "ON" : "OFF");
    Print("═══════════════════════════════════════════");
 
    g_statusText = "RUNNING";
    g_statusColor = clrTeal;
+   SyncHeartbeatToServer("online", "Initialized: " + tfList, true);
 
    return INIT_SUCCEEDED;
 }
@@ -1208,6 +1346,7 @@ void PublishScanSymbols(string symbols)
    if(h == INVALID_HANDLE) return;
    FileWriteString(h, IntegerToString((int)TimeCurrent()) + "#" + symbols);
    FileClose(h);
+   SyncScansToServer(symbols);
 }
 
 void OnTimer()
@@ -1235,6 +1374,7 @@ void OnTimer()
       PublishScanSymbols("");
       g_statusColor = clrOrangeRed;
       g_statusText = "NEWS BLOCKED";
+      SyncHeartbeatToServer("warning", "News filter active", false);
       Draw("NEWS BLOCKED");
       return;
    }
@@ -1263,6 +1403,7 @@ void OnTimer()
       PublishScanSymbols("");
       g_statusColor = clrRed;
       g_statusText = "CRASHED!";
+      SyncHeartbeatToServer("offline", "Indicator or terminal disconnected", false);
       Draw("CRASHED");
       return;
    }
@@ -1272,6 +1413,7 @@ void OnTimer()
       PublishScanSymbols("");
       g_statusColor = clrGray;
       g_statusText = "STANDBY";
+      SyncHeartbeatToServer("online", "Standby outside scan hours", false);
       Draw("STANDBY");
       return;
    }
@@ -1289,6 +1431,7 @@ void OnTimer()
    {
       string td = BuildTodaySignalsDisplay();
       string dm = g_latestRTSignal == "" ? "Scanning..." : g_latestRTSignal;
+      SyncHeartbeatToServer("online", StringFormat("Idle tick | symTF=%d", ArraySize(arrSymTF)), false);
       Draw(dm + td);
       return;
    }
@@ -1335,6 +1478,11 @@ void OnTimer()
    }
    PublishScanSymbols(scannedSymbols);
    g_lastScanDurationMs = GetTickCount() - scanStartMs;
+   SyncHeartbeatToServer(
+      "online",
+      StringFormat("Scan %ums | RT=%d | Today=%d", (int)g_lastScanDurationMs, rtCount, g_todaySignalCount),
+      false
+   );
 
    string dc = "";
    static string slr = "";
@@ -1396,6 +1544,7 @@ void OnTimer()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
+   SyncHeartbeatToServer("offline", "Indicator removed/deinit: " + IntegerToString(reason), true);
    EventKillTimer();
    ClearAll();
 
