@@ -1319,10 +1319,12 @@ async function apiFetch(url, options = {}) {
   if (chartApiKey) opts.headers['X-API-Key'] = chartApiKey;
   const response = await fetch(url, opts);
   if (response.status === 401) {
+    stopAuthorizedPolling();
     setApiAuthWarning('error', chartApiKey
       ? 'API Key không hợp lệ hoặc không được máy chủ chấp nhận. Kiểm tra lại khóa trong Cài đặt.'
       : 'Chưa nhập API Key. Mở Cài đặt để nhập khóa được cấp.');
   } else if (response.status === 503) {
+    stopAuthorizedPolling();
     setApiAuthWarning('error', 'Server chưa cấu hình FOREX_API_KEY. Cần cấu hình biến môi trường này trên Render.');
   } else if (response.ok && String(url).includes('/api/dashboard')) {
     setApiAuthWarning('', '');
