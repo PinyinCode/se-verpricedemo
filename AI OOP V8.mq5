@@ -1,10 +1,10 @@
 //+------------------------------------------------------------------+
 //|                           RSI_Divergence_Realtime.mq5            |
-//|                      Realtime Signal Only (No AI Learning)        |
+//|        Realtime Signal Only -> Direct GV to EA + Optional Server |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026"
 #property link      "https://www.mql5.com"
-#property version   "1.07"
+#property version   "1.08"
 #property indicator_chart_window
 #property indicator_buffers 1
 #property indicator_plots   1
@@ -42,9 +42,10 @@ input int RTPrintCooldownSeconds = 60;
 input double RT_RetrackATRMultiplier = 0.3;
 input string ExcludeSymbols = "";
 
-// GỬI TÍN HIỆU REALTIME LÊN SERVER
-input group "=== Server Realtime Signal ==="
-input bool   EnableServerSend      = true;
+// GỬI TÍN HIỆU TRỰC TIẾP CHO EA (QUA GLOBAL VARIABLES) & TÙY CHỌN SERVER
+input group "=== Direct EA & Server Signal ==="
+input bool   PublishToDirectEA_GV  = true;  // Ghi tín hiệu trực tiếp vào GV_IND_<SYM>_* cho EA
+input bool   EnableServerSend      = false; // Tùy chọn gửi lên server (mặc định tắt vì EA tự đọc từ Indicator)
 input bool   SendOnlyStrongSignal  = true;
 input string ServerSignalUrl       = "https://investforex.onrender.com/api/signals/realtime";
 input string ServerApiKey          = "";
@@ -71,6 +72,7 @@ struct SSymbolTFData
    int lastHighShift, lastLowShift; double rsiBuf[];
    string histBearDisplay, histBullDisplay; datetime histBearTime, histBullTime;
    datetime lastStrongSignalPrintTime; string lastStrongSignalKey;
+   string lastDirectEaSignalKey; datetime lastDirectEaSignalTime;
 
    double lastBearRegRTPrice;
    double lastBearHidRTPrice;
@@ -173,6 +175,7 @@ void WriteStrongSignalToGV(string sym, string tfStr, string type, double entryPr
 void PublishScanSymbols(string symbols);
 void PublishTodaySignals();
 void CleanupInvalidRTTodaySignals();
+bool IsValidSLForDirection(string type, double entryPrice, double slPrice);
 
 string EscapeJson(string s)
 {
@@ -182,8 +185,6 @@ string EscapeJson(string s)
    StringReplace(s, "\n", "\\n");
    return s;
 }
-
-bool IsValidSLForDirection(string type, double entryPrice, double slPrice);
 
 string BuildDedupSource(string signalKey)
 {
@@ -199,12 +200,61 @@ string BuildDedupSource(string signalKey)
    return dedupSource;
 }
 
-void SendRealtimeSignalToServer(string sym, string tfStr, string side, string divType, bool isStrong, double entryPrice, double slPrice, double refPrice1, double refPrice2, double volRatio, datetime signalTime, string signalKey)
+//--- Ghi tín hiệu trực tiếp sang Global Variables cho TRADE_V9 -----
+void PublishDirectSignalToEA_GV(int idx, string sym, string side, string orderType,
+                                double entryPrice, double slPrice, double tpPrice,
+                                datetime signalTime, string signalKey)
 {
-   if(!EnableServerSend || ServerSignalUrl == "") return;
+   if(!PublishToDirectEA_GV) return;
+   if(entryPrice <= 0 || slPrice <= 0) return;
+   if(!IsValidSLForDirection(side, entryPrice, slPrice)) return;
+
+   datetime now = TimeCurrent();
+   if(idx >= 0 && idx < ArraySize(arrSymTF))
+   {
+      if(signalKey == arrSymTF[idx].lastDirectEaSignalKey &&
+         (now - arrSymTF[idx].lastDirectEaSignalTime) < MathMax(1, ServerResendSeconds))
+         return;
+      arrSymTF[idx].lastDirectEaSignalKey = signalKey;
+      arrSymTF[idx].lastDirectEaSignalTime = now;
+   }
+
+   string symUp = sym;
+   StringToUpper(symUp);
+   string pfx = "GV_IND_" + symUp + "_";
+
+   long symSeq = (long)GlobalVariableGet(pfx + "SEQ") + 1;
+   double otCode = 0.0;
+   if(orderType == "BUY_LIMIT") otCode = 1.0;
+   else if(orderType == "SELL_LIMIT") otCode = 2.0;
+
+   GlobalVariableSet(pfx + "SEQ",        (double)symSeq);
+   GlobalVariableSet(pfx + "TIME",       (double)signalTime);
+   GlobalVariableSet(pfx + "DIR",        (side == "BUY") ? 1.0 : -1.0);
+   GlobalVariableSet(pfx + "ORDER_TYPE", otCode);
+   GlobalVariableSet(pfx + "ENTRY",      entryPrice);
+   GlobalVariableSet(pfx + "SL",         slPrice);
+   GlobalVariableSet(pfx + "TP",         tpPrice);
+   GlobalVariableSet(pfx + "UPDATED",    (double)now);
+
+   long totalSeq = (long)GlobalVariableGet("GV_IND_SIG_SEQ") + 1;
+   GlobalVariableSet("GV_IND_SIG_SEQ", (double)totalSeq);
+}
+
+void EmitRealtimeSignal(int idx, string sym, string tfStr, string side, string divType,
+                        bool isStrong, double entryPrice, double slPrice, double tpPrice,
+                        double refPrice1, double refPrice2, double volRatio,
+                        datetime signalTime, string signalKey)
+{
    if(SendOnlyStrongSignal && !isStrong) return;
    if(entryPrice <= 0 || slPrice <= 0) return;
    if(!IsValidSLForDirection(side, entryPrice, slPrice)) return;
+
+   // 1. Luôn đẩy trực tiếp qua GV để EA tự đọc & vào lệnh ngay trên MT5
+   PublishDirectSignalToEA_GV(idx, sym, side, "MARKET", entryPrice, slPrice, tpPrice, signalTime, signalKey);
+
+   // 2. Tùy chọn gửi lên server nếu người dùng bật EnableServerSend
+   if(!EnableServerSend || ServerSignalUrl == "") return;
 
    datetime now = TimeCurrent();
    if(signalKey == g_lastSentSignalKey && (now - g_lastSentSignalTime) < MathMax(1, ServerResendSeconds))
@@ -579,6 +629,8 @@ int InitSymTF(string sym, ENUM_TIMEFRAMES tf, string tfStr)
    arrSymTF[idx].lastBullNotifyTime = 0;
    arrSymTF[idx].lastStrongSignalPrintTime = 0;
    arrSymTF[idx].lastStrongSignalKey = "";
+   arrSymTF[idx].lastDirectEaSignalKey = "";
+   arrSymTF[idx].lastDirectEaSignalTime = 0;
    arrSymTF[idx].lastBearRegRTPrice = 0;
    arrSymTF[idx].lastBearHidRTPrice = 0;
    arrSymTF[idx].lastBullRegRTPrice = 0;
@@ -1136,8 +1188,9 @@ int OnInit()
    if(tfList == "") tfList = "NONE!";
 
    Print("═══════════════════════════════════════════");
-   Print("RSI Divergence Realtime v1.07");
+   Print("RSI Divergence Realtime v1.08");
    Print("   Timeframes: ", tfList);
+   Print("   Direct EA GV: ", PublishToDirectEA_GV ? "ON" : "OFF");
    Print("═══════════════════════════════════════════");
 
    g_statusText = "RUNNING";
@@ -1646,7 +1699,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   if(timeAtMaxHigh >= g_initTime && IsNewsSafe())
                   {
                      string sigKey = sym + "|" + tfStr + "|SELL|Reg|" + IntegerToString(timeAtMaxHigh);
-                     SendRealtimeSignalToServer(sym, tfStr, "SELL", "REG", isStrong, currentPrice, rtMaxHigh, lastHighPrice, rtMaxHigh, peakVolRatio, timeAtMaxHigh, sigKey);
+                     EmitRealtimeSignal(idx, sym, tfStr, "SELL", "REG", isStrong, currentPrice, rtMaxHigh, 0.0, lastHighPrice, rtMaxHigh, peakVolRatio, timeAtMaxHigh, sigKey);
                   }
 
                   if(isStrong && timeAtMaxHigh >= g_initTime && IsNewsSafe() && shouldTrack && IsValidSLForDirection("SELL", currentPrice, rtMaxHigh))
@@ -1713,7 +1766,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   if(timeAtMaxRSI >= g_initTime && IsNewsSafe())
                   {
                      string sigKey = sym + "|" + tfStr + "|SELL|Hid|" + IntegerToString(timeAtMaxRSI);
-                     SendRealtimeSignalToServer(sym, tfStr, "SELL", "HID", isStrong, currentPrice, slHidBear, lastHighPrice, priceAtMaxRSI, peakVolRatio, timeAtMaxRSI, sigKey);
+                     EmitRealtimeSignal(idx, sym, tfStr, "SELL", "HID", isStrong, currentPrice, slHidBear, 0.0, lastHighPrice, priceAtMaxRSI, peakVolRatio, timeAtMaxRSI, sigKey);
                   }
 
                   if(isStrong && timeAtMaxRSI >= g_initTime && IsNewsSafe() && shouldTrack)
@@ -1806,7 +1859,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   if(timeAtMinLow >= g_initTime && IsNewsSafe())
                   {
                      string sigKey = sym + "|" + tfStr + "|BUY|Reg|" + IntegerToString(timeAtMinLow);
-                     SendRealtimeSignalToServer(sym, tfStr, "BUY", "REG", isStrong, currentPrice, rtMinLow, lastLowPrice, rtMinLow, troughVolRatio, timeAtMinLow, sigKey);
+                     EmitRealtimeSignal(idx, sym, tfStr, "BUY", "REG", isStrong, currentPrice, rtMinLow, 0.0, lastLowPrice, rtMinLow, troughVolRatio, timeAtMinLow, sigKey);
                   }
 
                   if(isStrong && timeAtMinLow >= g_initTime && IsNewsSafe() && shouldTrack && IsValidSLForDirection("BUY", currentPrice, rtMinLow))
@@ -1873,7 +1926,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   if(timeAtMinRSI >= g_initTime && IsNewsSafe())
                   {
                      string sigKey = sym + "|" + tfStr + "|BUY|Hid|" + IntegerToString(timeAtMinRSI);
-                     SendRealtimeSignalToServer(sym, tfStr, "BUY", "HID", isStrong, currentPrice, slHidBull, lastLowPrice, priceAtMinRSI, troughVolRatio, timeAtMinRSI, sigKey);
+                     EmitRealtimeSignal(idx, sym, tfStr, "BUY", "HID", isStrong, currentPrice, slHidBull, 0.0, lastLowPrice, priceAtMinRSI, troughVolRatio, timeAtMinRSI, sigKey);
                   }
 
                   if(isStrong && timeAtMinRSI >= g_initTime && IsNewsSafe() && shouldTrack)
