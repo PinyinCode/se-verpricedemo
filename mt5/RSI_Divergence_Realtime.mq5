@@ -1,480 +1,140 @@
 //+------------------------------------------------------------------+
-//|                           RSI_Divergence_Realtime.mq5            |
-//|   Realtime Signal Only -> Direct GV to EA + Full Server Sync     |
+//| TRADE_V9_PAPER.mq5                                               |
+//| Forex AI Server consumer - REAL orders only, hub executor.       |
+//| Pending orders: LIMIT ONLY (BUY_LIMIT / SELL_LIMIT).             |
+//| Tự tính SL/TP/Lot, tự trailing/BE, đọc settings từ server.       |
 //+------------------------------------------------------------------+
-#property copyright "Copyright 2026"
-#property link      "https://www.mql5.com"
-#property version   "1.09"
-#property indicator_chart_window
-#property indicator_buffers 1
-#property indicator_plots   1
-#property indicator_type1   DRAW_NONE
+#property strict
+#property version "3.13"
 
-//+------------------------------------------------------------------+
-//| INPUT PARAMETERS                                                 |
-//+------------------------------------------------------------------+
-string ExpiryDate = "2099.12.30";
-datetime expiry = StringToTime(ExpiryDate);
-string P = "DBL_";
-#define MS_BARS_DEFAULT 100
+#include <Trade\Trade.mqh>
+#include <Trade\PositionInfo.mqh>
 
-input bool EnableM15 = true;
-input bool EnableH1  = true;
+//--- Inputs ---------------------------------------------------------
+input string ServerBaseURL                = "https://investforex.onrender.com";
+input string ApiKey                       = "SET_A_LONG_RANDOM_API_KEY";
+input string ConsumerId                   = "trade-v9";
+input int    PollSeconds                  = 3;
+input int    SettingsPollSeconds          = 5;
+input int    CommissionPollSeconds        = 60;
+input int    HeartbeatSeconds             = 15;
+input int    TrailingCheckSeconds         = 2;
 
-// Thời gian quét giữ nguyên ở input của bộ quét
-input bool EnableTimeFilter = true;
-input int  ScanStartHour = 7;
-input int  ScanEndHour = 23;
+input long   MagicNumber                  = 20240915;
+input int    SlippagePoints               = 20;
+input string OrderComment                 = "TRADE-V9";
+input bool   SyncRealHistory              = true;
+input bool   AllowCancelExternalPending   = false;
+input bool   AllowModifyExternalPending   = true;
+input bool   AllowMinLotWhenExceedBudget  = false;
 
-input bool EnableNewsFilter = true;
-input string GV_NewsBlockedName = "GV_NewsFilter_Blocked";
-input int NewsCheckIntervalSeconds = 30;
-input bool EnablePushNotify = true;
-input int NotifyCooldownMinutes = 5;
-input double VolumeAutoRatio = 1.2;
-input int MS_SwingBars = 3;
-input int VolumeLookbackBars = 1;
-input bool RT_RequireMonotonicMove = true;
-input int RT_ConsecutiveBars = 2;
-input bool EnableSignalOutput = true;
-input int SignalExpirySeconds = 300;
-input int RTPrintCooldownSeconds = 60;
-input double RT_RetrackATRMultiplier = 0.3;
-input string ExcludeSymbols = "";
+// Nếu server báo commission dạng round-turn (vào+ra) nhưng MT5 tính per-side -> bật true
+input bool   CommissionIsRoundTurn        = false;
 
-// GỬI TÍN HIỆU TRỰC TIẾP CHO EA (QUA GLOBAL VARIABLES) & ĐỒNG BỘ SERVER
-input group "=== Direct EA & Server Sync ==="
-input bool   PublishToDirectEA_GV    = true;  // Ghi tín hiệu trực tiếp vào GV_IND_<SYM>_* cho EA
-input bool   EnableServerSync        = true;  // Gửi heartbeat, scans & today-signals lên server
-input bool   EnableServerSend        = true;  // Gửi tín hiệu realtime lên /api/signals/realtime
-input bool   SendOnlyStrongSignal    = true;
-input string ServerBaseUrl         = "https://investforex.onrender.com";
-input string ServerSignalUrl         = "https://investforex.onrender.com/api/signals/realtime";
-input string ServerApiKey            = "";
-input int    ServerTimeoutMs         = 3000;
-input int    ServerResendSeconds     = 30;
-input int    HeartbeatIntervalSec    = 15;
-input int    TodaySyncIntervalSec    = 20;
+//--- Globals --------------------------------------------------------
+CTrade        trade;
+CPositionInfo posInfo;
 
-// TIMEZONE
+// ===== Settings cache (khớp Control Panel /api/settings) =====
+struct SSettings {
+   bool   auto_trade_enabled;
+   bool   trailing_enabled;
+   bool   breakeven_enabled;
+   bool   news_filter_enabled;
+   bool   time_filter_enabled;
+   bool   telegram_notifications_enabled;
+   bool   emergency_stop;
+   bool   emergency_close_all;
+   double risk_money;
+   int    max_positions;
+   double reward_risk_ratio;
+   double risk_tolerance_pct;
+   double commission_fallback;
+   int    spread_buffer_points;
+   double trailing_trigger_rr;
+   double trailing_lock_rr;
+   double breakeven_trigger_rr;
+   string trailing_mode;
+   int    trading_start_hour;
+   int    trading_end_hour;
+   datetime last_synced;
+};
+SSettings g_settings;
+
+// ===== Commission cache =====
+struct SCommission {
+   string symbol;
+   double commission_per_lot;
+   double swap_long;
+   double swap_short;
+   double contract_size;
+   double tick_value;
+   double point_size;
+   datetime received_at;
+};
+SCommission g_commissionCache[];
+string g_lastCommissionDigest = "";
+
+// ===== Risk breakdown (nguồn duy nhất cho mọi phép tính risk) =====
+struct SRiskBreakdown {
+   bool   valid;
+   double slRisk;         // $
+   double commission;     // $
+   double spreadCost;     // $
+   double total;          // $
+   double riskPerLot;     // $/lot
+   string error;
+};
+
+// ===== Trailing state =====
+struct STrailState {
+   ulong  ticket;
+   string sym;
+   double entryPrice;
+   double initialSL;
+   double oneR;
+   double lockedSL;
+   bool   breakEvenDone;
+   bool   trailingActivated;
+};
+STrailState g_trailStates[];
+
+// ===== Signal & processing dedup =====
+string   processedSignalIds[];
+string   processedSltpRequestIds[];
+string   processedPendingModifyIds[];
+string   lastHistoryDigest = "";
+
+// ===== Timers =====
+uint lastPollMs              = 0;
+uint lastSettingsPollMs      = 0;
+uint lastCommissionPollMs    = 0;
+uint lastPositionsSyncMs     = 0;
+uint lastHeartbeatMs         = 0;
+uint lastHistorySyncMs       = 0;
+uint lastSltpPollMs          = 0;
+uint lastPendingModifyPollMs = 0;
+uint lastTrailingCheckMs     = 0;
+
+// ===== Server GMT offset =====
 int g_serverToGMTOffset = 0;
-int g_gmt7TargetOffset = 7 * 3600;
 datetime g_lastOffsetCalcTime = 0;
-datetime g_lastScanM15 = 0, g_lastScanH1 = 0;
-datetime g_todayStartGMT7 = 0;
 
-struct SSymbolTFData
-{
-   string sym; ENUM_TIMEFRAMES tf; string tfStr; int rsiHandle; int atrHandle;
-   datetime lastBullNotifyBar, lastBearNotifyBar, lastBullNotifyTime, lastBearNotifyTime;
-   double bearSL, bullSL; datetime bearSLTime, bullSLTime;
-   double maxVolBear, maxVolBull; int lastShiftCached; datetime lastBarTime;
-   double prevHighPrice, lastHighPrice, prevHighRSI, lastHighRSI;
-   datetime prevHighTime, lastHighTime;
-   double prevLowPrice, lastLowPrice, prevLowRSI, lastLowRSI;
-   datetime prevLowTime, lastLowTime;
-   int lastHighShift, lastLowShift; double rsiBuf[];
-   string histBearDisplay, histBullDisplay; datetime histBearTime, histBullTime;
-   datetime lastStrongSignalPrintTime; string lastStrongSignalKey;
-   string lastDirectEaSignalKey; datetime lastDirectEaSignalTime;
+// ===== Emergency =====
+bool g_emergencyInProgress = false;
 
-   double lastBearRegRTPrice;
-   double lastBearHidRTPrice;
-   double lastBullRegRTPrice;
-   double lastBullHidRTPrice;
+//--- Forward declarations -------------------------------------------
+void SendAccountSnapshot();
+void PublishRealClosedDeals();
+int  CountRealExposure();
+void PollSettings();
+void SyncDashboardGlobalVariables();
+void PollCommissions();
+void ManageTrailing();
+void CheckEmergencyStop();
+SRiskBreakdown ComputeRiskBreakdown(string symbol, double slDistance, double volume);
 
-   datetime lastBearRegRTTime;
-   datetime lastBearHidRTTime;
-   datetime lastBullRegRTTime;
-   datetime lastBullHidRTTime;
-};
-
-struct SRTLine { string text; datetime time; bool isToday; };
-struct STodaySignal { string sym, tfStr, type, divType, signalType; datetime time, time1, time2; double price1, price2, rsi1, rsi2; };
-
-struct SHudConfig
-{
-   bool enabled;
-   bool showHeader;
-   bool showFeatures;
-   bool showRT;
-   bool showHist;
-   bool showToday;
-   int  fontRT;
-   int  fontHist;
-   int  fontToday;
-   int  fontHeader;
-   int  startX;
-   int  topMargin;
-};
-
-// GLOBAL VARIABLES
-SSymbolTFData arrSymTF[];
-STodaySignal g_todaySignals[];
-int g_todaySignalCount = 0;
-datetime g_lastUpdateTime = 0;
-int g_heartbeatCounter = 0;
-bool g_heartbeatState = false;
-uint g_lastScanDurationMs = 0;
-color g_statusColor = clrDimGray;
-string g_statusText = "KHỞI TẠO...";
-string g_latestRTSignal = "";
-bool g_firstScanDone = false;
-datetime g_initTime = 0;
-datetime g_lastRTPrintTime = 0;
-int g_lastRTCount = 0;
-bool g_isNewsBlocked = false;
-datetime g_lastNewsCheckTime = 0;
-
-string g_lastSentSignalKey = "";
-datetime g_lastSentSignalTime = 0;
-datetime g_lastServerHeartbeatTime = 0;
-datetime g_lastTodaySyncTime = 0;
-string g_lastSyncedSymbolsJson = "";
-
-// FORWARD DECLARATIONS
-void CalculateServerGMTOffset();
-datetime ServerTimeToGMT7(datetime serverTime);
-datetime GetGMT7Now();
-void UpdateTodayBounds();
-bool IsInScanTime();
-bool IsNewsFilterEnabledEffective();
-bool IsNewsSafe();
-void GetEnabledTimeframes(ENUM_TIMEFRAMES &tfs[], string &tfStrs[]);
-double GetATRValue(int idx, string sym, ENUM_TIMEFRAMES tf, int period);
-ENUM_TIMEFRAMES StringToEnum(string tfStr);
-
-bool IsSymbolExcluded(string sym);
-bool IsInTradeTime(datetime signalTime);
-
-bool GetGvBool(string name, bool defVal);
-int GetGvInt(string name, int defVal);
-
-int GetSymbolTFIndex(string s, ENUM_TIMEFRAMES tf);
-int InitSymTF(string sym, ENUM_TIMEFRAMES tf, string tfStr);
-void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLines[], datetime &histTimes[], int &histCount);
-double GetRSI(double &buf[], int shift);
-bool IsRSISwingHigh(double &buf[], int shift);
-bool IsRSISwingLow(double &buf[], int shift);
-double GetVolumeRatioAtShift(string sym, int shift, ENUM_TIMEFRAMES tf);
-bool CheckMiddleValid(string sym, ENUM_TIMEFRAMES tf, int shift2, int shift1, datetime refTime, bool isHigh);
-bool IsMonotonicStructure(string sym, ENUM_TIMEFRAMES tf, int shiftNew, int shiftOld, bool isBearish);
-double CalcVolumeRatio(string sym, ENUM_TIMEFRAMES tf, int shift, int bars, int maLen);
-bool IsReversalCandle(string sym, ENUM_TIMEFRAMES tf, int shift);
-bool ShouldRetrack(int idx, double currentPrice, double lastTrackedPrice, string sym, ENUM_TIMEFRAMES tf, datetime currentBarTime, datetime lastTrackedBarTime);
-
-void AddTodaySignal(string sym, string tfStr, string type, string divType, string signalType, datetime time1, datetime time2, double price1, double price2, double rsi1, double rsi2);
-void ClearOldTodaySignals();
-string BuildTodaySignalsDisplay();
-void Draw(string divergenceComment);
-void UpdMsg(string n, string t, int x, int y, color c, int fontSize = 11, bool isBold = false);
-void Cleanup(int validLineCount);
-void ClearAll();
-void SendDivergenceNotify(string sym, string tfStr, string divType, string direction, string timeStr);
-void WriteHistoricalDivergence(string sym, string tfStr, bool isBearish, bool isRegular, datetime t1, double rsi1, double price1, datetime t2, double rsi2, double price2, double volRatio);
-void WriteRTDivergence(string sym, string tfStr, bool isBearish, bool isRegular, datetime t1, double rsi1, double price1, datetime t2, double rsi2, double price2);
-void ClearInactiveRTDivergence(string sym, string tfStr, ENUM_TIMEFRAMES tf);
-void ClearAllDivergenceData(string sym, string tfStr);
-void CleanupOldSignals();
-void PrintStrongSignalOnce(SSymbolTFData &data, string sym, string tfStr, string type, string divType, double entryPrice, double slPrice, datetime signalTime, string signalKey);
-void PrintRTSignalChange(int currentRTCount, string comment);
-void WriteStrongSignalToGV(string sym, string tfStr, string type, double entryPrice, double slPrice, double highPrice, double lowPrice, bool isStrong, string divType, datetime signalTime, double score = 0);
-void PublishScanSymbols(string symbols);
-void PublishTodaySignals();
-void CleanupInvalidRTTodaySignals();
-bool IsValidSLForDirection(string type, double entryPrice, double slPrice);
-void SyncHeartbeatToServer(string status, string details, bool force = false);
-void SyncScansToServer(string scannedSymbols);
-void SyncTodaySignalsToServer(bool force = false);
-
-string EscapeJson(string s)
-{
-   StringReplace(s, "\\", "\\\\");
-   StringReplace(s, "\"", "\\\"");
-   StringReplace(s, "\r", "\\r");
-   StringReplace(s, "\n", "\\n");
-   return s;
-}
-
-string BuildServerEndpoint(string path)
-{
-   string base = ServerBaseUrl;
-   while(StringLen(base) > 0 && StringGetCharacter(base, StringLen(base) - 1) == '/')
-      base = StringSubstr(base, 0, StringLen(base) - 1);
-   if(StringLen(path) > 0 && StringGetCharacter(path, 0) != '/')
-      path = "/" + path;
-   return base + path;
-}
-
-int PostJsonToServer(string url, string jsonPayload, string &outResponse)
-{
-   outResponse = "";
-   if(url == "") return -1;
-
-   char postData[];
-   int bodyLen = StringToCharArray(jsonPayload, postData, 0, WHOLE_ARRAY, CP_UTF8);
-   if(bodyLen > 0)
-      ArrayResize(postData, bodyLen - 1);
-
-   string headers = "Content-Type: application/json\r\n";
-   if(ServerApiKey != "")
-      headers += "X-API-Key: " + ServerApiKey + "\r\n";
-
-   char result[];
-   string resultHeaders = "";
-   ResetLastError();
-   int httpCode = WebRequest("POST", url, headers, ServerTimeoutMs, postData, result, resultHeaders);
-   if(ArraySize(result) > 0)
-      outResponse = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
-   return httpCode;
-}
-
-void SyncHeartbeatToServer(string status, string details, bool force)
-{
-   if(!EnableServerSync) return;
-   datetime now = TimeCurrent();
-   int interval = MathMax(5, HeartbeatIntervalSec);
-   if(!force && (now - g_lastServerHeartbeatTime) < interval) return;
-
-   g_lastServerHeartbeatTime = now;
-   string url = BuildServerEndpoint("/api/heartbeat");
-   string payload = StringFormat(
-      "{\"component\":\"rsi-divergence-indicator\",\"status\":\"%s\",\"details\":\"%s\"}",
-      EscapeJson(status),
-      EscapeJson(details)
-   );
-   string resp = "";
-   PostJsonToServer(url, payload, resp);
-}
-
-void SyncScansToServer(string scannedSymbols)
-{
-   if(!EnableServerSync) return;
-   string arrJson = "[";
-   if(scannedSymbols != "")
-   {
-      string parts[];
-      int n = StringSplit(scannedSymbols, ';', parts);
-      int added = 0;
-      for(int i = 0; i < n; i++)
-      {
-         string item = parts[i];
-         StringTrimLeft(item);
-         StringTrimRight(item);
-         if(item == "") continue;
-         if(added > 0) arrJson += ",";
-         arrJson += "\"" + EscapeJson(item) + "\"";
-         added++;
-      }
-   }
-   arrJson += "]";
-
-   if(arrJson == g_lastSyncedSymbolsJson) return;
-   g_lastSyncedSymbolsJson = arrJson;
-
-   string url = BuildServerEndpoint("/api/scans");
-   string payload = StringFormat(
-      "{\"component\":\"rsi-divergence-indicator\",\"symbols\":%s}",
-      arrJson
-   );
-   string resp = "";
-   PostJsonToServer(url, payload, resp);
-}
-
-void SyncTodaySignalsToServer(bool force)
-{
-   if(!EnableServerSync) return;
-   datetime now = TimeCurrent();
-   int interval = MathMax(5, TodaySyncIntervalSec);
-   if(!force && (now - g_lastTodaySyncTime) < interval) return;
-
-   g_lastTodaySyncTime = now;
-   string itemsJson = "[";
-   int validCount = 0;
-   for(int i = 0; i < g_todaySignalCount; i++)
-   {
-      if(g_todaySignals[i].signalType == "RT")
-      {
-         string prefix = "DIVDATA_" + g_todaySignals[i].sym + "_" + g_todaySignals[i].tfStr + "_";
-         string tType = g_todaySignals[i].type;
-         if(!GlobalVariableCheck(prefix + tType + "_ACTIVE") || GlobalVariableGet(prefix + tType + "_ACTIVE") == 0)
-            continue;
-      }
-      string dir = (g_todaySignals[i].type == "BEAR") ? "SELL" : "BUY";
-      string divNorm = (g_todaySignals[i].divType == "Hid") ? "Hid" : "Reg";
-      if(validCount > 0) itemsJson += ",";
-      itemsJson += StringFormat(
-         "{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\",\"divergence\":\"%s\","
-         "\"signal_type\":\"%s\",\"signal_time\":%d,\"price1\":%.8f,\"price2\":%.8f,"
-         "\"rsi1\":%.2f,\"rsi2\":%.2f,\"time1\":%d,\"time2\":%d}",
-         EscapeJson(g_todaySignals[i].sym),
-         EscapeJson(g_todaySignals[i].tfStr),
-         dir,
-         divNorm,
-         EscapeJson(g_todaySignals[i].signalType),
-         (int)g_todaySignals[i].time,
-         g_todaySignals[i].price1,
-         g_todaySignals[i].price2,
-         g_todaySignals[i].rsi1,
-         g_todaySignals[i].rsi2,
-         (int)g_todaySignals[i].time1,
-         (int)g_todaySignals[i].time2
-      );
-      validCount++;
-   }
-   itemsJson += "]";
-
-   string url = BuildServerEndpoint("/api/today-signals");
-   string payload = StringFormat("{\"signals\":%s}", itemsJson);
-   string resp = "";
-   PostJsonToServer(url, payload, resp);
-}
-
-string BuildDedupSource(string signalKey)
-{
-   string cleanKey = signalKey;
-   StringReplace(cleanKey, "|", "_");
-   StringReplace(cleanKey, "SELL", "S");
-   StringReplace(cleanKey, "BUY", "B");
-   StringReplace(cleanKey, "Reg", "R");
-   StringReplace(cleanKey, "Hid", "H");
-   string dedupSource = "rt_" + cleanKey;
-   if(StringLen(dedupSource) > 40)
-      dedupSource = StringSubstr(dedupSource, StringLen(dedupSource) - 40, 40);
-   return dedupSource;
-}
-
-//--- Ghi tín hiệu trực tiếp sang Global Variables cho TRADE_V9 -----
-void PublishDirectSignalToEA_GV(int idx, string sym, string side, string orderType,
-                                double entryPrice, double slPrice, double tpPrice,
-                                datetime signalTime, string signalKey)
-{
-   if(!PublishToDirectEA_GV) return;
-   if(entryPrice <= 0 || slPrice <= 0) return;
-   if(!IsValidSLForDirection(side, entryPrice, slPrice)) return;
-
-   datetime now = TimeCurrent();
-   if(idx >= 0 && idx < ArraySize(arrSymTF))
-   {
-      if(signalKey == arrSymTF[idx].lastDirectEaSignalKey &&
-         (now - arrSymTF[idx].lastDirectEaSignalTime) < MathMax(1, ServerResendSeconds))
-         return;
-      arrSymTF[idx].lastDirectEaSignalKey = signalKey;
-      arrSymTF[idx].lastDirectEaSignalTime = now;
-   }
-
-   string symUp = sym;
-   StringToUpper(symUp);
-   string pfx = "GV_IND_" + symUp + "_";
-
-   long symSeq = (long)GlobalVariableGet(pfx + "SEQ") + 1;
-   double otCode = 0.0;
-   if(orderType == "BUY_LIMIT") otCode = 1.0;
-   else if(orderType == "SELL_LIMIT") otCode = 2.0;
-
-   GlobalVariableSet(pfx + "SEQ",        (double)symSeq);
-   GlobalVariableSet(pfx + "TIME",       (double)signalTime);
-   GlobalVariableSet(pfx + "DIR",        (side == "BUY") ? 1.0 : -1.0);
-   GlobalVariableSet(pfx + "ORDER_TYPE", otCode);
-   GlobalVariableSet(pfx + "ENTRY",      entryPrice);
-   GlobalVariableSet(pfx + "SL",         slPrice);
-   GlobalVariableSet(pfx + "TP",         tpPrice);
-   GlobalVariableSet(pfx + "UPDATED",    (double)now);
-
-   long totalSeq = (long)GlobalVariableGet("GV_IND_SIG_SEQ") + 1;
-   GlobalVariableSet("GV_IND_SIG_SEQ", (double)totalSeq);
-}
-
-void EmitRealtimeSignal(int idx, string sym, string tfStr, string side, string divType,
-                        bool isStrong, double entryPrice, double slPrice, double tpPrice,
-                        double refPrice1, double refPrice2, double volRatio,
-                        datetime signalTime, string signalKey)
-{
-   if(SendOnlyStrongSignal && !isStrong) return;
-   if(entryPrice <= 0 || slPrice <= 0) return;
-   if(!IsValidSLForDirection(side, entryPrice, slPrice)) return;
-
-   // 1. Luôn đẩy trực tiếp qua GV để EA tự đọc & vào lệnh ngay trên MT5
-   PublishDirectSignalToEA_GV(idx, sym, side, "MARKET", entryPrice, slPrice, tpPrice, signalTime, signalKey);
-
-   // 2. Gửi lên server nếu bật EnableServerSend
-   if(!EnableServerSend || ServerSignalUrl == "") return;
-
-   datetime now = TimeCurrent();
-   if(signalKey == g_lastSentSignalKey && (now - g_lastSentSignalTime) < MathMax(1, ServerResendSeconds))
-      return;
-
-   int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
-   if(digits <= 0) digits = 5;
-
-   double score = isStrong ? MathMin(100.0, 70.0 + volRatio * 10.0) : MathMin(69.0, 40.0 + volRatio * 8.0);
-   string dedupSource = BuildDedupSource(signalKey);
-
-   string payload = StringFormat(
-      "{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\",\"order_type\":\"MARKET\","
-      "\"entry\":%s,\"sl\":%s,\"tp\":0,\"score\":%.2f,\"source\":\"%s\"}",
-      EscapeJson(sym),
-      EscapeJson(tfStr),
-      EscapeJson(side),
-      DoubleToString(entryPrice, digits),
-      DoubleToString(slPrice, digits),
-      score,
-      EscapeJson(dedupSource)
-   );
-
-   string respStr = "";
-   int httpCode = PostJsonToServer(ServerSignalUrl, payload, respStr);
-
-   if(httpCode >= 200 && httpCode < 300)
-   {
-      g_lastSentSignalKey = signalKey;
-      g_lastSentSignalTime = now;
-      Print("SERVER RT SIGNAL SENT [HTTP ", httpCode, "]: ", signalKey, " (", side, " ", divType, ") src=", dedupSource);
-   }
-   else
-   {
-      int err = GetLastError();
-      Print("SERVER RT SIGNAL FAILED [HTTP ", httpCode, ", err=", err, "]: ", signalKey, " | ", respStr);
-   }
-}
-
-//+------------------------------------------------------------------+
-//| DASHBOARD HUD CONFIG (READ FROM GLOBAL VARIABLES)                |
-//+------------------------------------------------------------------+
-bool GetGvBool(string name, bool defVal)
-{
-   if(!GlobalVariableCheck(name)) return defVal;
-   return (GlobalVariableGet(name) >= 0.5);
-}
-
-int GetGvInt(string name, int defVal)
-{
-   if(!GlobalVariableCheck(name)) return defVal;
-   return (int)MathRound(GlobalVariableGet(name));
-}
-
-SHudConfig GetHudConfig()
-{
-   SHudConfig cfg;
-   cfg.enabled      = GetGvBool("GV_HUD_ENABLED", true);
-   cfg.showHeader   = GetGvBool("GV_HUD_SHOW_HEADER", true);
-   cfg.showFeatures = GetGvBool("GV_HUD_SHOW_FEATURES", true);
-   cfg.showRT       = GetGvBool("GV_HUD_SHOW_RT", true);
-   cfg.showHist     = GetGvBool("GV_HUD_SHOW_HIST", true);
-   cfg.showToday    = GetGvBool("GV_HUD_SHOW_TODAY", true);
-
-   cfg.fontRT       = MathMax(7, MathMin(24, GetGvInt("GV_HUD_FONT_RT", 11)));
-   cfg.fontHist     = MathMax(7, MathMin(24, GetGvInt("GV_HUD_FONT_HIST", 10)));
-   cfg.fontToday    = MathMax(7, MathMin(24, GetGvInt("GV_HUD_FONT_TODAY", 9)));
-   cfg.fontHeader   = MathMax(7, MathMin(24, GetGvInt("GV_HUD_FONT_HEADER", 9)));
-   cfg.startX       = MathMax(0, GetGvInt("GV_HUD_START_X", 15));
-   cfg.topMargin    = MathMax(0, GetGvInt("GV_HUD_TOP_MARGIN", 20));
-   return cfg;
-}
-
-//+------------------------------------------------------------------+
-//| TIMEZONE & NEWS                                                  |
-//+------------------------------------------------------------------+
+//--- Time helpers ---------------------------------------------------
 void CalculateServerGMTOffset()
 {
    datetime st = TimeTradeServer(), gt = TimeGMT();
@@ -487,7 +147,7 @@ void CalculateServerGMTOffset()
 
 datetime ServerTimeToGMT7(datetime st)
 {
-   return (st - g_serverToGMTOffset) + g_gmt7TargetOffset;
+   return (st - g_serverToGMTOffset) + 7 * 3600;
 }
 
 datetime GetGMT7Now()
@@ -497,1619 +157,1561 @@ datetime GetGMT7Now()
    return ServerTimeToGMT7(st);
 }
 
-void UpdateTodayBounds()
+bool IsInTradingHours()
 {
-   datetime n = GetGMT7Now();
-   g_todayStartGMT7 = n - (n % 86400);
-}
-
-bool IsInScanTime()
-{
-   if(!EnableTimeFilter) return true;
-   if(TimeCurrent() - g_lastOffsetCalcTime >= 60)
-      CalculateServerGMTOffset();
-   datetime n = GetGMT7Now();
+   if(!g_settings.time_filter_enabled) return true;
+   datetime gmt7 = GetGMT7Now();
    MqlDateTime dt;
-   TimeToStruct(n, dt);
+   TimeToStruct(gmt7, dt);
    int h = dt.hour;
-   if(ScanStartHour <= ScanEndHour)
-      return (h >= ScanStartHour && h < ScanEndHour);
-   else
-      return (h >= ScanStartHour || h < ScanEndHour);
+   int start = g_settings.trading_start_hour;
+   int end = g_settings.trading_end_hour;
+   if(start <= end) return (h >= start && h < end);
+   return (h >= start || h < end);
 }
 
-bool IsNewsFilterEnabledEffective()
+bool IsNewsBlocked()
 {
-   if(!EnableNewsFilter) return false;
-   return GetGvBool("GV_Dash_NewsFilterEnabled", true);
+   if(!g_settings.news_filter_enabled) return false;
+   if(!GlobalVariableCheck("GV_NewsFilter_Blocked")) return false;
+   return (GlobalVariableGet("GV_NewsFilter_Blocked") >= 0.5);
 }
 
-bool IsNewsSafe()
+//--- JSON helpers ---------------------------------------------------
+string JsonEscape(string s)
 {
-   if(!IsNewsFilterEnabledEffective()) return true;
-   if(!GlobalVariableCheck(GV_NewsBlockedName)) return true;
-   return (GlobalVariableGet(GV_NewsBlockedName) < 0.5);
+   StringReplace(s, "\\", "\\\\");
+   StringReplace(s, "\"", "\\\"");
+   StringReplace(s, "\r", " ");
+   StringReplace(s, "\n", " ");
+   return s;
 }
 
-bool IsInTradeTime(datetime signalTime)
+string UpperTrim(string s)
 {
-   if(!EnableTimeFilter) return true;
-   datetime gmt7Time = ServerTimeToGMT7(signalTime);
-   MqlDateTime dt; TimeToStruct(gmt7Time, dt);
-   int h = dt.hour;
-   if(ScanStartHour <= ScanEndHour) return (h >= ScanStartHour && h < ScanEndHour);
-   else return (h >= ScanStartHour || h < ScanEndHour);
+   StringTrimLeft(s);
+   StringTrimRight(s);
+   StringToUpper(s);
+   return s;
 }
 
-//+------------------------------------------------------------------+
-//| HELPERS                                                          |
-//+------------------------------------------------------------------+
-void GetEnabledTimeframes(ENUM_TIMEFRAMES &tfs[], string &tss[])
+string JsonValue(string json, string key)
 {
-   ArrayResize(tfs, 0); ArrayResize(tss, 0);
-   if(EnableM15) { int i = ArraySize(tfs); ArrayResize(tfs, i+1); ArrayResize(tss, i+1); tfs[i] = PERIOD_M15; tss[i] = "M15"; }
-   if(EnableH1)  { int i = ArraySize(tfs); ArrayResize(tfs, i+1); ArrayResize(tss, i+1); tfs[i] = PERIOD_H1;  tss[i] = "H1"; }
-}
-
-double GetATRValue(int idx, string sym, ENUM_TIMEFRAMES tf, int p)
-{
-   if(idx < 0 || idx >= ArraySize(arrSymTF)) return 0;
-   if(arrSymTF[idx].atrHandle == INVALID_HANDLE)
-      arrSymTF[idx].atrHandle = iATR(sym, tf, p);
-   int h = arrSymTF[idx].atrHandle;
-   if(h == INVALID_HANDLE) return 0;
-   double b[]; ArraySetAsSeries(b, true);
-   if(CopyBuffer(h, 0, 0, 1, b) <= 0) return 0;
-   return (b[0] > 0 && MathIsValidNumber(b[0])) ? b[0] : 0;
-}
-
-ENUM_TIMEFRAMES StringToEnum(string ts)
-{
-   if(ts == "M15") return PERIOD_M15;
-   if(ts == "H1")  return PERIOD_H1;
-   if(ts == "H4")  return PERIOD_H4;
-   if(ts == "D1")  return PERIOD_D1;
-   return PERIOD_CURRENT;
-}
-
-bool IsSymbolExcluded(string sym)
-{
-   if(ExcludeSymbols == "") return false;
-   string upperSym = sym; StringToUpper(upperSym);
-   string excludeList[]; int count = StringSplit(ExcludeSymbols, ',', excludeList);
-   for(int i = 0; i < count; i++)
+   string token = "\"" + key + "\"";
+   int p = StringFind(json, token);
+   if(p < 0) return "";
+   p = StringFind(json, ":", p + StringLen(token));
+   if(p < 0) return "";
+   p++;
+   while(p < StringLen(json) && (StringGetCharacter(json,p)==' ' ||
+         StringGetCharacter(json,p)=='\t' || StringGetCharacter(json,p)=='\r' ||
+         StringGetCharacter(json,p)=='\n')) p++;
+   if(p >= StringLen(json)) return "";
+   if(StringGetCharacter(json,p)=='"')
    {
-      string exclude = excludeList[i]; StringTrimLeft(exclude); StringTrimRight(exclude); StringToUpper(exclude);
-      if(exclude != "" && StringFind(upperSym, exclude) >= 0) return true;
-   }
-   return false;
-}
-
-bool IsValidSLForDirection(string type, double entryPrice, double slPrice)
-{
-   if(entryPrice <= 0 || slPrice <= 0) return false;
-   if(type == "SELL") return (slPrice > entryPrice);
-   if(type == "BUY")  return (slPrice < entryPrice);
-   return false;
-}
-
-//+------------------------------------------------------------------+
-//| RSI & VOLUME FUNCTIONS                                           |
-//+------------------------------------------------------------------+
-double GetRSI(double &buf[], int shift)
-{
-   if(shift < 0 || shift >= ArraySize(buf)) return -1;
-   return buf[shift];
-}
-
-bool IsRSISwingHigh(double &buf[], int shift)
-{
-   double center = GetRSI(buf, shift);
-   if(center < 0) return false;
-   for(int i = 1; i <= MS_SwingBars; i++)
-   {
-      double left = GetRSI(buf, shift + i);
-      double right = GetRSI(buf, shift - i);
-      if(left < 0 || right < 0) return false;
-      if(center <= left || center <= right) return false;
-   }
-   return true;
-}
-
-bool IsRSISwingLow(double &buf[], int shift)
-{
-   double center = GetRSI(buf, shift);
-   if(center < 0) return false;
-   for(int i = 1; i <= MS_SwingBars; i++)
-   {
-      double left = GetRSI(buf, shift + i);
-      double right = GetRSI(buf, shift - i);
-      if(left < 0 || right < 0) return false;
-      if(center >= left || center >= right) return false;
-   }
-   return true;
-}
-
-double GetVolumeRatioAtShift(string sym, int shift, ENUM_TIMEFRAMES tf)
-{
-   int bars = Bars(sym, tf);
-   if(shift < 0 || shift >= bars) return 0;
-   const int MA_LEN = 11;
-   double bestVolRatio = 0;
-   bestVolRatio = MathMax(bestVolRatio, CalcVolumeRatio(sym, tf, shift, bars, MA_LEN));
-   if(shift - 1 >= 0)
-      bestVolRatio = MathMax(bestVolRatio, CalcVolumeRatio(sym, tf, shift - 1, bars, MA_LEN));
-   if(shift + 1 < bars && IsReversalCandle(sym, tf, shift))
-      bestVolRatio = MathMax(bestVolRatio, CalcVolumeRatio(sym, tf, shift + 1, bars, MA_LEN));
-   return bestVolRatio;
-}
-
-bool IsReversalCandle(string sym, ENUM_TIMEFRAMES tf, int shift)
-{
-   double open = iOpen(sym, tf, shift), close = iClose(sym, tf, shift), high = iHigh(sym, tf, shift), low = iLow(sym, tf, shift);
-   double body = MathAbs(close - open), range = high - low;
-   if(range <= 0) return false;
-   double upperWick = high - MathMax(open, close), lowerWick = MathMin(open, close) - low;
-   if(body / range < 0.3) return true;
-   if(upperWick > body * 2 && lowerWick < body * 0.5) return true;
-   if(lowerWick > body * 2 && upperWick < body * 0.5) return true;
-   if(close > open && upperWick < range * 0.1 && lowerWick < range * 0.1) return true;
-   if(close < open && upperWick < range * 0.1 && lowerWick < range * 0.1) return true;
-   if(shift + 1 < Bars(sym, tf))
-   {
-      double prevOpen = iOpen(sym, tf, shift + 1), prevClose = iClose(sym, tf, shift + 1);
-      if((close > open) && (prevClose < prevOpen) && (open < prevClose) && (close > prevOpen)) return true;
-      if((close < open) && (prevClose > prevOpen) && (open > prevClose) && (close < prevOpen)) return true;
-   }
-   return false;
-}
-
-double CalcVolumeRatio(string sym, ENUM_TIMEFRAMES tf, int shift, int bars, int maLen)
-{
-   if(shift + maLen > bars || maLen <= 0) return 0;
-   double sum = 0;
-   for(int i = shift; i < shift + maLen; i++)
-      sum += (double)iTickVolume(sym, tf, i);
-   double volMA = sum / maLen;
-   if(volMA <= 0) return 0;
-   return (double)iTickVolume(sym, tf, shift) / volMA;
-}
-
-bool CheckMiddleValid(string sym, ENUM_TIMEFRAMES tf, int shift2, int shift1, datetime refTime, bool isHigh)
-{
-   int s1 = iBarShift(sym, tf, refTime);
-   if(shift2 >= s1) return true;
-   double refPrice = isHigh ? iHigh(sym, tf, s1) : iLow(sym, tf, s1);
-   double newPrice = isHigh ? iHigh(sym, tf, shift2) : iLow(sym, tf, shift2);
-   double bound = isHigh ? MathMax(refPrice, newPrice) : MathMin(refPrice, newPrice);
-   for(int i = shift2 + 1; i < s1; i++)
-   {
-      double val = isHigh ? iHigh(sym, tf, i) : iLow(sym, tf, i);
-      if(isHigh && val > bound) return false;
-      if(!isHigh && val < bound) return false;
-   }
-   return true;
-}
-
-bool IsMonotonicStructure(string sym, ENUM_TIMEFRAMES tf, int shiftNew, int shiftOld, bool isBearish)
-{
-   if(shiftNew >= shiftOld) return false;
-   int reqBars = MathMax(1, RT_ConsecutiveBars);
-   int streak = 0;
-   if(isBearish)
-   {
-      double oldHigh = iHigh(sym, tf, shiftOld);
-      for(int i = shiftOld - 1; i >= shiftNew; i--)
+      string out = "";
+      for(int i = p+1; i < StringLen(json); i++)
       {
-         if(iHigh(sym, tf, i) > oldHigh) streak++;
-         else streak = 0;
-         if(streak >= reqBars) return true;
+         ushort ch = StringGetCharacter(json, i);
+         if(ch == '\\' && i+1 < StringLen(json))
+         {
+            ushort nx = StringGetCharacter(json, i+1);
+            if(nx == '"' || nx == '\\') { out += ShortToString(nx); i++; continue; }
+         }
+         if(ch == '"') return out;
+         out += ShortToString(ch);
       }
-      return false;
+      return "";
    }
-   else
+   int e = p;
+   while(e < StringLen(json) && StringGetCharacter(json,e)!=',' &&
+         StringGetCharacter(json,e)!='}' && StringGetCharacter(json,e)!=']' &&
+         StringGetCharacter(json,e)!='\n') e++;
+   string v = StringSubstr(json, p, e-p);
+   StringTrimLeft(v); StringTrimRight(v);
+   if(v == "null") return "";
+   return v;
+}
+
+string JsonObjectValue(string json, string key)
+{
+   string token = "\"" + key + "\"";
+   int p = StringFind(json, token);
+   if(p < 0) return "";
+   p = StringFind(json, ":", p + StringLen(token));
+   if(p < 0) return "";
+   p++;
+   while(p < StringLen(json) && StringGetCharacter(json,p)<=32) p++;
+   if(p >= StringLen(json) || StringGetCharacter(json,p)!='{') return "";
+   int depth = 0; bool quoted = false;
+   for(int i = p; i < StringLen(json); i++)
    {
-      double oldLow = iLow(sym, tf, shiftOld);
-      for(int i = shiftOld - 1; i >= shiftNew; i--)
+      ushort c = StringGetCharacter(json, i);
+      if(c == '"' && (i == 0 || StringGetCharacter(json,i-1) != '\\')) quoted = !quoted;
+      if(quoted) continue;
+      if(c == '{') depth++;
+      if(c == '}' && --depth == 0) return StringSubstr(json, p, i-p+1);
+   }
+   return "";
+}
+
+string JsonArrayValue(string json, string key)
+{
+   string token = "\"" + key + "\"";
+   int p = StringFind(json, token);
+   if(p < 0) return "";
+   p = StringFind(json, ":", p + StringLen(token));
+   if(p < 0) return "";
+   p++;
+   while(p < StringLen(json) && StringGetCharacter(json,p)<=32) p++;
+   if(p >= StringLen(json) || StringGetCharacter(json,p)!='[') return "";
+   int depth = 0; bool quoted = false;
+   for(int i = p; i < StringLen(json); i++)
+   {
+      ushort c = StringGetCharacter(json, i);
+      if(c == '"' && (i == 0 || StringGetCharacter(json,i-1) != '\\')) quoted = !quoted;
+      if(quoted) continue;
+      if(c == '[') depth++;
+      if(c == ']' && --depth == 0) return StringSubstr(json, p, i-p+1);
+   }
+   return "";
+}
+
+bool JsonBoolValue(string json, string key, bool defaultValue)
+{
+   string v = JsonValue(json, key);
+   if(v == "") return defaultValue;
+   if(v == "true" || v == "1") return true;
+   if(v == "false" || v == "0") return false;
+   return defaultValue;
+}
+
+void ExtractTopLevelObjects(string arrJson, string &outObjects[])
+{
+   ArrayResize(outObjects, 0);
+   int depth = 0; bool quoted = false; int start = -1;
+   for(int i = 0; i < StringLen(arrJson); i++)
+   {
+      ushort c = StringGetCharacter(arrJson, i);
+      if(c == '"' && (i == 0 || StringGetCharacter(arrJson, json_safe_idx(arrJson, i-1)) != '\\')) quoted = !quoted;
+      if(quoted) continue;
+      if(c == '{')
       {
-         if(iLow(sym, tf, i) < oldLow) streak++;
-         else streak = 0;
-         if(streak >= reqBars) return true;
+         if(depth == 0) start = i;
+         depth++;
       }
-      return false;
+      else if(c == '}')
+      {
+         depth--;
+         if(depth == 0 && start >= 0)
+         {
+            int n = ArraySize(outObjects);
+            ArrayResize(outObjects, n+1);
+            outObjects[n] = StringSubstr(arrJson, start, i-start+1);
+            start = -1;
+         }
+      }
    }
 }
 
-bool ShouldRetrack(int idx, double currentPrice, double lastTrackedPrice, string sym, ENUM_TIMEFRAMES tf, datetime currentBarTime, datetime lastTrackedBarTime)
+ushort json_safe_idx(string s, int idx)
 {
-   if(lastTrackedPrice <= 0) return true;
-   if(currentBarTime != lastTrackedBarTime) return true;
-   double atrValue = GetATRValue(idx, sym, tf, 14);
-   if(atrValue <= 0)
+   if(idx < 0 || idx >= StringLen(s)) return 0;
+   return StringGetCharacter(s, idx);
+}
+
+//--- HTTP -----------------------------------------------------------
+bool Request(string method, string path, string body, string &response, int &status)
+{
+   char data[], result[];
+   if(body != "")
    {
-      double changePercent = MathAbs(currentPrice - lastTrackedPrice) / lastTrackedPrice * 100.0;
-      return (changePercent >= 0.1);
+      StringToCharArray(body, data, 0, WHOLE_ARRAY, CP_UTF8);
+      int n = ArraySize(data); if(n > 0 && data[n-1] == 0) ArrayResize(data, n-1);
    }
-   double priceChange = MathAbs(currentPrice - lastTrackedPrice);
-   return (priceChange >= atrValue * RT_RetrackATRMultiplier);
+   else ArrayResize(data, 0);
+   string headers = "X-API-Key: " + ApiKey + "\r\nContent-Type: application/json\r\n";
+   string responseHeaders;
+   status = WebRequest(method, ServerBaseURL + path, headers, 5000, data, result, responseHeaders);
+   if(status == -1) { Print("[V9] WebRequest error=", GetLastError()); response=""; return false; }
+   response = CharArrayToString(result, 0, -1, CP_UTF8);
+   return status >= 200 && status < 300;
 }
 
-int GetSymbolTFIndex(string s, ENUM_TIMEFRAMES tf)
+//--- Dedup tracking -------------------------------------------------
+bool HasProcessedSignal(string id)
 {
-   for(int i = 0; i < ArraySize(arrSymTF); i++)
-      if(arrSymTF[i].sym == s && arrSymTF[i].tf == tf)
-         return i;
+   for(int i = 0; i < ArraySize(processedSignalIds); i++)
+      if(processedSignalIds[i] == id) return true;
+   return false;
+}
+
+void MarkProcessedSignal(string id)
+{
+   if(id == "" || HasProcessedSignal(id)) return;
+   int n = ArraySize(processedSignalIds);
+   if(n >= 500)
+   {
+      for(int i = 0; i < n-1; i++) processedSignalIds[i] = processedSignalIds[i+1];
+      processedSignalIds[n-1] = id;
+      return;
+   }
+   ArrayResize(processedSignalIds, n+1);
+   processedSignalIds[n] = id;
+}
+
+bool HasProcessedSltp(string id)
+{
+   for(int i = 0; i < ArraySize(processedSltpRequestIds); i++)
+      if(processedSltpRequestIds[i] == id) return true;
+   return false;
+}
+
+void MarkProcessedSltp(string id)
+{
+   if(id == "" || HasProcessedSltp(id)) return;
+   int n = ArraySize(processedSltpRequestIds);
+   if(n >= 500)
+   {
+      for(int i = 0; i < n-1; i++) processedSltpRequestIds[i] = processedSltpRequestIds[i+1];
+      processedSltpRequestIds[n-1] = id;
+      return;
+   }
+   ArrayResize(processedSltpRequestIds, n+1);
+   processedSltpRequestIds[n] = id;
+}
+
+bool HasProcessedPendingModify(string id)
+{
+   for(int i = 0; i < ArraySize(processedPendingModifyIds); i++)
+      if(processedPendingModifyIds[i] == id) return true;
+   return false;
+}
+
+void MarkProcessedPendingModify(string id)
+{
+   if(id == "" || HasProcessedPendingModify(id)) return;
+   int n = ArraySize(processedPendingModifyIds);
+   if(n >= 500)
+   {
+      for(int i = 0; i < n-1; i++) processedPendingModifyIds[i] = processedPendingModifyIds[i+1];
+      processedPendingModifyIds[n-1] = id;
+      return;
+   }
+   ArrayResize(processedPendingModifyIds, n+1);
+   processedPendingModifyIds[n] = id;
+}
+
+//--- Settings polling & GV sync -----------------------------------
+void InitDefaultSettings()
+{
+   g_settings.auto_trade_enabled             = true;
+   g_settings.trailing_enabled               = true;
+   g_settings.breakeven_enabled              = true;
+   g_settings.news_filter_enabled            = true;
+   g_settings.time_filter_enabled            = true;
+   g_settings.telegram_notifications_enabled = true;
+   g_settings.emergency_stop                 = false;
+   g_settings.emergency_close_all            = true;
+   g_settings.risk_money                     = 25.0;
+   g_settings.max_positions                  = 3;
+   g_settings.reward_risk_ratio              = 2.0;
+   g_settings.risk_tolerance_pct             = 0.5;
+   g_settings.commission_fallback            = 0.0;
+   g_settings.spread_buffer_points           = 20;
+   g_settings.trailing_trigger_rr            = 1.0;
+   g_settings.trailing_lock_rr               = 0.5;
+   g_settings.breakeven_trigger_rr           = 0.5;
+   g_settings.trailing_mode                  = "static";
+   g_settings.trading_start_hour             = 7;
+   g_settings.trading_end_hour               = 23;
+   g_settings.last_synced                    = 0;
+}
+
+void SyncDashboardGlobalVariables()
+{
+   GlobalVariableSet("GV_Dash_TimeFilterEnabled", g_settings.time_filter_enabled ? 1.0 : 0.0);
+   GlobalVariableSet("GV_Dash_NewsFilterEnabled", g_settings.news_filter_enabled ? 1.0 : 0.0);
+   GlobalVariableSet("GV_Dash_TradingStartHour",  (double)g_settings.trading_start_hour);
+   GlobalVariableSet("GV_Dash_TradingEndHour",    (double)g_settings.trading_end_hour);
+   GlobalVariableSet("GV_Dash_TelegramEnabled",   g_settings.telegram_notifications_enabled ? 1.0 : 0.0);
+   GlobalVariableSet("GV_Dash_EmergencyStop",     g_settings.emergency_stop ? 1.0 : 0.0);
+}
+
+void PollSettings()
+{
+   string response; int status;
+   if(!Request("GET", "/api/settings", "", response, status))
+   {
+      Print("[V9 SETTINGS] Poll failed HTTP=", status);
+      return;
+   }
+   string obj = JsonObjectValue(response, "settings");
+   if(obj == "") return;
+
+   g_settings.auto_trade_enabled             = JsonBoolValue(obj, "auto_trade_enabled", true);
+   g_settings.trailing_enabled               = JsonBoolValue(obj, "trailing_enabled", true);
+   g_settings.breakeven_enabled              = JsonBoolValue(obj, "breakeven_enabled", true);
+   g_settings.news_filter_enabled            = JsonBoolValue(obj, "news_filter_enabled", true);
+   g_settings.time_filter_enabled            = JsonBoolValue(obj, "time_filter_enabled", true);
+   g_settings.telegram_notifications_enabled = JsonBoolValue(obj, "telegram_notifications_enabled", true);
+   g_settings.emergency_stop                 = JsonBoolValue(obj, "emergency_stop", false);
+   g_settings.emergency_close_all            = JsonBoolValue(obj, "emergency_close_all", true);
+   g_settings.risk_money                     = StringToDouble(JsonValue(obj, "risk_money"));
+   g_settings.max_positions                  = (int)StringToInteger(JsonValue(obj, "max_positions"));
+   g_settings.reward_risk_ratio              = StringToDouble(JsonValue(obj, "reward_risk_ratio"));
+   g_settings.risk_tolerance_pct             = StringToDouble(JsonValue(obj, "risk_tolerance_pct"));
+   g_settings.commission_fallback            = StringToDouble(JsonValue(obj, "commission_fallback"));
+   g_settings.spread_buffer_points           = (int)StringToInteger(JsonValue(obj, "spread_buffer_points"));
+   g_settings.trailing_trigger_rr            = StringToDouble(JsonValue(obj, "trailing_trigger_rr"));
+   g_settings.trailing_lock_rr               = StringToDouble(JsonValue(obj, "trailing_lock_rr"));
+   g_settings.breakeven_trigger_rr           = StringToDouble(JsonValue(obj, "breakeven_trigger_rr"));
+   g_settings.trailing_mode                  = JsonValue(obj, "trailing_mode");
+   if(g_settings.trailing_mode == "") g_settings.trailing_mode = "static";
+   g_settings.trading_start_hour             = (int)StringToInteger(JsonValue(obj, "trading_start_hour"));
+   g_settings.trading_end_hour               = (int)StringToInteger(JsonValue(obj, "trading_end_hour"));
+   g_settings.last_synced                    = TimeCurrent();
+
+   if(g_settings.risk_money <= 0) g_settings.risk_money = 25;
+   if(g_settings.max_positions < 0) g_settings.max_positions = 0;
+   if(g_settings.reward_risk_ratio <= 0) g_settings.reward_risk_ratio = 2.0;
+   if(g_settings.spread_buffer_points < 0) g_settings.spread_buffer_points = 0;
+   if(g_settings.trading_start_hour < 0 || g_settings.trading_start_hour > 23) g_settings.trading_start_hour = 7;
+   if(g_settings.trading_end_hour < 0 || g_settings.trading_end_hour > 23) g_settings.trading_end_hour = 23;
+
+   SyncDashboardGlobalVariables();
+}
+
+//--- Commission cache -----------------------------------------------
+void PollCommissions()
+{
+   string response; int status;
+   if(!Request("GET", "/api/mt5/commissions", "", response, status))
+   {
+      Print("[V9 COMM] Poll failed HTTP=", status);
+      return;
+   }
+   string arr = JsonArrayValue(response, "items");
+   if(arr == "") return;
+
+   string items[];
+   ExtractTopLevelObjects(arr, items);
+   ArrayResize(g_commissionCache, 0);
+   string digest = "";
+
+   for(int i = 0; i < ArraySize(items); i++)
+   {
+      SCommission c;
+      c.symbol             = UpperTrim(JsonValue(items[i], "symbol"));
+      c.commission_per_lot = StringToDouble(JsonValue(items[i], "commission_per_lot"));
+      c.swap_long          = StringToDouble(JsonValue(items[i], "swap_long"));
+      c.swap_short         = StringToDouble(JsonValue(items[i], "swap_short"));
+      c.contract_size      = StringToDouble(JsonValue(items[i], "contract_size"));
+      c.tick_value         = StringToDouble(JsonValue(items[i], "tick_value"));
+      c.point_size         = StringToDouble(JsonValue(items[i], "point_size"));
+      c.received_at        = TimeCurrent();
+      if(c.symbol == "") continue;
+      int n = ArraySize(g_commissionCache);
+      ArrayResize(g_commissionCache, n+1);
+      g_commissionCache[n] = c;
+      digest += c.symbol + ":" + DoubleToString(c.commission_per_lot, 4) + ";";
+   }
+   if(digest != g_lastCommissionDigest)
+   {
+      g_lastCommissionDigest = digest;
+      Print("[V9 COMM] Updated cache: ", ArraySize(g_commissionCache), " symbols");
+   }
+}
+
+double GetCommissionPerLot(string symbol)
+{
+   string symUp = symbol;
+   StringToUpper(symUp);
+   double c = g_settings.commission_fallback;
+   for(int i = 0; i < ArraySize(g_commissionCache); i++)
+      if(g_commissionCache[i].symbol == symUp)
+      { c = g_commissionCache[i].commission_per_lot; break; }
+   if(CommissionIsRoundTurn) c /= 2.0;
+   return c;
+}
+
+//--- Volume normalization ------------------------------------------
+double NormalizeVolume(string symbol, double raw)
+{
+   double vmin = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   double vmax = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+   double step = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+   if(step <= 0) step = 0.01;
+   if(raw < vmin || raw > vmax) return 0;
+   double v = MathFloor((raw + 1e-9) / step) * step;
+   if(v < vmin) return 0;
+   return NormalizeDouble(v, 8);
+}
+
+int VolumeStepDigits(string symbol)
+{
+   double step = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+   if(step <= 0) return 2;
+   int d = 0;
+   double tmp = step;
+   while(tmp < 1.0 && d < 8) { tmp *= 10; d++; }
+   return d;
+}
+
+ENUM_ORDER_TYPE_FILLING PickFilling(string symbol)
+{
+   long modes = SymbolInfoInteger(symbol, SYMBOL_FILLING_MODE);
+   if((modes & SYMBOL_FILLING_FOK) != 0) return ORDER_FILLING_FOK;
+   if((modes & SYMBOL_FILLING_IOC) != 0) return ORDER_FILLING_IOC;
+   return ORDER_FILLING_RETURN;
+}
+
+//--- Unified risk breakdown ----------------------------------------
+SRiskBreakdown ComputeRiskBreakdown(string symbol, double slDistance, double volume)
+{
+   SRiskBreakdown r;
+   r.valid = false;
+   r.slRisk = r.commission = r.spreadCost = r.total = r.riskPerLot = 0;
+
+   double tickSize  = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_SIZE);
+   double tickValue = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE_LOSS);
+   if(tickValue <= 0) tickValue = SymbolInfoDouble(symbol, SYMBOL_TRADE_TICK_VALUE);
+   double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+   double ask   = SymbolInfoDouble(symbol, SYMBOL_ASK);
+   double bid   = SymbolInfoDouble(symbol, SYMBOL_BID);
+
+   if(tickSize <= 0 || tickValue <= 0 || point <= 0 || ask <= 0 || bid <= 0)
+   {
+      r.error = StringFormat("Bad symbol params %s (tickSize=%.10f tickVal=%.10f point=%.10f ask=%.5f bid=%.5f)",
+         symbol, tickSize, tickValue, point, ask, bid);
+      return r;
+   }
+   if(slDistance <= 0 || volume <= 0)
+   {
+      r.error = "slDistance/volume <= 0";
+      return r;
+   }
+
+   double spreadPoints = (ask - bid) / point + g_settings.spread_buffer_points;
+
+   r.slRisk     = (slDistance / tickSize) * tickValue * volume;
+   r.commission = GetCommissionPerLot(symbol) * volume;
+   r.spreadCost = (spreadPoints * point / tickSize) * tickValue * volume;
+   r.total      = r.slRisk + r.commission + r.spreadCost;
+   r.riskPerLot = r.total / volume;
+   r.valid      = true;
+   return r;
+}
+
+//--- Lot calc (dùng ComputeRiskBreakdown, làm tròn xuống chuẩn step) -
+double CalculateLotWithCommission(string symbol, double slDistance, double riskMoney)
+{
+   if(riskMoney <= 0) return 0;
+
+   SRiskBreakdown rb = ComputeRiskBreakdown(symbol, slDistance, 1.0);
+   if(!rb.valid) { Print("[V9 LOT] ", rb.error); return 0; }
+
+   double lot = riskMoney / rb.riskPerLot;
+   double vmin = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   double vmax = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+   double step = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+   if(step <= 0)
+   {
+      Print("[V9 LOT] symbol ", symbol, " VOLUME_STEP invalid=", step);
+      return 0;
+   }
+
+   int stepDigits = VolumeStepDigits(symbol);
+   lot = MathFloor((lot + 1e-9) / step) * step;
+   lot = NormalizeDouble(lot, stepDigits);
+
+   if(lot < vmin)
+   {
+      if(AllowMinLotWhenExceedBudget && vmin > 0 && vmin <= vmax)
+         return NormalizeDouble(vmin, stepDigits);
+      return 0;
+   }
+   if(lot > vmax) lot = vmax;
+   return lot;
+}
+
+//--- Count positions -----------------------------------------------
+int CountRealPositions()
+{
+   int n = 0;
+   for(int i = PositionsTotal()-1; i >= 0; i--)
+      if(posInfo.SelectByIndex(i) && posInfo.Magic() == MagicNumber) n++;
+   return n;
+}
+
+int CountRealLimitOrders()
+{
+   int n = 0;
+   for(int i = OrdersTotal()-1; i >= 0; i--)
+   {
+      ulong tk = OrderGetTicket(i);
+      if(tk == 0) continue;
+      if(OrderGetInteger(ORDER_MAGIC) != MagicNumber) continue;
+      ENUM_ORDER_TYPE ot = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+      if(ot == ORDER_TYPE_BUY_LIMIT || ot == ORDER_TYPE_SELL_LIMIT)
+         n++;
+   }
+   return n;
+}
+
+int CountRealExposure()
+{
+   return CountRealPositions() + CountRealLimitOrders();
+}
+
+//--- Ack ------------------------------------------------------------
+bool Ack(string id, string state, string message)
+{
+   Print("[V9 ACK] signal=", id, " status=", state, " message=", message);
+   string body = "{\"signal_id\":\""+JsonEscape(id)+"\",\"status\":\""+JsonEscape(state)+"\",\"message\":\""+JsonEscape(message)+"\"}";
+   string response; int status;
+   return Request("POST", "/api/mt5/ack", body, response, status);
+}
+
+//--- Trailing state tracking ----------------------------------------
+int FindTrailIndex(ulong ticket)
+{
+   for(int i = 0; i < ArraySize(g_trailStates); i++)
+      if(g_trailStates[i].ticket == ticket) return i;
    return -1;
 }
 
-int InitSymTF(string sym, ENUM_TIMEFRAMES tf, string tfStr)
+void PruneTrailStates()
 {
-   int idx = ArraySize(arrSymTF);
-   ArrayResize(arrSymTF, idx + 1);
-   ZeroMemory(arrSymTF[idx]);
-   arrSymTF[idx].sym = sym;
-   arrSymTF[idx].tf = tf;
-   arrSymTF[idx].tfStr = tfStr;
-   arrSymTF[idx].rsiHandle = iRSI(sym, tf, 14, PRICE_CLOSE);
-   arrSymTF[idx].atrHandle = iATR(sym, tf, 14);
-   arrSymTF[idx].lastShiftCached = MS_BARS_DEFAULT - 1;
-   arrSymTF[idx].lastHighShift = -9999;
-   arrSymTF[idx].lastLowShift = -9999;
-   arrSymTF[idx].histBearTime = 0;
-   arrSymTF[idx].histBullTime = 0;
-   arrSymTF[idx].lastBearNotifyTime = 0;
-   arrSymTF[idx].lastBullNotifyTime = 0;
-   arrSymTF[idx].lastStrongSignalPrintTime = 0;
-   arrSymTF[idx].lastStrongSignalKey = "";
-   arrSymTF[idx].lastDirectEaSignalKey = "";
-   arrSymTF[idx].lastDirectEaSignalTime = 0;
-   arrSymTF[idx].lastBearRegRTPrice = 0;
-   arrSymTF[idx].lastBearHidRTPrice = 0;
-   arrSymTF[idx].lastBullRegRTPrice = 0;
-   arrSymTF[idx].lastBullHidRTPrice = 0;
-   arrSymTF[idx].lastBearRegRTTime = 0;
-   arrSymTF[idx].lastBearHidRTTime = 0;
-   arrSymTF[idx].lastBullRegRTTime = 0;
-   arrSymTF[idx].lastBullHidRTTime = 0;
-   ArraySetAsSeries(arrSymTF[idx].rsiBuf, true);
-   return idx;
-}
-
-//+------------------------------------------------------------------+
-//| SIGNAL OUTPUT FUNCTIONS                                          |
-//+------------------------------------------------------------------+
-void SendDivergenceNotify(string sym, string tfStr, string divType, string direction, string timeStr)
-{
-   if(!EnablePushNotify) return;
-   string msg = StringFormat("[IND] %s %s %s %s Div | %s", sym, tfStr, direction, divType, timeStr);
-   if(SendNotification(msg))
-      Print("Push sent: ", msg);
-   else
-      Print("Push FAILED! Error: ", GetLastError());
-}
-
-void WriteStrongSignalToGV(string sym, string tfStr, string type, double entryPrice, double slPrice, double highPrice, double lowPrice, bool isStrong, string divType, datetime signalTime, double score = 0)
-{
-   if(!EnableSignalOutput || !isStrong) return;
-   if(!IsValidSLForDirection(type, entryPrice, slPrice)) return;
-   string prefix = "DIVSIGNAL_";
-   GlobalVariableSet(prefix + "TYPE", type == "SELL" ? -1 : 1);
-   GlobalVariableSet(prefix + "ORDER_TYPE", 0);
-   GlobalVariableSet(prefix + "ENTRY", entryPrice);
-   GlobalVariableSet(prefix + "SL", slPrice);
-   GlobalVariableSet(prefix + "HIGH", highPrice);
-   GlobalVariableSet(prefix + "LOW", lowPrice);
-   GlobalVariableSet(prefix + "TIME", (double)signalTime);
-   GlobalVariableSet(prefix + "ACTIVE", 1);
-   GlobalVariableSet(prefix + "TF", StringToEnum(tfStr));
-   if(score > 0) GlobalVariableSet(prefix + "SCORE", score);
-   int q = FileOpen("DIVSIGNAL_QUEUE.txt", FILE_READ | FILE_WRITE | FILE_TXT | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE);
-   if(q != INVALID_HANDLE)
+   for(int i = ArraySize(g_trailStates) - 1; i >= 0; i--)
    {
-      FileSeek(q, 0, SEEK_END);
-      string queueLine = StringFormat("%s|%s|%s|%s|%d|%.8f|%.8f|%.2f|%d\r\n", sym, tfStr, type, divType, (int)signalTime, entryPrice, slPrice, score, (int)TimeCurrent());
-      FileWriteString(q, queueLine);
-      FileClose(q);
-   }
-   int h = FileOpen("DIVSIGNAL_SYMBOL.txt", FILE_WRITE | FILE_TXT | FILE_COMMON);
-   if(h != INVALID_HANDLE)
-   {
-      FileWriteString(h, sym + "|" + tfStr + "|" + type);
-      FileClose(h);
-   }
-}
-
-void WriteHistoricalDivergence(string sym, string tfStr, bool isBearish, bool isRegular, datetime t1, double rsi1, double price1, datetime t2, double rsi2, double price2, double volRatio)
-{
-   if(!EnableSignalOutput) return;
-   string prefix = "DIVDATA_" + sym + "_" + tfStr + "_";
-   string type = isBearish ? "BEAR" : "BULL";
-   int slot = -1;
-   datetime oldestTime = D'2099.01.01';
-   for(int i = 0; i < 20; i++)
-   {
-      string key = prefix + "HIST_" + type + "_" + IntegerToString(i) + "_TIME";
-      if(!GlobalVariableCheck(key))
+      if(!PositionSelectByTicket(g_trailStates[i].ticket))
       {
-         slot = i;
-         break;
-      }
-      else
-      {
-         datetime t = (datetime)GlobalVariableGet(key);
-         if(t < oldestTime) { oldestTime = t; slot = i; }
-      }
-   }
-   if(slot >= 0)
-   {
-      string base = prefix + "HIST_" + type + "_" + IntegerToString(slot);
-      GlobalVariableSet(base + "_TIME", (double)t2);
-      GlobalVariableSet(base + "_T1", (double)t1);
-      GlobalVariableSet(base + "_RSI1", rsi1);
-      GlobalVariableSet(base + "_PRICE1", price1);
-      GlobalVariableSet(base + "_T2", (double)t2);
-      GlobalVariableSet(base + "_RSI2", rsi2);
-      GlobalVariableSet(base + "_PRICE2", price2);
-      GlobalVariableSet(base + "_ISREG", isRegular ? 1 : 0);
-      GlobalVariableSet(base + "_VOL", volRatio);
-      GlobalVariableSet(base + "_ACTIVE", 1);
-   }
-}
-
-void WriteRTDivergence(string sym, string tfStr, bool isBearish, bool isRegular, datetime t1, double rsi1, double price1, datetime t2, double rsi2, double price2)
-{
-   if(!EnableSignalOutput) return;
-   string prefix = "DIVDATA_" + sym + "_" + tfStr + "_";
-   string type = isBearish ? "BEAR" : "BULL";
-   GlobalVariableSet(prefix + type + "_T1", (double)t1);
-   GlobalVariableSet(prefix + type + "_RSI1", rsi1);
-   GlobalVariableSet(prefix + type + "_PRICE1", price1);
-   GlobalVariableSet(prefix + type + "_T2", (double)t2);
-   GlobalVariableSet(prefix + type + "_RSI2", rsi2);
-   GlobalVariableSet(prefix + type + "_PRICE2", price2);
-   GlobalVariableSet(prefix + type + "_ISREG", isRegular ? 1 : 0);
-   GlobalVariableSet(prefix + type + "_ACTIVE", 1);
-   GlobalVariableSet(prefix + type + "_TIME", (double)TimeCurrent());
-}
-
-void ClearInactiveRTDivergence(string sym, string tfStr, ENUM_TIMEFRAMES tf)
-{
-   string prefix = "DIVDATA_" + sym + "_" + tfStr + "_";
-   datetime now = TimeCurrent();
-
-   if(GlobalVariableCheck(prefix + "BEAR_ACTIVE") && GlobalVariableGet(prefix + "BEAR_ACTIVE") == 1)
-   {
-      bool shouldClear = false;
-      if(GlobalVariableCheck(prefix + "BEAR_TIME"))
-      {
-         if(now - (datetime)GlobalVariableGet(prefix + "BEAR_TIME") > 10)
-            shouldClear = true;
-      }
-      else shouldClear = true;
-      if(!shouldClear && GlobalVariableCheck(prefix + "BEAR_T2"))
-      {
-         datetime t2 = (datetime)GlobalVariableGet(prefix + "BEAR_T2");
-         double price2 = GlobalVariableGet(prefix + "BEAR_PRICE2");
-         int curShift = iBarShift(sym, tf, TimeCurrent());
-         int divShift = iBarShift(sym, tf, t2);
-         if(divShift >= 0 && curShift >= 0)
-            for(int i = divShift - 1; i >= curShift; i--)
-               if(iHigh(sym, tf, i) > price2)
-               { shouldClear = true; break; }
-      }
-      if(shouldClear)
-         GlobalVariableSet(prefix + "BEAR_ACTIVE", 0);
-   }
-
-   if(GlobalVariableCheck(prefix + "BULL_ACTIVE") && GlobalVariableGet(prefix + "BULL_ACTIVE") == 1)
-   {
-      bool shouldClear = false;
-      if(GlobalVariableCheck(prefix + "BULL_TIME"))
-      {
-         if(now - (datetime)GlobalVariableGet(prefix + "BULL_TIME") > 10)
-            shouldClear = true;
-      }
-      else shouldClear = true;
-      if(!shouldClear && GlobalVariableCheck(prefix + "BULL_T2"))
-      {
-         datetime t2 = (datetime)GlobalVariableGet(prefix + "BULL_T2");
-         double price2 = GlobalVariableGet(prefix + "BULL_PRICE2");
-         int curShift = iBarShift(sym, tf, TimeCurrent());
-         int divShift = iBarShift(sym, tf, t2);
-         if(divShift >= 0 && curShift >= 0)
-            for(int i = divShift - 1; i >= curShift; i--)
-               if(iLow(sym, tf, i) < price2)
-               { shouldClear = true; break; }
-      }
-      if(shouldClear)
-         GlobalVariableSet(prefix + "BULL_ACTIVE", 0);
-   }
-}
-
-void ClearAllDivergenceData(string sym, string tfStr)
-{
-   string prefix = "DIVDATA_" + sym + "_" + tfStr + "_";
-   GlobalVariableDel(prefix + "BEAR_ACTIVE");
-   GlobalVariableDel(prefix + "BULL_ACTIVE");
-   for(int i = 0; i < 20; i++)
-   {
-      GlobalVariableDel(prefix + "HIST_BEAR_" + IntegerToString(i) + "_TIME");
-      GlobalVariableDel(prefix + "HIST_BEAR_" + IntegerToString(i) + "_ACTIVE");
-      GlobalVariableDel(prefix + "HIST_BULL_" + IntegerToString(i) + "_TIME");
-      GlobalVariableDel(prefix + "HIST_BULL_" + IntegerToString(i) + "_ACTIVE");
-   }
-}
-
-void CleanupOldSignals()
-{
-   string prefix = "DIVSIGNAL_";
-   if(GlobalVariableCheck(prefix + "TIME"))
-   {
-      if(TimeCurrent() - (datetime)GlobalVariableGet(prefix + "TIME") > SignalExpirySeconds)
-      {
-         GlobalVariableSet(prefix + "ACTIVE", 0);
-         FileDelete("DIVSIGNAL_SYMBOL.txt", FILE_COMMON);
+         int last = ArraySize(g_trailStates) - 1;
+         for(int j = i; j < last; j++)
+            g_trailStates[j] = g_trailStates[j+1];
+         ArrayResize(g_trailStates, last);
       }
    }
 }
 
-void PrintStrongSignalOnce(SSymbolTFData &data, string sym, string tfStr, string type, string divType, double entryPrice, double slPrice, datetime signalTime, string signalKey)
+//--- Trailing + Break-Even -----------------------------------------
+void ManageTrailing()
 {
-   if(signalKey == data.lastStrongSignalKey) return;
-   datetime gmt7Time = ServerTimeToGMT7(signalTime);
-   int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
-   if(digits <= 0) digits = 5;
-   Print("STRONG SIGNAL SENT: ", sym, " ", tfStr, " ", type, " ", divType, " Entry=", DoubleToString(entryPrice, digits), " SL=", DoubleToString(slPrice, digits), " Time=", TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES));
-   data.lastStrongSignalKey = signalKey;
-   data.lastStrongSignalPrintTime = TimeCurrent();
-}
+   if(!g_settings.trailing_enabled && !g_settings.breakeven_enabled) return;
+   if(g_settings.emergency_stop) return;
 
-void PrintRTSignalChange(int currentRTCount, string comment)
-{
-   datetime now = TimeCurrent();
-   if(now - g_lastRTPrintTime >= RTPrintCooldownSeconds || currentRTCount != g_lastRTCount)
+   PruneTrailStates();
+
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
    {
-      g_lastRTPrintTime = now;
-      g_lastRTCount = currentRTCount;
-   }
-}
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !posInfo.SelectByTicket(ticket)) continue;
+      if((int)PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
 
-void AddTodaySignal(string sym, string tfStr, string type, string divType, string signalType, datetime time1, datetime time2, double price1, double price2, double rsi1, double rsi2)
-{
-   for(int i = 0; i < g_todaySignalCount; i++)
-      if(g_todaySignals[i].sym == sym && g_todaySignals[i].tfStr == tfStr && g_todaySignals[i].type == type && g_todaySignals[i].signalType == signalType && g_todaySignals[i].time == time2)
-         return;
-   int idx = g_todaySignalCount;
-   ArrayResize(g_todaySignals, idx + 1);
-   g_todaySignals[idx].sym = sym;
-   g_todaySignals[idx].tfStr = tfStr;
-   g_todaySignals[idx].type = type;
-   g_todaySignals[idx].divType = divType;
-   g_todaySignals[idx].signalType = signalType;
-   g_todaySignals[idx].time = time2;
-   g_todaySignals[idx].time1 = (time1 > 0) ? time1 : time2;
-   g_todaySignals[idx].time2 = (time2 > 0) ? time2 : time1;
-   g_todaySignals[idx].price1 = price1;
-   g_todaySignals[idx].price2 = price2;
-   g_todaySignals[idx].rsi1 = rsi1;
-   g_todaySignals[idx].rsi2 = rsi2;
-   g_todaySignalCount++;
-}
+      string sym = PositionGetString(POSITION_SYMBOL);
+      bool isBuy = (PositionGetInteger(POSITION_TYPE) == POSITION_TYPE_BUY);
+      double entryPrice = PositionGetDouble(POSITION_PRICE_OPEN);
+      double currentSL = PositionGetDouble(POSITION_SL);
+      double currentTP = PositionGetDouble(POSITION_TP);
+      double currentPrice = isBuy ? SymbolInfoDouble(sym, SYMBOL_BID) : SymbolInfoDouble(sym, SYMBOL_ASK);
+      if(currentPrice <= 0) continue;
 
-void PublishTodaySignals()
-{
-   int h = FileOpen("DIVTODAY_SIGNALS.txt", FILE_WRITE | FILE_TXT | FILE_COMMON | FILE_SHARE_READ);
-   if(h == INVALID_HANDLE) return;
-   datetime nowGMT7 = GetGMT7Now();
-   FileWriteString(h, "TIME|" + IntegerToString((int)nowGMT7) + "\r\n");
-   for(int i = 0; i < g_todaySignalCount; i++)
-   {
-      string direction = (g_todaySignals[i].type == "BEAR") ? "SELL" : "BUY";
-      string line = StringFormat("%s|%s|%s|%s|%s|%d|%.8f|%.8f|%.2f|%.2f|%d|%d\r\n",
-         g_todaySignals[i].sym, g_todaySignals[i].tfStr, direction, g_todaySignals[i].divType,
-         g_todaySignals[i].signalType, (int)g_todaySignals[i].time,
-         g_todaySignals[i].price1, g_todaySignals[i].price2,
-         g_todaySignals[i].rsi1, g_todaySignals[i].rsi2,
-         (int)g_todaySignals[i].time1, (int)g_todaySignals[i].time2);
-      FileWriteString(h, line);
-   }
-   FileClose(h);
-}
+      double point = SymbolInfoDouble(sym, SYMBOL_POINT);
+      int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+      int stopLevel = (int)SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL);
+      double minDist = stopLevel * point;
 
-void CleanupInvalidRTTodaySignals()
-{
-   for(int i = g_todaySignalCount - 1; i >= 0; i--)
-   {
-      if(g_todaySignals[i].signalType == "RT")
+      int idx = FindTrailIndex(ticket);
+      if(idx < 0)
       {
-         string prefix = "DIVDATA_" + g_todaySignals[i].sym + "_" + g_todaySignals[i].tfStr + "_";
-         string type = g_todaySignals[i].type;
-         if(!GlobalVariableCheck(prefix + type + "_ACTIVE") || GlobalVariableGet(prefix + type + "_ACTIVE") == 0)
+         STrailState ns;
+         ns.ticket = ticket;
+         ns.sym = sym;
+         ns.entryPrice = entryPrice;
+         ns.initialSL = currentSL;
+         ns.oneR = MathAbs(entryPrice - currentSL);
+         if(ns.oneR <= point) ns.oneR = 10 * point;
+         ns.lockedSL = 0;
+         ns.breakEvenDone = false;
+         ns.trailingActivated = false;
+         int n = ArraySize(g_trailStates);
+         ArrayResize(g_trailStates, n+1);
+         g_trailStates[n] = ns;
+         idx = n;
+      }
+
+      STrailState state = g_trailStates[idx];
+
+      double profitDist = isBuy ? (currentPrice - entryPrice) : (entryPrice - currentPrice);
+      double rAchieved = (state.oneR > 0) ? (profitDist / state.oneR) : 0;
+
+      double newSL = currentSL;
+      bool needModify = false;
+      string modifyReason = "";
+
+      if(g_settings.breakeven_enabled && !state.breakEvenDone && rAchieved >= g_settings.breakeven_trigger_rr)
+      {
+         double beSL = isBuy ? (entryPrice + 0.2 * state.oneR) : (entryPrice - 0.2 * state.oneR);
+         bool beBetter = isBuy ? (beSL > currentSL + point) : (beSL < currentSL - point);
+         bool priceFarEnough = isBuy ? (currentPrice > entryPrice + minDist) : (currentPrice < entryPrice - minDist);
+         if(beBetter && priceFarEnough && !state.trailingActivated)
          {
-            if(i < g_todaySignalCount - 1)
-               g_todaySignals[i] = g_todaySignals[g_todaySignalCount - 1];
-            g_todaySignalCount--;
+            newSL = beSL;
+            state.breakEvenDone = true;
+            needModify = true;
+            modifyReason = "BE";
          }
       }
-   }
-}
 
-void ClearOldTodaySignals()
-{
-   datetime gmt7Now = GetGMT7Now();
-   datetime todayStartGMT7 = gmt7Now - (gmt7Now % 86400);
-   int validCount = 0;
-   for(int i = 0; i < g_todaySignalCount; i++)
-   {
-      datetime signalGMT7 = ServerTimeToGMT7(g_todaySignals[i].time);
-      if(signalGMT7 >= todayStartGMT7)
+      if(g_settings.trailing_enabled && rAchieved >= g_settings.trailing_trigger_rr)
       {
-         if(validCount != i)
-            g_todaySignals[validCount] = g_todaySignals[i];
-         validCount++;
-      }
-   }
-   g_todaySignalCount = validCount;
-}
+         double trailDist = g_settings.trailing_lock_rr * state.oneR;
 
-string BuildTodaySignalsDisplay()
-{
-   CleanupInvalidRTTodaySignals();
-   PublishTodaySignals();
-   SyncTodaySignalsToServer(false);
-
-   string display = "\nTODAY SIGNALS - " + IntegerToString(g_todaySignalCount) + " signals\n";
-   display += " \n";
-
-   if(g_todaySignalCount > 0)
-   {
-      for(int i = 0; i < g_todaySignalCount - 1; i++)
-         for(int j = i + 1; j < g_todaySignalCount; j++)
-            if(ServerTimeToGMT7(g_todaySignals[i].time) < ServerTimeToGMT7(g_todaySignals[j].time))
+         if(g_settings.trailing_mode == "static")
+         {
+            if(!state.trailingActivated)
             {
-               STodaySignal tmp = g_todaySignals[i];
-               g_todaySignals[i] = g_todaySignals[j];
-               g_todaySignals[j] = tmp;
+               double activationPrice = isBuy
+                  ? (entryPrice + g_settings.trailing_trigger_rr * state.oneR)
+                  : (entryPrice - g_settings.trailing_trigger_rr * state.oneR);
+               state.lockedSL = isBuy
+                  ? (activationPrice - trailDist)
+                  : (activationPrice + trailDist);
+               state.trailingActivated = true;
+               state.breakEvenDone = true;
             }
-      for(int i = 0; i < g_todaySignalCount; i++)
-      {
-         string icon = (g_todaySignals[i].type == "BEAR") ? "[SELL]" : "[BUY]";
-         string sigTag = (g_todaySignals[i].signalType == "RT") ? " [RT]" : "";
-         datetime gmt7Time = ServerTimeToGMT7(g_todaySignals[i].time);
-         string timeStr = TimeToString(gmt7Time, TIME_MINUTES);
-         display += StringFormat("%s%s %s %s [%s] %s\n", icon, sigTag, g_todaySignals[i].sym, g_todaySignals[i].tfStr, g_todaySignals[i].divType, timeStr);
-      }
-   }
-   else
-   {
-      display += "No signals yet\n";
-   }
-
-   display += "----------------------------------------\n";
-   return display;
-}
-
-//+------------------------------------------------------------------+
-//| DISPLAY FUNCTIONS                                                |
-//+------------------------------------------------------------------+
-void Draw(string divergenceComment)
-{
-   SHudConfig hud = GetHudConfig();
-   if(!hud.enabled)
-   {
-      ClearAll();
-      return;
-   }
-
-   int rowH = 18;
-   int y = hud.topMargin;
-
-   if(hud.showHeader)
-   {
-      datetime gmt7Time = GetGMT7Now();
-      string timeStr = TimeToString(gmt7Time, TIME_MINUTES | TIME_SECONDS);
-      string dotChar = g_heartbeatState ? "●" : "○";
-      string speedStr = (g_lastScanDurationMs >= 1000)
-         ? DoubleToString((double)g_lastScanDurationMs / 1000.0, 1) + "s"
-         : IntegerToString((int)g_lastScanDurationMs) + "ms";
-
-      string timeFilterStr = EnableTimeFilter ? " | " + IntegerToString(ScanStartHour) + "h-" + IntegerToString(ScanEndHour) + "h" : " | 24/7";
-      string line1Status = StringFormat("%s %s | %s | %s%s",
-                                       dotChar, speedStr, g_statusText, timeStr, timeFilterStr);
-      UpdMsg("HEARTBEAT", line1Status, hud.startX, y, g_statusColor, hud.fontHeader, true);
-      y += rowH + 2;
-   }
-   else
-   {
-      string hn = P + "HEARTBEAT";
-      if(ObjectFind(0, hn) >= 0) ObjectDelete(0, hn);
-   }
-
-   if(hud.showFeatures)
-   {
-      string tfListStr = "";
-      if(EnableM15) tfListStr += "M15 ";
-      if(EnableH1)  tfListStr += "H1 ";
-
-      string signalStatus = EnableSignalOutput ? "SIG:ON" : "SIG:OFF";
-      string notifyStatus = EnablePushNotify ? "PUSH:ON" : "PUSH:OFF";
-      string monoStatus = RT_RequireMonotonicMove ? "MONO:ON" : "MONO:OFF";
-      string newsStatus = "";
-      if(IsNewsFilterEnabledEffective())
-         newsStatus = g_isNewsBlocked ? "NEWS:BLOCKED" : "NEWS:SAFE";
-      else
-         newsStatus = "NEWS:OFF";
-
-      string line2Features = StringFormat("%s | %s | %s | %s | %s",
-                                         tfListStr, signalStatus, notifyStatus, monoStatus, newsStatus);
-      color line2Color = g_isNewsBlocked ? clrOrangeRed : clrDimGray;
-      UpdMsg("FEATURES", line2Features, hud.startX, y, line2Color, 9, false);
-      y += rowH + 6;
-   }
-   else
-   {
-      string fn = P + "FEATURES";
-      if(ObjectFind(0, fn) >= 0) ObjectDelete(0, fn);
-   }
-
-   if(hud.showHeader || hud.showFeatures)
-   {
-      UpdMsg("LINE_DECOR_1", "================================================================================", hud.startX, y, clrDarkGray, 8);
-      y += 10;
-   }
-   else
-   {
-      string ln = P + "LINE_DECOR_1";
-      if(ObjectFind(0, ln) >= 0) ObjectDelete(0, ln);
-   }
-
-   if(divergenceComment != "" && StringFind(divergenceComment, "CRASHED") < 0)
-   {
-      string divLines[];
-      int divCount = StringSplit(divergenceComment, '\n', divLines);
-      bool inHistorical = false, inToday = false;
-      int validLineCount = 0;
-
-      for(int i = 0; i < divCount; i++)
-      {
-         if(divLines[i] == "") continue;
-
-         if(StringFind(divLines[i], "[M15]") >= 0 || StringFind(divLines[i], "[H1]") >= 0)
-         {
-            inHistorical = true;
-            inToday = false;
-            y += 4;
-         }
-         if(StringFind(divLines[i], "TODAY") >= 0)
-         {
-            inHistorical = false;
-            inToday = true;
-            y += 4;
-         }
-
-         if(inToday && !hud.showToday) continue;
-         if(inHistorical && !hud.showHist) continue;
-         if(!inToday && !inHistorical && !hud.showRT) continue;
-
-         color c = clrLightBlue;
-         int fontSize = hud.fontRT;
-
-         if(inToday)
-         {
-            fontSize = hud.fontToday;
-            if(StringFind(divLines[i], "[SELL]") >= 0)
-               c = clrLightCoral;
-            else if(StringFind(divLines[i], "[BUY]") >= 0)
-               c = clrMediumAquamarine;
-            else if(StringFind(divLines[i], "TODAY") >= 0)
-               c = clrOrange;
-            else
-               c = clrDarkGray;
-         }
-         else if(inHistorical)
-         {
-            fontSize = hud.fontHist;
-            if(StringFind(divLines[i], "Bear") >= 0)
-               c = clrPaleVioletRed;
-            else if(StringFind(divLines[i], "Bull") >= 0)
-               c = clrDarkSeaGreen;
-            else
-               c = clrGold;
+            bool tsBetter = isBuy ? (state.lockedSL > currentSL + point) : (state.lockedSL < currentSL - point);
+            if(tsBetter)
+            {
+               newSL = state.lockedSL;
+               needModify = true;
+               if(modifyReason == "") modifyReason = "TS";
+            }
          }
          else
          {
-            fontSize = hud.fontRT;
-            if(StringFind(divLines[i], "SELL") >= 0)
-               c = clrDeepPink;
-            else if(StringFind(divLines[i], "BUY") >= 0)
-               c = clrMediumSpringGreen;
-            else if(StringFind(divLines[i], "---") >= 0)
-               c = clrCadetBlue;
+            double trailSL = isBuy ? (currentPrice - trailDist) : (currentPrice + trailDist);
+            bool tsBetter = isBuy ? (trailSL > currentSL + point) : (trailSL < currentSL - point);
+            if(tsBetter)
+            {
+               newSL = trailSL;
+               state.trailingActivated = true;
+               state.breakEvenDone = true;
+               needModify = true;
+               if(modifyReason == "") modifyReason = "TS";
+            }
          }
-
-         UpdMsg("DIV_" + IntegerToString(validLineCount), divLines[i], hud.startX, y, c, fontSize);
-         y += (inToday || inHistorical) ? rowH - 4 : rowH;
-         validLineCount++;
       }
-      Cleanup(validLineCount);
+
+      if(needModify)
+      {
+         bool valid = isBuy
+            ? (newSL < currentPrice - minDist)
+            : (newSL > currentPrice + minDist);
+         if(valid && MathAbs(newSL - currentSL) > point)
+         {
+            trade.SetExpertMagicNumber(MagicNumber);
+            trade.SetDeviationInPoints(SlippagePoints);
+            trade.SetTypeFilling(PickFilling(sym));
+            trade.SetAsyncMode(false);
+            if(trade.PositionModify(ticket, newSL, currentTP))
+            {
+               g_trailStates[idx] = state;
+               Print("[V9 ", modifyReason, "] ", sym, " ticket=", ticket,
+                     " R=", DoubleToString(rAchieved, 2),
+                     " SL ", DoubleToString(currentSL, digits), " -> ", DoubleToString(newSL, digits));
+            }
+         }
+      }
+      else
+      {
+         g_trailStates[idx] = state;
+      }
+   }
+}
+
+//--- Emergency stop -------------------------------------------------
+void CloseAllMagicPositions()
+{
+   Print("[V9 EMERGENCY] Closing all positions magic=", MagicNumber);
+   for(int i = PositionsTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0 || !PositionSelectByTicket(ticket)) continue;
+      if((int)PositionGetInteger(POSITION_MAGIC) != MagicNumber) continue;
+
+      string sym = PositionGetString(POSITION_SYMBOL);
+      trade.SetExpertMagicNumber(MagicNumber);
+      trade.SetDeviationInPoints(SlippagePoints);
+      trade.SetTypeFilling(PickFilling(sym));
+      trade.SetAsyncMode(false);
+      if(trade.PositionClose(ticket))
+         Print("[V9 EMERGENCY] Closed position ticket=", ticket, " ", sym);
+      else
+         Print("[V9 EMERGENCY] FAILED close ticket=", ticket, " retcode=", trade.ResultRetcode());
+   }
+}
+
+void CancelAllMagicPending()
+{
+   Print("[V9 EMERGENCY] Cancelling all pending magic=", MagicNumber);
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket == 0) continue;
+      if(OrderGetInteger(ORDER_MAGIC) != MagicNumber) continue;
+      ENUM_ORDER_TYPE ot = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+      if(ot != ORDER_TYPE_BUY_LIMIT && ot != ORDER_TYPE_SELL_LIMIT &&
+         ot != ORDER_TYPE_BUY_STOP && ot != ORDER_TYPE_SELL_STOP) continue;
+      trade.SetExpertMagicNumber(MagicNumber);
+      trade.SetAsyncMode(false);
+      if(trade.OrderDelete(ticket))
+         Print("[V9 EMERGENCY] Deleted pending ticket=", ticket);
+      else
+         Print("[V9 EMERGENCY] FAILED delete ticket=", ticket, " retcode=", trade.ResultRetcode());
+   }
+}
+
+void CheckEmergencyStop()
+{
+   if(!g_settings.emergency_stop) { g_emergencyInProgress = false; return; }
+   if(g_emergencyInProgress) return;
+   g_emergencyInProgress = true;
+
+   if(g_settings.emergency_close_all)
+   {
+      CloseAllMagicPositions();
+      CancelAllMagicPending();
+      SendAccountSnapshot();
+   }
+   Print("[V9 EMERGENCY] Stop complete");
+}
+
+//--- Heartbeat ------------------------------------------------------
+void SendHeartbeat()
+{
+   int openCount = CountRealExposure();
+   string body = StringFormat(
+      "{\"component\":\"TRADE-V9-REAL\",\"status\":\"online\",\"details\":\"REAL consumer active; positions=%d; emergency=%s\"}",
+      openCount, g_settings.emergency_stop ? "ON" : "OFF");
+   string response; int status;
+   if(Request("POST", "/api/heartbeat", body, response, status))
+      lastHeartbeatMs = GetTickCount();
+}
+
+//--- Open trade -----------------------------------------------------
+bool ResolveOrderType(string rawOrderType, string direction, string &normOrderType, string &errOut)
+{
+   string ot = UpperTrim(rawOrderType);
+   string dir = UpperTrim(direction);
+   if(StringFind(ot, "STOP") >= 0) { errOut = "Stop orders not supported"; return false; }
+   if(ot == "" || ot == "MARKET")
+   {
+      normOrderType = "MARKET";
+      if(dir == "BUY" || dir == "SELL") return true;
+      errOut = "Invalid direction for MARKET"; return false;
+   }
+   if(ot == "BUY_LIMIT")
+   {
+      normOrderType = "BUY_LIMIT";
+      if(dir != "BUY") { errOut = "BUY_LIMIT requires direction=BUY"; return false; }
+      return true;
+   }
+   if(ot == "SELL_LIMIT")
+   {
+      normOrderType = "SELL_LIMIT";
+      if(dir != "SELL") { errOut = "SELL_LIMIT requires direction=SELL"; return false; }
+      return true;
+   }
+   errOut = "Unsupported order_type: " + ot;
+   return false;
+}
+
+bool OpenTrade(string id, string symbol, string tf, string direction, string rawOrderType,
+               double entry, double sl, double tpRequested, double riskMoney)
+{
+   if(!SymbolSelect(symbol, true)) { Ack(id, "REJECTED", "Symbol unavailable"); return false; }
+
+   double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
+   double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
+   if(bid <= 0 || ask <= 0) { Ack(id, "REJECTED", "No live quote"); return false; }
+
+   string normOrderType = "";
+   string typeErr = "";
+   if(!ResolveOrderType(rawOrderType, direction, normOrderType, typeErr))
+   { Ack(id, "REJECTED", typeErr); return false; }
+
+   bool isLimit = (normOrderType == "BUY_LIMIT" || normOrderType == "SELL_LIMIT");
+   if(isLimit)
+   {
+      if(normOrderType == "BUY_LIMIT" && entry >= ask)
+      { Ack(id, "REJECTED", "BUY_LIMIT requires entry < current Ask"); return false; }
+      if(normOrderType == "SELL_LIMIT" && entry <= bid)
+      { Ack(id, "REJECTED", "SELL_LIMIT requires entry > current Bid"); return false; }
+   }
+
+   double slDistance = MathAbs(entry - sl);
+   if(slDistance <= 0) { Ack(id, "REJECTED", "SL distance zero"); return false; }
+
+   if((direction == "BUY" && sl >= entry) || (direction == "SELL" && sl <= entry))
+   { Ack(id, "REJECTED", "Invalid SL geometry"); return false; }
+
+   double volume = CalculateLotWithCommission(symbol, slDistance, riskMoney);
+   if(volume <= 0)
+   {
+      Ack(id, "REJECTED", StringFormat(
+         "Cannot compute valid lot for risk $%.2f, SL dist %.5f (below min volume or bad symbol params)",
+         riskMoney, slDistance));
+      return false;
+   }
+
+   SRiskBreakdown rb = ComputeRiskBreakdown(symbol, slDistance, volume);
+   if(!rb.valid)
+   {
+      Ack(id, "REJECTED", rb.error);
+      return false;
+   }
+
+   double budget = riskMoney * (1.0 + g_settings.risk_tolerance_pct / 100.0);
+
+   if(rb.total > budget + 1e-9)
+   {
+      double vmin = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+      double vmax = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+      double step = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+      if(step <= 0)
+      {
+         Ack(id, "REJECTED", "Symbol VOLUME_STEP invalid");
+         return false;
+      }
+      int stepDigits = VolumeStepDigits(symbol);
+
+      double maxLotForBudget = budget / rb.riskPerLot;
+      double reducedLot = MathFloor((maxLotForBudget + 1e-9) / step) * step;
+      reducedLot = NormalizeDouble(reducedLot, stepDigits);
+
+      if(reducedLot < vmin)
+      {
+         if(AllowMinLotWhenExceedBudget && vmin > 0 && vmin <= vmax)
+         {
+            reducedLot = NormalizeDouble(vmin, stepDigits);
+         }
+         else
+         {
+            Ack(id, "REJECTED", StringFormat(
+               "Risk $%.2f/lot -> max lot %.4f < min %.4f (budget $%.2f). Reduce risk or widen budget.",
+               rb.riskPerLot, reducedLot, vmin, budget));
+            return false;
+         }
+      }
+      if(reducedLot > vmax) reducedLot = vmax;
+
+      Print("[V9 LOT REDUCE] signal=", id,
+            " risk/lot=$", DoubleToString(rb.riskPerLot, 4),
+            " budget=$", DoubleToString(budget, 2),
+            " lot ", DoubleToString(volume, 4), " -> ", DoubleToString(reducedLot, 4),
+            " total ", DoubleToString(rb.total, 2), " -> $",
+            DoubleToString(rb.riskPerLot * reducedLot, 2));
+
+      volume = reducedLot;
+
+      rb = ComputeRiskBreakdown(symbol, slDistance, volume);
+      if(!rb.valid)
+      {
+         Ack(id, "REJECTED", rb.error);
+         return false;
+      }
+   }
+
+   if(rb.total > budget + 1e-9 && !AllowMinLotWhenExceedBudget)
+   {
+      Ack(id, "REJECTED", StringFormat(
+         "Total risk $%.2f > budget $%.2f (lot=%.4f)",
+         rb.total, budget, volume));
+      return false;
+   }
+
+   double totalRisk = rb.total;
+
+   double tp = tpRequested > 0
+      ? tpRequested
+      : ((direction == "BUY")
+         ? entry + slDistance * g_settings.reward_risk_ratio
+         : entry - slDistance * g_settings.reward_risk_ratio);
+
+   if((direction == "BUY" && tp <= entry) || (direction == "SELL" && tp >= entry))
+   { Ack(id, "REJECTED", "Invalid TP geometry"); return false; }
+
+   int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
+   entry = NormalizeDouble(entry, digits);
+   sl = NormalizeDouble(sl, digits);
+   tp = NormalizeDouble(tp, digits);
+
+   trade.SetExpertMagicNumber(MagicNumber);
+   trade.SetDeviationInPoints(SlippagePoints);
+   trade.SetTypeFilling(PickFilling(symbol));
+   trade.SetAsyncMode(false);
+
+   bool ok = false;
+   if(normOrderType == "BUY_LIMIT")
+      ok = trade.BuyLimit(volume, entry, symbol, sl, tp, ORDER_TIME_GTC, 0, OrderComment);
+   else if(normOrderType == "SELL_LIMIT")
+      ok = trade.SellLimit(volume, entry, symbol, sl, tp, ORDER_TIME_GTC, 0, OrderComment);
+   else
+      ok = (direction == "BUY")
+         ? trade.Buy(volume, symbol, 0.0, sl, tp, OrderComment)
+         : trade.Sell(volume, symbol, 0.0, sl, tp, OrderComment);
+
+   if(!ok || trade.ResultRetcode() != TRADE_RETCODE_DONE)
+   {
+      string err = StringFormat("OrderSend failed retcode=%d (%s)",
+         trade.ResultRetcode(), trade.ResultRetcodeDescription());
+      Ack(id, "REJECTED", err);
+      return false;
+   }
+
+   ulong posTicket = trade.ResultOrder();
+   if(PositionSelectByTicket(posTicket))
+      posTicket = (ulong)PositionGetInteger(POSITION_TICKET);
+
+   Print("[V9 OPEN] signal=", id, " ", symbol, " ", tf, " ", normOrderType, " ", direction,
+         " lots=", DoubleToString(volume, 4),
+         " entry=", DoubleToString(entry, digits),
+         " SL=", DoubleToString(sl, digits),
+         " TP=", DoubleToString(tp, digits),
+         " risk=$", DoubleToString(totalRisk, 2),
+         " ticket=", posTicket);
+
+   Ack(id, "PLACED", StringFormat("Order placed lot=%.4f ticket=%I64u risk=$%.2f",
+      volume, posTicket, totalRisk));
+   return true;
+}
+
+//--- Close / Cancel -------------------------------------------------
+void AckCloseCommand(string requestId, string targetId, bool ok, string detail, string kind)
+{
+   string body = StringFormat(
+      "{\"request_id\":\"%s\",\"position_id\":\"%s\",\"ok\":%s,\"message\":\"%s\",\"kind\":\"%s\"}",
+      JsonEscape(requestId), JsonEscape(targetId), (ok?"true":"false"), JsonEscape(detail), JsonEscape(kind));
+   string response; int status;
+   Request("POST", "/api/mt5/close-requests/ack", body, response, status);
+}
+
+bool CloseRealPositionById(string targetId, string symbol, string &detailOut, bool preferPending)
+{
+   ulong targetTicket = 0;
+
+   if(!preferPending)
+   {
+      if(targetId != "")
+      {
+         for(int i = PositionsTotal()-1; i >= 0; i--)
+         {
+            if(!posInfo.SelectByIndex(i)) continue;
+            if(posInfo.Magic() != MagicNumber) continue;
+            string tk = IntegerToString((long)posInfo.Ticket());
+            if(tk == targetId) { targetTicket = posInfo.Ticket(); break; }
+         }
+      }
+      if(targetTicket == 0 && symbol != "")
+      {
+         for(int i = PositionsTotal()-1; i >= 0; i--)
+         {
+            if(!posInfo.SelectByIndex(i)) continue;
+            if(posInfo.Magic() != MagicNumber) continue;
+            if(posInfo.Symbol() == symbol) { targetTicket = posInfo.Ticket(); break; }
+         }
+      }
+   }
+
+   trade.SetExpertMagicNumber(MagicNumber);
+   trade.SetDeviationInPoints(SlippagePoints);
+   trade.SetAsyncMode(false);
+
+   if(targetTicket != 0)
+   {
+      if(!PositionSelectByTicket(targetTicket)) { detailOut = "Position disappeared"; return false; }
+      trade.SetTypeFilling(PickFilling(PositionGetString(POSITION_SYMBOL)));
+      if(!trade.PositionClose(targetTicket))
+      {
+         detailOut = StringFormat("PositionClose failed retcode=%d", trade.ResultRetcode());
+         return false;
+      }
+      detailOut = StringFormat("Closed ticket=%I64u", targetTicket);
+      return true;
+   }
+
+   for(int i = OrdersTotal()-1; i >= 0; i--)
+   {
+      ulong ordTicket = OrderGetTicket(i);
+      if(ordTicket == 0) continue;
+      long ordMagic = OrderGetInteger(ORDER_MAGIC);
+      if(ordMagic != MagicNumber && !AllowCancelExternalPending) continue;
+
+      ENUM_ORDER_TYPE ot = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+      if(ot != ORDER_TYPE_BUY_LIMIT && ot != ORDER_TYPE_SELL_LIMIT &&
+         ot != ORDER_TYPE_BUY_STOP && ot != ORDER_TYPE_SELL_STOP) continue;
+
+      string ordSym = OrderGetString(ORDER_SYMBOL);
+      string tkStr = IntegerToString((long)ordTicket);
+      bool matchId = (targetId != "" && tkStr == targetId);
+      bool matchSym = (symbol != "" && ordSym == symbol);
+      if(matchId || matchSym)
+      {
+         if(trade.OrderDelete(ordTicket))
+         {
+            detailOut = StringFormat("Deleted pending ticket=%I64u", ordTicket);
+            return true;
+         }
+         detailOut = StringFormat("OrderDelete failed retcode=%d", trade.ResultRetcode());
+         return false;
+      }
+   }
+
+   detailOut = "Position/pending not found";
+   return false;
+}
+
+void ExecuteCloseCommand(string cmdJson)
+{
+   string reqId = JsonValue(cmdJson, "request_id");
+   string targetId = JsonValue(cmdJson, "position_id");
+   if(targetId == "") targetId = JsonValue(cmdJson, "ticket");
+   string symbol = UpperTrim(JsonValue(cmdJson, "symbol"));
+   string isPendingStr = JsonValue(cmdJson, "is_pending");
+   bool isPendingReq = (isPendingStr == "1" || isPendingStr == "true");
+   string kindStr = JsonValue(cmdJson, "kind");
+   if(kindStr == "") kindStr = (isPendingReq ? "cancel" : "close");
+   if(reqId == "") reqId = targetId;
+   if(targetId == "" && symbol == "") return;
+   if(HasProcessedSltp("close:" + reqId)) return;
+
+   bool preferPending = (kindStr == "cancel" || isPendingReq);
+   string detail = "";
+   bool closed = CloseRealPositionById(targetId, symbol, detail, preferPending);
+
+   MarkProcessedSltp("close:" + reqId);
+   AckCloseCommand(reqId, targetId, closed, detail, kindStr);
+   if(closed)
+   {
+      SendAccountSnapshot();
+      if(SyncRealHistory) PublishRealClosedDeals();
+   }
+}
+
+void PollCloseCommands()
+{
+   string response; int status;
+   if(!Request("GET", "/api/mt5/close-requests", "", response, status)) return;
+   string arr = JsonArrayValue(response, "close_requests");
+   if(arr == "") return;
+   string items[];
+   ExtractTopLevelObjects(arr, items);
+   for(int i = 0; i < ArraySize(items); i++)
+      ExecuteCloseCommand(items[i]);
+}
+
+//--- SL/TP modify ---------------------------------------------------
+void AckSltpCommand(string requestId, string ticket, bool ok, string detail)
+{
+   string body = StringFormat(
+      "{\"request_id\":\"%s\",\"ticket\":\"%s\",\"ok\":%s,\"message\":\"%s\"}",
+      JsonEscape(requestId), JsonEscape(ticket), (ok?"true":"false"), JsonEscape(detail));
+   string response; int status;
+   Request("POST", "/api/mt5/sltp-requests/ack", body, response, status);
+}
+
+void ExecuteSltpCommand(string cmdJson)
+{
+   string reqId = JsonValue(cmdJson, "request_id");
+   string ticket = JsonValue(cmdJson, "ticket");
+   if(reqId == "" || ticket == "") return;
+   if(HasProcessedSltp("sltp:" + reqId)) return;
+
+   double newSl = StringToDouble(JsonValue(cmdJson, "new_sl"));
+   double newTp = StringToDouble(JsonValue(cmdJson, "new_tp"));
+   ulong tk = (ulong)StringToInteger(ticket);
+   bool ok = false;
+   string detail = "";
+
+   if(!PositionSelectByTicket(tk))
+      detail = "Position not found";
+   else
+   {
+      string sym = PositionGetString(POSITION_SYMBOL);
+      int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+      double sl = NormalizeDouble(newSl, digits);
+      double tp = NormalizeDouble(newTp, digits);
+      trade.SetExpertMagicNumber(MagicNumber);
+      trade.SetDeviationInPoints(SlippagePoints);
+      trade.SetTypeFilling(PickFilling(sym));
+      trade.SetAsyncMode(false);
+      if(trade.PositionModify(tk, sl, tp))
+      { ok = true; detail = "SL/TP updated"; }
+      else
+         detail = StringFormat("PositionModify failed retcode=%d", trade.ResultRetcode());
+   }
+
+   MarkProcessedSltp("sltp:" + reqId);
+   AckSltpCommand(reqId, ticket, ok, detail);
+   if(ok) SendAccountSnapshot();
+}
+
+void PollSltpRequests()
+{
+   string response; int status;
+   if(!Request("GET", "/api/mt5/sltp-requests", "", response, status)) return;
+   string arr = JsonArrayValue(response, "sltp_requests");
+   if(arr == "") return;
+   string items[];
+   ExtractTopLevelObjects(arr, items);
+   for(int i = 0; i < ArraySize(items); i++)
+      ExecuteSltpCommand(items[i]);
+}
+
+//--- Pending modify (LIMIT orders) ----------------------------------
+void AckPendingModify(string requestId, string ticket, bool ok, string detail)
+{
+   string body = StringFormat(
+      "{\"request_id\":\"%s\",\"ticket\":\"%s\",\"ok\":%s,\"message\":\"%s\"}",
+      JsonEscape(requestId), JsonEscape(ticket), (ok?"true":"false"), JsonEscape(detail));
+   string response; int status;
+   Request("POST", "/api/mt5/pending-modify-requests/ack", body, response, status);
+}
+
+void ExecutePendingModify(string cmdJson)
+{
+   string reqId = JsonValue(cmdJson, "request_id");
+   string ticket = JsonValue(cmdJson, "ticket");
+   if(reqId == "" || ticket == "") return;
+   if(HasProcessedPendingModify(reqId)) return;
+
+   double newEntry = StringToDouble(JsonValue(cmdJson, "new_entry"));
+   double newSl    = StringToDouble(JsonValue(cmdJson, "new_sl"));
+   double newTp    = StringToDouble(JsonValue(cmdJson, "new_tp"));
+   ulong tk = (ulong)StringToInteger(ticket);
+   bool ok = false;
+   string detail = "";
+
+   if(tk == 0 || !OrderSelect(tk))
+   {
+      detail = "Pending order not found";
    }
    else
    {
-      Cleanup(0);
-   }
-}
-
-void UpdMsg(string n, string t, int x, int y, color c, int fontSize = 11, bool isBold = false)
-{
-   string o = P + n;
-   if(ObjectFind(0, o) < 0)
-      ObjectCreate(0, o, OBJ_LABEL, 0, 0, 0);
-   ObjectSetString(0, o, OBJPROP_FONT, "Consolas");
-   ObjectSetInteger(0, o, OBJPROP_FONTSIZE, fontSize);
-   ObjectSetInteger(0, o, OBJPROP_CORNER, CORNER_LEFT_UPPER);
-   ObjectSetInteger(0, o, OBJPROP_COLOR, c);
-   ObjectSetInteger(0, o, OBJPROP_XDISTANCE, x);
-   ObjectSetInteger(0, o, OBJPROP_YDISTANCE, y);
-   ObjectSetString(0, o, OBJPROP_TEXT, t);
-   ObjectSetInteger(0, o, OBJPROP_ANCHOR, ANCHOR_LEFT_UPPER);
-   ObjectSetInteger(0, o, OBJPROP_SELECTABLE, false);
-}
-
-void Cleanup(int validLineCount)
-{
-   for(int i = ObjectsTotal(0) - 1; i >= 0; i--)
-   {
-      string name = ObjectName(0, i);
-      if(StringFind(name, P) != 0) continue;
-      if(StringFind(name, P + "HEARTBEAT") == 0) continue;
-      if(StringFind(name, P + "FEATURES") == 0) continue;
-      if(StringFind(name, P + "LINE_DECOR_") == 0) continue;
-      if(StringFind(name, P + "DIV_") == 0)
+      long ordMagic = OrderGetInteger(ORDER_MAGIC);
+      if(ordMagic != MagicNumber && !AllowModifyExternalPending)
       {
-         int idx_obj = (int)StringToInteger(StringSubstr(name, StringLen(P + "DIV_")));
-         if(idx_obj >= validLineCount) ObjectDelete(0, name);
+         detail = "External pending order not allowed";
       }
-      else ObjectDelete(0, name);
+      else
+      {
+         ENUM_ORDER_TYPE ot = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+         if(ot != ORDER_TYPE_BUY_LIMIT && ot != ORDER_TYPE_SELL_LIMIT)
+         {
+            detail = "Only BUY_LIMIT / SELL_LIMIT modify supported";
+         }
+         else
+         {
+            string sym = OrderGetString(ORDER_SYMBOL);
+            SymbolSelect(sym, true);
+            int digits     = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+            double point   = SymbolInfoDouble(sym, SYMBOL_POINT);
+            int stopLevel  = (int)SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL);
+            double minDist = stopLevel * point;
+            double bid     = SymbolInfoDouble(sym, SYMBOL_BID);
+            double ask     = SymbolInfoDouble(sym, SYMBOL_ASK);
+
+            double curPrice = OrderGetDouble(ORDER_PRICE_OPEN);
+            double curSl    = OrderGetDouble(ORDER_SL);
+            double curTp    = OrderGetDouble(ORDER_TP);
+
+            double price = NormalizeDouble(newEntry > 0.0 ? newEntry : curPrice, digits);
+            double sl    = NormalizeDouble(newSl > 0.0 ? newSl : curSl, digits);
+            double tp    = NormalizeDouble(newTp > 0.0 ? newTp : curTp, digits);
+
+            bool priceValid = true;
+            if(bid <= 0.0 || ask <= 0.0)
+            {
+               detail = "No live quote";
+               priceValid = false;
+            }
+            else if(ot == ORDER_TYPE_BUY_LIMIT)
+            {
+               if(price >= ask - minDist)
+               {
+                  detail = StringFormat("BUY_LIMIT price %.5f must be < Ask %.5f (minDist %.5f)", price, ask, minDist);
+                  priceValid = false;
+               }
+               if(priceValid && sl > 0.0 && sl >= price)
+               {
+                  detail = "BUY_LIMIT SL must be < Entry";
+                  priceValid = false;
+               }
+               if(priceValid && tp > 0.0 && tp <= price)
+               {
+                  detail = "BUY_LIMIT TP must be > Entry";
+                  priceValid = false;
+               }
+            }
+            else if(ot == ORDER_TYPE_SELL_LIMIT)
+            {
+               if(price <= bid + minDist)
+               {
+                  detail = StringFormat("SELL_LIMIT price %.5f must be > Bid %.5f (minDist %.5f)", price, bid, minDist);
+                  priceValid = false;
+               }
+               if(priceValid && sl > 0.0 && sl <= price)
+               {
+                  detail = "SELL_LIMIT SL must be > Entry";
+                  priceValid = false;
+               }
+               if(priceValid && tp > 0.0 && tp >= price)
+               {
+                  detail = "SELL_LIMIT TP must be < Entry";
+                  priceValid = false;
+               }
+            }
+
+            if(priceValid)
+            {
+               datetime expiration = (datetime)OrderGetInteger(ORDER_TIME_EXPIRATION);
+               ENUM_ORDER_TYPE_TIME expType = (ENUM_ORDER_TYPE_TIME)OrderGetInteger(ORDER_TYPE_TIME);
+
+               trade.SetExpertMagicNumber(MagicNumber);
+               trade.SetDeviationInPoints(SlippagePoints);
+               trade.SetTypeFilling(PickFilling(sym));
+               trade.SetAsyncMode(false);
+
+               if(trade.OrderModify(tk, price, sl, tp, expType, expiration))
+               {
+                  ok = true;
+                  detail = StringFormat("Pending #%I64u updated @ %.*f (SL %.*f, TP %.*f)",
+                                        tk, digits, price, digits, sl, digits, tp);
+                  Print("[V9 PENDING MODIFY] ", sym, " ", detail);
+               }
+               else
+               {
+                  detail = StringFormat("OrderModify failed retcode=%d (%s)",
+                                        trade.ResultRetcode(), trade.ResultRetcodeDescription());
+                  Print("[V9 PENDING MODIFY ERR] ", sym, " #", tk, " ", detail);
+               }
+            }
+         }
+      }
    }
+
+   MarkProcessedPendingModify(reqId);
+   AckPendingModify(reqId, ticket, ok, detail);
+   if(ok) SendAccountSnapshot();
 }
 
-void ClearAll()
+void PollPendingModifyRequests()
 {
-   for(int i = ObjectsTotal(0) - 1; i >= 0; i--)
-   {
-      string n = ObjectName(0, i);
-      if(StringFind(n, P) == 0)
-         ObjectDelete(0, n);
-   }
+   string response; int status;
+   if(!Request("GET", "/api/mt5/pending-modify-requests", "", response, status)) return;
+   string arr = JsonArrayValue(response, "pending_modify_requests");
+   if(arr == "") return;
+   string items[];
+   ExtractTopLevelObjects(arr, items);
+   for(int i = 0; i < ArraySize(items); i++)
+      ExecutePendingModify(items[i]);
 }
 
-//+------------------------------------------------------------------+
-//| ONINIT                                                            |
-//+------------------------------------------------------------------+
+//--- Poll signal ----------------------------------------------------
+void PollServer()
+{
+   string path = "/api/mt5/next?consumer=" + ConsumerId;
+   string response; int status;
+   if(!Request("GET", path, "", response, status)) return;
+   if(StringFind(response, "\"signal\":null") >= 0) return;
+
+   string obj = JsonObjectValue(response, "signal");
+   if(obj == "") return;
+
+   string id = JsonValue(obj, "id");
+   string symbol = JsonValue(obj, "symbol");
+   string tf = JsonValue(obj, "timeframe");
+   string direction = JsonValue(obj, "direction");
+   string orderType = JsonValue(obj, "order_type");
+   double entry = StringToDouble(JsonValue(obj, "entry"));
+   double sl = StringToDouble(JsonValue(obj, "sl"));
+   double tp = StringToDouble(JsonValue(obj, "tp"));
+   double riskMoney = StringToDouble(JsonValue(obj, "risk_money"));
+
+   if(id == "") return;
+   if(HasProcessedSignal(id)) return;
+
+   if(symbol == "" || entry <= 0 || sl <= 0 ||
+      (direction != "BUY" && direction != "SELL"))
+   {
+      MarkProcessedSignal(id);
+      Ack(id, "REJECTED", "Malformed signal");
+      return;
+   }
+
+   if(g_settings.emergency_stop)
+   {
+      MarkProcessedSignal(id);
+      Ack(id, "REJECTED", "Emergency Stop ON");
+      return;
+   }
+
+   if(!g_settings.auto_trade_enabled)
+   {
+      MarkProcessedSignal(id);
+      Ack(id, "REJECTED", "AutoTrade OFF (dashboard toggle)");
+      return;
+   }
+
+   if(!IsInTradingHours())
+   {
+      MarkProcessedSignal(id);
+      Ack(id, "REJECTED", StringFormat("Outside trading hours (%d-%d GMT+7)",
+         g_settings.trading_start_hour, g_settings.trading_end_hour));
+      return;
+   }
+
+   if(IsNewsBlocked())
+   {
+      MarkProcessedSignal(id);
+      Ack(id, "REJECTED", "News block active");
+      return;
+   }
+
+   int openCount = CountRealExposure();
+   if(openCount >= g_settings.max_positions)
+   {
+      MarkProcessedSignal(id);
+      Ack(id, "REJECTED", StringFormat("Max positions reached (%d/%d)", openCount, g_settings.max_positions));
+      return;
+   }
+
+   double useRisk = g_settings.risk_money > 0 ? g_settings.risk_money : riskMoney;
+   if(useRisk <= 0) useRisk = 25.0;
+
+   MarkProcessedSignal(id);
+   OpenTrade(id, symbol, tf, direction, orderType, entry, sl, tp, useRisk);
+}
+
+//--- Account snapshot ----------------------------------------------
+void SendAccountSnapshot()
+{
+   string itemsJson = "";
+   bool first = true;
+
+   for(int i = PositionsTotal()-1; i >= 0; i--)
+   {
+      ulong ticket = PositionGetTicket(i);
+      if(ticket == 0) continue;
+      string symbol = PositionGetString(POSITION_SYMBOL);
+      long magic = PositionGetInteger(POSITION_MAGIC);
+      string comment = PositionGetString(POSITION_COMMENT);
+      string source = (magic == MagicNumber || comment == OrderComment) ? "TRADE_V9" : "MT5_EXTERNAL";
+      long type = PositionGetInteger(POSITION_TYPE);
+      string direction = (type == POSITION_TYPE_BUY ? "BUY" : "SELL");
+      double entry = PositionGetDouble(POSITION_PRICE_OPEN);
+      double sl = PositionGetDouble(POSITION_SL);
+      double tp = PositionGetDouble(POSITION_TP);
+      double volume = PositionGetDouble(POSITION_VOLUME);
+      double profit = PositionGetDouble(POSITION_PROFIT) + PositionGetDouble(POSITION_SWAP);
+      datetime opened = (datetime)PositionGetInteger(POSITION_TIME);
+
+      if(!first) itemsJson += ",";
+      first = false;
+      itemsJson += StringFormat(
+         "{\"id\":\"P%I64u\",\"ticket\":\"%I64u\",\"symbol\":\"%s\",\"timeframe\":\"MT5\","
+         "\"direction\":\"%s\",\"entry\":%.10f,\"sl\":%.10f,\"tp\":%.10f,"
+         "\"volume\":%.8f,\"profit\":%.2f,\"opened_at\":%I64d,\"is_pending\":false,"
+         "\"order_type\":\"MARKET\",\"magic\":%I64d,\"comment\":\"%s\",\"source\":\"%s\"}",
+         ticket, ticket, JsonEscape(symbol), direction, entry, sl, tp, volume,
+         NormalizeDouble(profit, 2), (long)opened, magic, JsonEscape(comment), source);
+   }
+
+   for(int i = OrdersTotal()-1; i >= 0; i--)
+   {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket == 0) continue;
+      ENUM_ORDER_TYPE type = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+      string orderType = "";
+      string direction = "";
+      if(type == ORDER_TYPE_BUY_LIMIT) { orderType = "BUY_LIMIT"; direction = "BUY"; }
+      else if(type == ORDER_TYPE_SELL_LIMIT) { orderType = "SELL_LIMIT"; direction = "SELL"; }
+      else if(type == ORDER_TYPE_BUY_STOP) { orderType = "BUY_STOP"; direction = "BUY"; }
+      else if(type == ORDER_TYPE_SELL_STOP) { orderType = "SELL_STOP"; direction = "SELL"; }
+      else continue;
+
+      string symbol = OrderGetString(ORDER_SYMBOL);
+      long magic = OrderGetInteger(ORDER_MAGIC);
+      string comment = OrderGetString(ORDER_COMMENT);
+      string source = (magic == MagicNumber || comment == OrderComment) ? "TRADE_V9" : "MT5_EXTERNAL";
+      double entry = OrderGetDouble(ORDER_PRICE_OPEN);
+      double sl = OrderGetDouble(ORDER_SL);
+      double tp = OrderGetDouble(ORDER_TP);
+      double volume = OrderGetDouble(ORDER_VOLUME_CURRENT);
+      datetime opened = (datetime)OrderGetInteger(ORDER_TIME_SETUP);
+      if(entry <= 0 || volume <= 0) continue;
+
+      if(!first) itemsJson += ",";
+      first = false;
+      itemsJson += StringFormat(
+         "{\"id\":\"O%I64u\",\"ticket\":\"%I64u\",\"symbol\":\"%s\",\"timeframe\":\"MT5\","
+         "\"direction\":\"%s\",\"entry\":%.10f,\"sl\":%.10f,\"tp\":%.10f,"
+         "\"volume\":%.8f,\"profit\":0,\"opened_at\":%I64d,\"is_pending\":true,"
+         "\"order_type\":\"%s\",\"magic\":%I64d,\"comment\":\"%s\",\"source\":\"%s\"}",
+         ticket, ticket, JsonEscape(symbol), direction, entry, sl, tp, volume,
+         (long)opened, orderType, magic, JsonEscape(comment), source);
+   }
+
+   string body = "{\"items\":[" + itemsJson + "]}";
+   string response; int status;
+   if(!Request("POST", "/api/mt5/account-snapshot", body, response, status))
+      Print("[V9] Account snapshot sync failed HTTP=", status);
+}
+
+void PublishRealClosedDeals()
+{
+   if(!SyncRealHistory) return;
+   datetime now = TimeCurrent();
+   datetime fromTime = now - (datetime)(7 * 86400);
+   if(!HistorySelect(fromTime, now)) return;
+   int totalDeals = HistoryDealsTotal();
+   if(totalDeals <= 0) return;
+
+   string tradesJson = "";
+   int count = 0;
+   for(int i = totalDeals - 1; i >= 0 && count < 200; i--)
+   {
+      ulong dealTicket = HistoryDealGetTicket(i);
+      if(dealTicket == 0) continue;
+      if(HistoryDealGetInteger(dealTicket, DEAL_MAGIC) != MagicNumber) continue;
+      long entryType = HistoryDealGetInteger(dealTicket, DEAL_ENTRY);
+      if(entryType != DEAL_ENTRY_OUT && entryType != DEAL_ENTRY_INOUT) continue;
+      string sym = HistoryDealGetString(dealTicket, DEAL_SYMBOL);
+      if(sym == "") continue;
+      long dealType = HistoryDealGetInteger(dealTicket, DEAL_TYPE);
+      string dir = (dealType == DEAL_TYPE_BUY) ? "SELL" : "BUY";
+      double vol = HistoryDealGetDouble(dealTicket, DEAL_VOLUME);
+      double price = HistoryDealGetDouble(dealTicket, DEAL_PRICE);
+      double profit = HistoryDealGetDouble(dealTicket, DEAL_PROFIT)
+                  + HistoryDealGetDouble(dealTicket, DEAL_SWAP)
+                  + HistoryDealGetDouble(dealTicket, DEAL_COMMISSION);
+      long closedAt = HistoryDealGetInteger(dealTicket, DEAL_TIME);
+      if(vol <= 0 || closedAt <= 0) continue;
+
+      if(tradesJson != "") tradesJson += ",";
+      tradesJson += StringFormat(
+         "{\"id\":\"v9-%I64u\",\"ticket\":\"%I64u\",\"symbol\":\"%s\",\"timeframe\":\"MT5\","
+         "\"direction\":\"%s\",\"entry\":%.8f,\"sl\":0,\"tp\":0,\"volume\":%.4f,"
+         "\"profit\":%.2f,\"outcome\":\"CLOSED\",\"opened_at\":0,\"closed_at\":%I64d}",
+         dealTicket, dealTicket, JsonEscape(sym), dir, price, vol,
+         NormalizeDouble(profit, 2), closedAt);
+      count++;
+   }
+
+   if(count <= 0 || tradesJson == lastHistoryDigest) return;
+   string body = "{\"replace\":false,\"trades\":[" + tradesJson + "]}";
+   string response; int status;
+   if(Request("POST", "/api/mt5/history", body, response, status))
+      lastHistoryDigest = tradesJson;
+}
+
+//--- Lifecycle ------------------------------------------------------
 int OnInit()
 {
-   datetime ct = TimeCurrent();
-   if(ct > expiry)
-   {
-      MessageBox("Expired!", "EXPIRED", MB_OK | MB_ICONSTOP);
-      return INIT_FAILED;
-   }
+   if(StringFind(ServerBaseURL, "https://") != 0 && StringFind(ServerBaseURL, "http://127.0.0.1") != 0)
+   { Print("[V9] HTTPS or localhost server URL required."); return INIT_PARAMETERS_INCORRECT; }
+   if(ApiKey == "" || ApiKey == "SET_A_LONG_RANDOM_API_KEY")
+   { Print("[V9] Set ApiKey privately."); return INIT_PARAMETERS_INCORRECT; }
+
+   trade.SetExpertMagicNumber(MagicNumber);
+   InitDefaultSettings();
+   SyncDashboardGlobalVariables();
+   CalculateServerGMTOffset();
+
+   PollSettings();
+   PollCommissions();
 
    EventSetTimer(1);
-   CalculateServerGMTOffset();
-   UpdateTodayBounds();
-   g_lastUpdateTime = ct;
-   g_heartbeatCounter = 0;
-   g_lastScanDurationMs = 0;
-   g_firstScanDone = false;
-   g_initTime = ct;
-   g_statusText = "KHỞI TẠO...";
-   g_statusColor = clrDimGray;
-   g_lastScanM15 = g_lastScanH1 = 0;
-   g_lastRTPrintTime = g_lastRTCount = 0;
-   g_isNewsBlocked = false;
-   g_lastNewsCheckTime = 0;
-   g_lastSentSignalKey = "";
-   g_lastSentSignalTime = 0;
-   g_lastServerHeartbeatTime = 0;
-   g_lastTodaySyncTime = 0;
-   g_lastSyncedSymbolsJson = "";
-   ArrayResize(g_todaySignals, 0);
-   g_todaySignalCount = 0;
-   CleanupOldSignals();
-
-   string tfList = "";
-   if(EnableM15) tfList += "M15 ";
-   if(EnableH1)  tfList += "H1 ";
-   if(tfList == "") tfList = "NONE!";
-
-   Print("═══════════════════════════════════════════");
-   Print("RSI Divergence Realtime v1.09");
-   Print("   Timeframes: ", tfList);
-   Print("   Direct EA GV: ", PublishToDirectEA_GV ? "ON" : "OFF");
-   Print("   Server Sync: ", EnableServerSync ? "ON" : "OFF");
-   Print("═══════════════════════════════════════════");
-
-   g_statusText = "RUNNING";
-   g_statusColor = clrTeal;
-   SyncHeartbeatToServer("online", "Initialized: " + tfList, true);
-
+   Print("[V9] Started v3.13 REAL HUB. magic=", MagicNumber,
+         " | AutoTrade=", g_settings.auto_trade_enabled ? "ON" : "OFF",
+         " | Trailing=", g_settings.trailing_enabled ? "ON" : "OFF",
+         " | Risk=$", DoubleToString(g_settings.risk_money, 2),
+         " | CommRoundTurn=", CommissionIsRoundTurn ? "Y" : "N");
    return INIT_SUCCEEDED;
 }
 
-//+------------------------------------------------------------------+
-//| ONTIMER                                                           |
-//+------------------------------------------------------------------+
-void PublishScanSymbols(string symbols)
-{
-   int h = FileOpen("DIVSCAN_SYMBOLS.txt", FILE_WRITE | FILE_TXT | FILE_COMMON);
-   if(h == INVALID_HANDLE) return;
-   FileWriteString(h, IntegerToString((int)TimeCurrent()) + "#" + symbols);
-   FileClose(h);
-   SyncScansToServer(symbols);
-}
+void OnDeinit(const int reason) { EventKillTimer(); }
+void OnTick() {}
 
 void OnTimer()
 {
-   GlobalVariableSet("HB_RSI_Indicator", (double)TimeCurrent());
-   g_lastUpdateTime = TimeCurrent();
-   g_heartbeatCounter++;
-   if(g_heartbeatCounter % 2 == 0) g_heartbeatState = !g_heartbeatState;
+   uint nowMs = GetTickCount();
 
-   ClearOldTodaySignals();
-   UpdateTodayBounds();
+   if(TimeCurrent() - g_lastOffsetCalcTime > 3600)
+      CalculateServerGMTOffset();
 
-   if(IsNewsFilterEnabledEffective() && TimeCurrent() - g_lastNewsCheckTime >= NewsCheckIntervalSeconds)
+   if(lastSettingsPollMs == 0 ||
+      (uint)(nowMs - lastSettingsPollMs) >= (uint)(SettingsPollSeconds * 1000))
    {
-      g_isNewsBlocked = !IsNewsSafe();
-      g_lastNewsCheckTime = TimeCurrent();
-   }
-   else if(!IsNewsFilterEnabledEffective())
-   {
-      g_isNewsBlocked = false;
+      lastSettingsPollMs = nowMs;
+      PollSettings();
    }
 
-   if(g_isNewsBlocked)
+   CheckEmergencyStop();
+
+   if(lastCommissionPollMs == 0 ||
+      (uint)(nowMs - lastCommissionPollMs) >= (uint)(CommissionPollSeconds * 1000))
    {
-      PublishScanSymbols("");
-      g_statusColor = clrOrangeRed;
-      g_statusText = "NEWS BLOCKED";
-      SyncHeartbeatToServer("warning", "News filter active", false);
-      Draw("NEWS BLOCKED");
-      return;
+      lastCommissionPollMs = nowMs;
+      PollCommissions();
    }
 
-   bool isScanTime = IsInScanTime();
-   bool has_crash = false;
+   if(lastHeartbeatMs == 0 ||
+      (uint)(nowMs - lastHeartbeatMs) >= (uint)(HeartbeatSeconds * 1000))
+      SendHeartbeat();
 
-   if(g_firstScanDone)
+   if(lastTrailingCheckMs == 0 ||
+      (uint)(nowMs - lastTrailingCheckMs) >= (uint)(TrailingCheckSeconds * 1000))
    {
-      if(ArraySize(arrSymTF) == 0)
-         has_crash = true;
-      else
-      {
-         bool allInvalid = true;
-         for(int i = 0; i < ArraySize(arrSymTF); i++)
-            if(arrSymTF[i].rsiHandle != INVALID_HANDLE)
-            { allInvalid = false; break; }
-         if(allInvalid) has_crash = true;
-         if(!has_crash && !TerminalInfoInteger(TERMINAL_CONNECTED))
-            has_crash = true;
-      }
+      lastTrailingCheckMs = nowMs;
+      ManageTrailing();
    }
 
-   if(has_crash)
+   if(lastPollMs == 0 ||
+      (uint)(nowMs - lastPollMs) >= (uint)(PollSeconds * 1000))
    {
-      PublishScanSymbols("");
-      g_statusColor = clrRed;
-      g_statusText = "CRASHED!";
-      SyncHeartbeatToServer("offline", "Indicator or terminal disconnected", false);
-      Draw("CRASHED");
-      return;
+      lastPollMs = nowMs;
+      PollCloseCommands();
+      PollServer();
    }
 
-   if(!isScanTime)
+   if(lastSltpPollMs == 0 ||
+      (uint)(nowMs - lastSltpPollMs) >= (uint)(PollSeconds * 1000))
    {
-      PublishScanSymbols("");
-      g_statusColor = clrGray;
-      g_statusText = "STANDBY";
-      SyncHeartbeatToServer("online", "Standby outside scan hours", false);
-      Draw("STANDBY");
-      return;
+      lastSltpPollMs = nowMs;
+      PollSltpRequests();
    }
 
-   g_statusColor = clrAquamarine;
-   g_statusText = "RUNNING";
-   CleanupOldSignals();
-
-   datetime now = TimeCurrent();
-   bool sM15 = false, sH1 = false;
-   if(EnableM15) sM15 = true;
-   if(EnableH1 && now - g_lastScanH1 >= 5) { sH1 = true; g_lastScanH1 = now; }
-
-   if(!sM15 && !sH1)
+   if(lastPendingModifyPollMs == 0 ||
+      (uint)(nowMs - lastPendingModifyPollMs) >= (uint)(PollSeconds * 1000))
    {
-      string td = BuildTodaySignalsDisplay();
-      string dm = g_latestRTSignal == "" ? "Scanning..." : g_latestRTSignal;
-      SyncHeartbeatToServer("online", StringFormat("Idle tick | symTF=%d", ArraySize(arrSymTF)), false);
-      Draw(dm + td);
-      return;
+      lastPendingModifyPollMs = nowMs;
+      PollPendingModifyRequests();
    }
 
-   uint scanStartMs = GetTickCount();
-   SRTLine rtLines[];
-   int rtCount = 0;
-   string histLines[];
-   datetime histTimes[];
-   int histCount = 0;
-
-   string scannedSymbols = "";
-   int totalSymbols = SymbolsTotal(true);
-   for(int s = 0; s < totalSymbols; s++)
+   if(lastPositionsSyncMs == 0 ||
+      (uint)(nowMs - lastPositionsSyncMs) >= 3000)
    {
-      string sym = SymbolName(s, true);
-      if(IsSymbolExcluded(sym)) continue;
-
-      if(EnableM15)
-      {
-         int idx = GetSymbolTFIndex(sym, PERIOD_M15);
-         if(idx == -1) idx = InitSymTF(sym, PERIOD_M15, "M15");
-         if(sM15)
-         {
-            ProcessSymbolTF(idx, rtLines, rtCount, histLines, histTimes, histCount);
-            ClearInactiveRTDivergence(sym, "M15", PERIOD_M15);
-         }
-         if(scannedSymbols != "") scannedSymbols += ";";
-         scannedSymbols += sym + "|M15";
-      }
-
-      if(EnableH1)
-      {
-         int idx = GetSymbolTFIndex(sym, PERIOD_H1);
-         if(idx == -1) idx = InitSymTF(sym, PERIOD_H1, "H1");
-         if(sH1)
-         {
-            ProcessSymbolTF(idx, rtLines, rtCount, histLines, histTimes, histCount);
-            ClearInactiveRTDivergence(sym, "H1", PERIOD_H1);
-         }
-         if(scannedSymbols != "") scannedSymbols += ";";
-         scannedSymbols += sym + "|H1";
-      }
-   }
-   PublishScanSymbols(scannedSymbols);
-   g_lastScanDurationMs = GetTickCount() - scanStartMs;
-   SyncHeartbeatToServer(
-      "online",
-      StringFormat("Scan %ums | RT=%d | Today=%d", (int)g_lastScanDurationMs, rtCount, g_todaySignalCount),
-      false
-   );
-
-   string dc = "";
-   static string slr = "";
-
-   if(rtCount > 0)
-   {
-      for(int i = 0; i < rtCount - 1; i++)
-         for(int j = i + 1; j < rtCount; j++)
-            if(rtLines[i].time > rtLines[j].time)
-            {
-               SRTLine t = rtLines[i];
-               rtLines[i] = rtLines[j];
-               rtLines[j] = t;
-            }
-      string gc = "--- RT SIGNALS (1/Bar) ---\n\n";
-      for(int i = 0; i < rtCount; i++)
-         gc += rtLines[i].text + "\n";
-      g_latestRTSignal = gc;
-      dc = gc;
-      if(gc != slr)
-      {
-         PrintRTSignalChange(rtCount, gc);
-         slr = gc;
-      }
-   }
-   else
-   {
-      g_latestRTSignal = "";
-      dc = "Scanning...";
-      slr = "";
-      g_lastRTCount = 0;
+      lastPositionsSyncMs = nowMs;
+      SendAccountSnapshot();
    }
 
-   if(histCount > 0)
+   if(SyncRealHistory &&
+      (lastHistorySyncMs == 0 || (uint)(nowMs - lastHistorySyncMs) >= 15000))
    {
-      for(int i = 0; i < histCount - 1; i++)
-         for(int j = i + 1; j < histCount; j++)
-            if(histTimes[i] < histTimes[j])
-            {
-               datetime t = histTimes[i];
-               histTimes[i] = histTimes[j];
-               histTimes[j] = t;
-               string tl = histLines[i];
-               histLines[i] = histLines[j];
-               histLines[j] = tl;
-            }
-      for(int i = 0; i < histCount; i++)
-         dc += "\n" + histLines[i];
-   }
-
-   string td = BuildTodaySignalsDisplay();
-   dc += td;
-   Draw(dc);
-   g_firstScanDone = true;
-}
-
-//+------------------------------------------------------------------+
-//| ONDEINIT                                                          |
-//+------------------------------------------------------------------+
-void OnDeinit(const int reason)
-{
-   SyncHeartbeatToServer("offline", "Indicator removed/deinit: " + IntegerToString(reason), true);
-   EventKillTimer();
-   ClearAll();
-
-   ENUM_TIMEFRAMES tfs[];
-   string tfStrs[];
-   GetEnabledTimeframes(tfs, tfStrs);
-   for(int i = 0; i < ArraySize(arrSymTF); i++)
-      ClearAllDivergenceData(arrSymTF[i].sym, arrSymTF[i].tfStr);
-   for(int s = 0; s < SymbolsTotal(true); s++)
-   {
-      string sym = SymbolName(s, true);
-      for(int t = 0; t < ArraySize(tfs); t++)
-         ClearAllDivergenceData(sym, tfStrs[t]);
-   }
-
-   for(int i = 0; i < ArraySize(arrSymTF); i++)
-   {
-      if(arrSymTF[i].rsiHandle != INVALID_HANDLE)
-         IndicatorRelease(arrSymTF[i].rsiHandle);
-      if(arrSymTF[i].atrHandle != INVALID_HANDLE)
-         IndicatorRelease(arrSymTF[i].atrHandle);
-   }
-
-   CleanupOldSignals();
-}
-
-//+------------------------------------------------------------------+
-//| PROCESS SYMBOL TF                                                |
-//+------------------------------------------------------------------+
-void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLines[], datetime &histTimes[], int &histCount)
-{
-   string sym = arrSymTF[idx].sym;
-   ENUM_TIMEFRAMES tf = arrSymTF[idx].tf;
-   string tfStr = arrSymTF[idx].tfStr;
-   int rsiHandle = arrSymTF[idx].rsiHandle;
-
-   if(rsiHandle == INVALID_HANDLE) return;
-
-   int readCount = MS_BARS_DEFAULT + 50;
-   if(CopyBuffer(rsiHandle, 0, 0, readCount, arrSymTF[idx].rsiBuf) < readCount) return;
-
-   datetime currentBarTime = iTime(sym, tf, 0);
-   if(currentBarTime != arrSymTF[idx].lastBarTime)
-   {
-      if(arrSymTF[idx].lastBarTime != 0 && arrSymTF[idx].lastShiftCached < MS_SwingBars)
-         arrSymTF[idx].lastShiftCached = MS_SwingBars;
-      arrSymTF[idx].lastBarTime = currentBarTime;
-   }
-
-   double bestBearH1 = 0, bestBearH2 = 0, bestBearR1 = 0, bestBearR2 = 0;
-   datetime bestBearT1 = 0, bestBearT2 = 0;
-   bool bestBearIsReg = false;
-   double bestBearVol = 0;
-
-   double bestBullP1 = 0, bestBullP2 = 0, bestBullR1 = 0, bestBullR2 = 0;
-   datetime bestBullT1 = 0, bestBullT2 = 0;
-   bool bestBullIsReg = false;
-   double bestBullVol = 0;
-
-   int scanLimit = MathMax(arrSymTF[idx].lastShiftCached, MS_SwingBars);
-
-   double prevHighPrice = 0, lastHighPrice = 0, prevHighRSI = 0, lastHighRSI = 0;
-   datetime prevHighTime = 0, lastHighTime = 0;
-   double prevLowPrice = 0, lastLowPrice = 0, prevLowRSI = 0, lastLowRSI = 0;
-   datetime prevLowTime = 0, lastLowTime = 0;
-   int lastHighShift = -9999, lastLowShift = -9999;
-
-   for(int shift = scanLimit; shift >= MS_SwingBars; shift--)
-   {
-      if(IsRSISwingHigh(arrSymTF[idx].rsiBuf, shift))
-      {
-         if(MathAbs(shift - lastHighShift) >= MS_SwingBars)
-         {
-            datetime t = iTime(sym, tf, shift);
-            double rsiVal = GetRSI(arrSymTF[idx].rsiBuf, shift);
-
-            int shiftRight = MathMax(0, shift - 1);
-            int shiftLeft  = shift + 1;
-            double h = iHigh(sym, tf, shift);
-            h = MathMax(h, iHigh(sym, tf, shiftLeft));
-            h = MathMax(h, iHigh(sym, tf, shiftRight));
-
-            lastHighShift = shift;
-            prevHighPrice = lastHighPrice; prevHighRSI = lastHighRSI; prevHighTime = lastHighTime;
-            lastHighPrice = h; lastHighRSI = rsiVal; lastHighTime = t;
-
-            if(prevHighPrice > 0 && lastHighPrice > 0)
-            {
-               double h1 = prevHighPrice, h2 = lastHighPrice;
-               double r1 = prevHighRSI, r2 = lastHighRSI;
-               datetime t1 = prevHighTime, t2 = lastHighTime;
-               bool regBearDiv = (h2 > h1) && (r2 < r1);
-               bool hidBearDiv = (h2 < h1) && (r2 > r1);
-               bool bearDiv = regBearDiv || hidBearDiv;
-               int divShift = iBarShift(sym, tf, t2, false);
-
-               if(bearDiv)
-               {
-                  bool highestValid = true;
-                  int shift1 = iBarShift(sym, tf, t1, false);
-                  double maxAllowed = MathMax(h1, h2);
-                  for(int i = divShift + 1; i < shift1; i++)
-                     if(iHigh(sym, tf, i) > maxAllowed) { highestValid = false; break; }
-
-                  if(highestValid)
-                  {
-                     double peakVolRatio = GetVolumeRatioAtShift(sym, divShift, tf);
-                     if(peakVolRatio >= VolumeAutoRatio)
-                     {
-                        if(t2 > bestBearT2 || bestBearT2 == 0)
-                        {
-                           bestBearH1 = h1; bestBearH2 = h2;
-                           bestBearR1 = r1; bestBearR2 = r2;
-                           bestBearT1 = t1; bestBearT2 = t2;
-                           bestBearIsReg = regBearDiv;
-                           bestBearVol = peakVolRatio;
-                        }
-                     }
-                  }
-               }
-            }
-         }
-      }
-
-      if(IsRSISwingLow(arrSymTF[idx].rsiBuf, shift))
-      {
-         if(MathAbs(shift - lastLowShift) >= MS_SwingBars)
-         {
-            datetime t = iTime(sym, tf, shift);
-            double rsiVal = GetRSI(arrSymTF[idx].rsiBuf, shift);
-
-            int shiftRight = MathMax(0, shift - 1);
-            int shiftLeft  = shift + 1;
-            double l = iLow(sym, tf, shift);
-            l = MathMin(l, iLow(sym, tf, shiftLeft));
-            l = MathMin(l, iLow(sym, tf, shiftRight));
-
-            lastLowShift = shift;
-            prevLowPrice = lastLowPrice; prevLowRSI = lastLowRSI; prevLowTime = lastLowTime;
-            lastLowPrice = l; lastLowRSI = rsiVal; lastLowTime = t;
-
-            if(prevLowPrice > 0 && lastLowPrice > 0)
-            {
-               double p1 = prevLowPrice, p2 = lastLowPrice;
-               double r1 = prevLowRSI, r2 = lastLowRSI;
-               datetime t1 = prevLowTime, t2 = lastLowTime;
-               bool regBullDiv = (p2 < p1) && (r2 > r1);
-               bool hidBullDiv = (p2 > p1) && (r2 < r1);
-               bool bullDiv = regBullDiv || hidBullDiv;
-               int divShift = iBarShift(sym, tf, t2, false);
-
-               if(bullDiv)
-               {
-                  bool lowestValid = true;
-                  int shift1 = iBarShift(sym, tf, t1, false);
-                  double minAllowed = MathMin(p1, p2);
-                  for(int i = divShift + 1; i < shift1; i++)
-                     if(iLow(sym, tf, i) < minAllowed) { lowestValid = false; break; }
-
-                  if(lowestValid)
-                  {
-                     double troughVolRatio = GetVolumeRatioAtShift(sym, divShift, tf);
-                     if(troughVolRatio >= VolumeAutoRatio)
-                     {
-                        if(t2 > bestBullT2 || bestBullT2 == 0)
-                        {
-                           bestBullP1 = p1; bestBullP2 = p2;
-                           bestBullR1 = r1; bestBullR2 = r2;
-                           bestBullT1 = t1; bestBullT2 = t2;
-                           bestBullIsReg = regBullDiv;
-                           bestBullVol = troughVolRatio;
-                        }
-                     }
-                  }
-               }
-            }
-         }
-      }
-   }
-
-   datetime gmt7Now = GetGMT7Now();
-   datetime todayStartGMT7 = gmt7Now - (gmt7Now % 86400);
-
-   if(bestBearT2 > 0)
-   {
-      datetime gmt7Time = ServerTimeToGMT7(bestBearT2);
-      string timeStr = TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES);
-      string divShort = bestBearIsReg ? "Reg" : "Hid";
-      arrSymTF[idx].histBearDisplay = "Bear [" + divShort + "] (" + timeStr + ")";
-      arrSymTF[idx].histBearTime = bestBearT2;
-
-      WriteHistoricalDivergence(sym, tfStr, true, bestBearIsReg,
-                                bestBearT1, bestBearR1, bestBearH1,
-                                bestBearT2, bestBearR2, bestBearH2, bestBearVol);
-
-      ArrayResize(histLines, histCount + 1);
-      ArrayResize(histTimes, histCount + 1);
-      histLines[histCount] = "[" + tfStr + "] " + sym + ": " + arrSymTF[idx].histBearDisplay;
-      histTimes[histCount] = bestBearT2;
-      histCount++;
-
-      if(gmt7Time >= todayStartGMT7)
-         AddTodaySignal(sym, tfStr, "BEAR", divShort, "HIST", bestBearT1, bestBearT2, bestBearH1, bestBearH2, bestBearR1, bestBearR2);
-   }
-
-   if(bestBullT2 > 0)
-   {
-      datetime gmt7Time = ServerTimeToGMT7(bestBullT2);
-      string timeStr = TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES);
-      string divShort = bestBullIsReg ? "Reg" : "Hid";
-      arrSymTF[idx].histBullDisplay = "Bull [" + divShort + "] (" + timeStr + ")";
-      arrSymTF[idx].histBullTime = bestBullT2;
-
-      WriteHistoricalDivergence(sym, tfStr, false, bestBullIsReg,
-                                bestBullT1, bestBullR1, bestBullP1,
-                                bestBullT2, bestBullR2, bestBullP2, bestBullVol);
-
-      ArrayResize(histLines, histCount + 1);
-      ArrayResize(histTimes, histCount + 1);
-      histLines[histCount] = "[" + tfStr + "] " + sym + ": " + arrSymTF[idx].histBullDisplay;
-      histTimes[histCount] = bestBullT2;
-      histCount++;
-
-      if(gmt7Time >= todayStartGMT7)
-         AddTodaySignal(sym, tfStr, "BULL", divShort, "HIST", bestBullT1, bestBullT2, bestBullP1, bestBullP2, bestBullR1, bestBullR2);
-   }
-
-   arrSymTF[idx].lastHighShift = lastHighShift;
-   arrSymTF[idx].lastLowShift = lastLowShift;
-   arrSymTF[idx].prevHighPrice = prevHighPrice; arrSymTF[idx].lastHighPrice = lastHighPrice;
-   arrSymTF[idx].prevHighRSI = prevHighRSI; arrSymTF[idx].lastHighRSI = lastHighRSI;
-   arrSymTF[idx].prevHighTime = prevHighTime; arrSymTF[idx].lastHighTime = lastHighTime;
-   arrSymTF[idx].prevLowPrice = prevLowPrice; arrSymTF[idx].lastLowPrice = lastLowPrice;
-   arrSymTF[idx].prevLowRSI = prevLowRSI; arrSymTF[idx].lastLowRSI = lastLowRSI;
-   arrSymTF[idx].prevLowTime = prevLowTime; arrSymTF[idx].lastLowTime = lastLowTime;
-   arrSymTF[idx].lastShiftCached = MS_SwingBars - 1;
-
-   datetime currentBarTimeForTrack = iTime(sym, tf, 0);
-
-   // REALTIME BEARISH
-   if(lastHighPrice > 0 && lastHighShift >= 0)
-   {
-      int startBear = MathMax(0, lastHighShift - 1);
-
-      double rtMaxHigh = -DBL_MAX, rsiAtMaxHigh = 0;
-      datetime timeAtMaxHigh = 0;
-      int rtMaxHighShift = -1;
-      for(int i = startBear; i >= 0; i--)
-      {
-         double curH = iHigh(sym, tf, i);
-         if(curH > rtMaxHigh) { rtMaxHigh = curH; rsiAtMaxHigh = GetRSI(arrSymTF[idx].rsiBuf, i); timeAtMaxHigh = iTime(sym, tf, i); rtMaxHighShift = i; }
-      }
-
-      double rtMaxRSI = -DBL_MAX, priceAtMaxRSI = 0;
-      datetime timeAtMaxRSI = 0;
-      int rtMaxRSIShift = -1;
-      for(int i = startBear; i >= 0; i--)
-      {
-         double curR = GetRSI(arrSymTF[idx].rsiBuf, i);
-         if(curR > rtMaxRSI) { rtMaxRSI = curR; priceAtMaxRSI = iHigh(sym, tf, i); timeAtMaxRSI = iTime(sym, tf, i); rtMaxRSIShift = i; }
-      }
-
-      if(rtMaxHigh > lastHighPrice && rsiAtMaxHigh < lastHighRSI && rtMaxHighShift != lastHighShift)
-      {
-         if(!RT_RequireMonotonicMove || IsMonotonicStructure(sym, tf, rtMaxHighShift, lastHighShift, true))
-         {
-            if(CheckMiddleValid(sym, tf, rtMaxHighShift, lastHighShift, lastHighTime, true))
-            {
-               double peakVolRatio = GetVolumeRatioAtShift(sym, rtMaxHighShift, tf);
-               if(peakVolRatio >= VolumeAutoRatio)
-               {
-                  datetime gmt7Time = ServerTimeToGMT7(timeAtMaxHigh);
-                  string timeStr = TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES);
-                  double closeNew = iClose(sym, tf, rtMaxHighShift);
-                  double closeOld = iClose(sym, tf, iBarShift(sym, tf, lastHighTime, false));
-                  bool isStrong = (closeNew > closeOld);
-
-                  double currentPrice = SymbolInfoDouble(sym, SYMBOL_BID);
-                  bool shouldTrack = ShouldRetrack(idx, currentPrice, arrSymTF[idx].lastBearRegRTPrice, sym, tf, currentBarTimeForTrack, arrSymTF[idx].lastBearRegRTTime);
-                  if(shouldTrack && !IsInTradeTime(timeAtMaxHigh)) shouldTrack = false;
-
-                  if(shouldTrack)
-                  {
-                     arrSymTF[idx].lastBearRegRTPrice = currentPrice;
-                     arrSymTF[idx].lastBearRegRTTime = currentBarTimeForTrack;
-                  }
-
-                  string strengthTag = isStrong ? " [STRONG]" : " [WEAK]";
-
-                  ArrayResize(rtLines, rtCount + 1);
-                  rtLines[rtCount].text = "[SELL-RT] [" + tfStr + "] " + sym + " [Reg] (" + timeStr + ")" + strengthTag + " [Running...]";
-                  rtLines[rtCount].time = timeAtMaxHigh;
-                  rtLines[rtCount].isToday = (gmt7Time >= todayStartGMT7);
-                  rtCount++;
-
-                  WriteRTDivergence(sym, tfStr, true, true, lastHighTime, lastHighRSI, lastHighPrice, timeAtMaxHigh, rsiAtMaxHigh, rtMaxHigh);
-
-                  if(gmt7Time >= todayStartGMT7)
-                     AddTodaySignal(sym, tfStr, "BEAR", "Reg", "RT", lastHighTime, timeAtMaxHigh, lastHighPrice, rtMaxHigh, lastHighRSI, rsiAtMaxHigh);
-
-                  if(timeAtMaxHigh >= g_initTime && IsNewsSafe())
-                  {
-                     string sigKey = sym + "|" + tfStr + "|SELL|Reg|" + IntegerToString(timeAtMaxHigh);
-                     EmitRealtimeSignal(idx, sym, tfStr, "SELL", "REG", isStrong, currentPrice, rtMaxHigh, 0.0, lastHighPrice, rtMaxHigh, peakVolRatio, timeAtMaxHigh, sigKey);
-                  }
-
-                  if(isStrong && timeAtMaxHigh >= g_initTime && IsNewsSafe() && shouldTrack && IsValidSLForDirection("SELL", currentPrice, rtMaxHigh))
-                  {
-                     WriteStrongSignalToGV(sym, tfStr, "SELL", currentPrice, rtMaxHigh, rtMaxHigh, lastHighPrice, true, "REG", timeAtMaxHigh);
-                     string sigKey = sym + "|" + tfStr + "|SELL|Reg|" + IntegerToString(timeAtMaxHigh);
-                     PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "SELL", "Reg", currentPrice, rtMaxHigh, timeAtMaxHigh, sigKey);
-                  }
-
-                  if(timeAtMaxHigh >= g_initTime && timeAtMaxHigh != arrSymTF[idx].lastBearNotifyBar)
-                  {
-                     datetime now2 = TimeCurrent();
-                     if(EnablePushNotify && now2 - arrSymTF[idx].lastBearNotifyTime >= NotifyCooldownMinutes * 60 && IsNewsSafe())
-                     {
-                        SendDivergenceNotify(sym, tfStr, "Reg", "SELL", timeStr);
-                        arrSymTF[idx].lastBearNotifyTime = now2;
-                        arrSymTF[idx].lastBearNotifyBar = timeAtMaxHigh;
-                     }
-                  }
-               }
-            }
-         }
-      }
-
-      if(rtMaxRSI > lastHighRSI && priceAtMaxRSI < lastHighPrice && rtMaxRSIShift != lastHighShift)
-      {
-         if(!RT_RequireMonotonicMove || IsMonotonicStructure(sym, tf, rtMaxRSIShift, lastHighShift, true))
-         {
-            if(CheckMiddleValid(sym, tf, rtMaxRSIShift, lastHighShift, lastHighTime, true))
-            {
-               double peakVolRatio = GetVolumeRatioAtShift(sym, rtMaxRSIShift, tf);
-               if(peakVolRatio >= VolumeAutoRatio)
-               {
-                  datetime gmt7Time = ServerTimeToGMT7(timeAtMaxRSI);
-                  string timeStr = TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES);
-                  double closeNew = iClose(sym, tf, rtMaxRSIShift);
-                  double closeOld = iClose(sym, tf, iBarShift(sym, tf, lastHighTime, false));
-                  bool isStrong = (closeNew < closeOld);
-
-                  double currentPrice = SymbolInfoDouble(sym, SYMBOL_BID);
-                  bool shouldTrack = ShouldRetrack(idx, currentPrice, arrSymTF[idx].lastBearHidRTPrice, sym, tf, currentBarTimeForTrack, arrSymTF[idx].lastBearHidRTTime);
-                  if(shouldTrack && !IsInTradeTime(timeAtMaxRSI)) shouldTrack = false;
-
-                  if(shouldTrack)
-                  {
-                     arrSymTF[idx].lastBearHidRTPrice = currentPrice;
-                     arrSymTF[idx].lastBearHidRTTime = currentBarTimeForTrack;
-                  }
-
-                  string strengthTag = isStrong ? " [STRONG]" : " [WEAK]";
-
-                  ArrayResize(rtLines, rtCount + 1);
-                  rtLines[rtCount].text = "[SELL-RT] [" + tfStr + "] " + sym + " [Hid] (" + timeStr + ")" + strengthTag + " [Running...]";
-                  rtLines[rtCount].time = timeAtMaxRSI;
-                  rtLines[rtCount].isToday = (gmt7Time >= todayStartGMT7);
-                  rtCount++;
-
-                  WriteRTDivergence(sym, tfStr, true, false, lastHighTime, lastHighRSI, lastHighPrice, timeAtMaxRSI, rtMaxRSI, priceAtMaxRSI);
-
-                  if(gmt7Time >= todayStartGMT7)
-                     AddTodaySignal(sym, tfStr, "BEAR", "Hid", "RT", lastHighTime, timeAtMaxRSI, lastHighPrice, priceAtMaxRSI, lastHighRSI, rtMaxRSI);
-
-                  double slHidBear = MathMax(lastHighPrice, priceAtMaxRSI);
-                  if(timeAtMaxRSI >= g_initTime && IsNewsSafe())
-                  {
-                     string sigKey = sym + "|" + tfStr + "|SELL|Hid|" + IntegerToString(timeAtMaxRSI);
-                     EmitRealtimeSignal(idx, sym, tfStr, "SELL", "HID", isStrong, currentPrice, slHidBear, 0.0, lastHighPrice, priceAtMaxRSI, peakVolRatio, timeAtMaxRSI, sigKey);
-                  }
-
-                  if(isStrong && timeAtMaxRSI >= g_initTime && IsNewsSafe() && shouldTrack)
-                  {
-                     if(IsValidSLForDirection("SELL", currentPrice, slHidBear))
-                     {
-                        WriteStrongSignalToGV(sym, tfStr, "SELL", currentPrice, slHidBear, lastHighPrice, lastHighPrice, true, "HID", timeAtMaxRSI);
-                        string sigKey = sym + "|" + tfStr + "|SELL|Hid|" + IntegerToString(timeAtMaxRSI);
-                        PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "SELL", "Hid", currentPrice, slHidBear, timeAtMaxRSI, sigKey);
-                     }
-                  }
-
-                  if(timeAtMaxRSI >= g_initTime && timeAtMaxRSI != arrSymTF[idx].lastBearNotifyBar)
-                  {
-                     datetime now2 = TimeCurrent();
-                     if(EnablePushNotify && now2 - arrSymTF[idx].lastBearNotifyTime >= NotifyCooldownMinutes * 60 && IsNewsSafe())
-                     {
-                        SendDivergenceNotify(sym, tfStr, "Hid", "SELL", timeStr);
-                        arrSymTF[idx].lastBearNotifyTime = now2;
-                        arrSymTF[idx].lastBearNotifyBar = timeAtMaxRSI;
-                     }
-                  }
-               }
-            }
-         }
-      }
-   }
-
-   // REALTIME BULLISH
-   if(lastLowPrice > 0 && lastLowShift >= 0)
-   {
-      int startBull = MathMax(0, lastLowShift - 1);
-
-      double rtMinLow = DBL_MAX, rsiAtMinLow = 0;
-      datetime timeAtMinLow = 0;
-      int rtMinLowShift = -1;
-      for(int i = startBull; i >= 0; i--)
-      {
-         double curL = iLow(sym, tf, i);
-         if(curL < rtMinLow) { rtMinLow = curL; rsiAtMinLow = GetRSI(arrSymTF[idx].rsiBuf, i); timeAtMinLow = iTime(sym, tf, i); rtMinLowShift = i; }
-      }
-
-      double rtMinRSI = DBL_MAX, priceAtMinRSI = 0;
-      datetime timeAtMinRSI = 0;
-      int rtMinRSIShift = -1;
-      for(int i = startBull; i >= 0; i--)
-      {
-         double curR = GetRSI(arrSymTF[idx].rsiBuf, i);
-         if(curR < rtMinRSI) { rtMinRSI = curR; priceAtMinRSI = iLow(sym, tf, i); timeAtMinRSI = iTime(sym, tf, i); rtMinRSIShift = i; }
-      }
-
-      if(rtMinLow < lastLowPrice && rsiAtMinLow > lastLowRSI && rtMinLowShift != lastLowShift)
-      {
-         if(!RT_RequireMonotonicMove || IsMonotonicStructure(sym, tf, rtMinLowShift, lastLowShift, false))
-         {
-            if(CheckMiddleValid(sym, tf, rtMinLowShift, lastLowShift, lastLowTime, false))
-            {
-               double troughVolRatio = GetVolumeRatioAtShift(sym, rtMinLowShift, tf);
-               if(troughVolRatio >= VolumeAutoRatio)
-               {
-                  datetime gmt7Time = ServerTimeToGMT7(timeAtMinLow);
-                  string timeStr = TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES);
-                  double closeNew = iClose(sym, tf, rtMinLowShift);
-                  double closeOld = iClose(sym, tf, iBarShift(sym, tf, lastLowTime, false));
-                  bool isStrong = (closeNew < closeOld);
-
-                  double currentPrice = SymbolInfoDouble(sym, SYMBOL_ASK);
-                  bool shouldTrack = ShouldRetrack(idx, currentPrice, arrSymTF[idx].lastBullRegRTPrice, sym, tf, currentBarTimeForTrack, arrSymTF[idx].lastBullRegRTTime);
-                  if(shouldTrack && !IsInTradeTime(timeAtMinLow)) shouldTrack = false;
-
-                  if(shouldTrack)
-                  {
-                     arrSymTF[idx].lastBullRegRTPrice = currentPrice;
-                     arrSymTF[idx].lastBullRegRTTime = currentBarTimeForTrack;
-                  }
-
-                  string strengthTag = isStrong ? " [STRONG]" : " [WEAK]";
-
-                  ArrayResize(rtLines, rtCount + 1);
-                  rtLines[rtCount].text = "[BUY-RT] [" + tfStr + "] " + sym + " [Reg] (" + timeStr + ")" + strengthTag + " [Running...]";
-                  rtLines[rtCount].time = timeAtMinLow;
-                  rtLines[rtCount].isToday = (gmt7Time >= todayStartGMT7);
-                  rtCount++;
-
-                  WriteRTDivergence(sym, tfStr, false, true, lastLowTime, lastLowRSI, lastLowPrice, timeAtMinLow, rsiAtMinLow, rtMinLow);
-
-                  if(gmt7Time >= todayStartGMT7)
-                     AddTodaySignal(sym, tfStr, "BULL", "Reg", "RT", lastLowTime, timeAtMinLow, lastLowPrice, rtMinLow, lastLowRSI, rsiAtMinLow);
-
-                  if(timeAtMinLow >= g_initTime && IsNewsSafe())
-                  {
-                     string sigKey = sym + "|" + tfStr + "|BUY|Reg|" + IntegerToString(timeAtMinLow);
-                     EmitRealtimeSignal(idx, sym, tfStr, "BUY", "REG", isStrong, currentPrice, rtMinLow, 0.0, lastLowPrice, rtMinLow, troughVolRatio, timeAtMinLow, sigKey);
-                  }
-
-                  if(isStrong && timeAtMinLow >= g_initTime && IsNewsSafe() && shouldTrack && IsValidSLForDirection("BUY", currentPrice, rtMinLow))
-                  {
-                     WriteStrongSignalToGV(sym, tfStr, "BUY", currentPrice, rtMinLow, lastHighPrice, rtMinLow, true, "REG", timeAtMinLow);
-                     string sigKey = sym + "|" + tfStr + "|BUY|Reg|" + IntegerToString(timeAtMinLow);
-                     PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "BUY", "Reg", currentPrice, rtMinLow, timeAtMinLow, sigKey);
-                  }
-
-                  if(timeAtMinLow >= g_initTime && timeAtMinLow != arrSymTF[idx].lastBullNotifyBar)
-                  {
-                     datetime now2 = TimeCurrent();
-                     if(EnablePushNotify && now2 - arrSymTF[idx].lastBullNotifyTime >= NotifyCooldownMinutes * 60 && IsNewsSafe())
-                     {
-                        SendDivergenceNotify(sym, tfStr, "Reg", "BUY", timeStr);
-                        arrSymTF[idx].lastBullNotifyTime = now2;
-                        arrSymTF[idx].lastBullNotifyBar = timeAtMinLow;
-                     }
-                  }
-               }
-            }
-         }
-      }
-
-      if(rtMinRSI < lastLowRSI && priceAtMinRSI > lastLowPrice && rtMinRSIShift != lastLowShift)
-      {
-         if(!RT_RequireMonotonicMove || IsMonotonicStructure(sym, tf, rtMinRSIShift, lastLowShift, false))
-         {
-            if(CheckMiddleValid(sym, tf, rtMinRSIShift, lastLowShift, lastLowTime, false))
-            {
-               double troughVolRatio = GetVolumeRatioAtShift(sym, rtMinRSIShift, tf);
-               if(troughVolRatio >= VolumeAutoRatio)
-               {
-                  datetime gmt7Time = ServerTimeToGMT7(timeAtMinRSI);
-                  string timeStr = TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES);
-                  double closeNew = iClose(sym, tf, rtMinRSIShift);
-                  double closeOld = iClose(sym, tf, iBarShift(sym, tf, lastLowTime, false));
-                  bool isStrong = (closeNew > closeOld);
-
-                  double currentPrice = SymbolInfoDouble(sym, SYMBOL_ASK);
-                  bool shouldTrack = ShouldRetrack(idx, currentPrice, arrSymTF[idx].lastBullHidRTPrice, sym, tf, currentBarTimeForTrack, arrSymTF[idx].lastBullHidRTTime);
-                  if(shouldTrack && !IsInTradeTime(timeAtMinRSI)) shouldTrack = false;
-
-                  if(shouldTrack)
-                  {
-                     arrSymTF[idx].lastBullHidRTPrice = currentPrice;
-                     arrSymTF[idx].lastBullHidRTTime = currentBarTimeForTrack;
-                  }
-
-                  string strengthTag = isStrong ? " [STRONG]" : " [WEAK]";
-
-                  ArrayResize(rtLines, rtCount + 1);
-                  rtLines[rtCount].text = "[BUY-RT] [" + tfStr + "] " + sym + " [Hid] (" + timeStr + ")" + strengthTag + " [Running...]";
-                  rtLines[rtCount].time = timeAtMinRSI;
-                  rtLines[rtCount].isToday = (gmt7Time >= todayStartGMT7);
-                  rtCount++;
-
-                  WriteRTDivergence(sym, tfStr, false, false, lastLowTime, lastLowRSI, lastLowPrice, timeAtMinRSI, rtMinRSI, priceAtMinRSI);
-
-                  if(gmt7Time >= todayStartGMT7)
-                     AddTodaySignal(sym, tfStr, "BULL", "Hid", "RT", lastLowTime, timeAtMinRSI, lastLowPrice, priceAtMinRSI, lastLowRSI, rtMinRSI);
-
-                  double slHidBull = MathMin(lastLowPrice, priceAtMinRSI);
-                  if(timeAtMinRSI >= g_initTime && IsNewsSafe())
-                  {
-                     string sigKey = sym + "|" + tfStr + "|BUY|Hid|" + IntegerToString(timeAtMinRSI);
-                     EmitRealtimeSignal(idx, sym, tfStr, "BUY", "HID", isStrong, currentPrice, slHidBull, 0.0, lastLowPrice, priceAtMinRSI, troughVolRatio, timeAtMinRSI, sigKey);
-                  }
-
-                  if(isStrong && timeAtMinRSI >= g_initTime && IsNewsSafe() && shouldTrack)
-                  {
-                     if(IsValidSLForDirection("BUY", currentPrice, slHidBull))
-                     {
-                        WriteStrongSignalToGV(sym, tfStr, "BUY", currentPrice, slHidBull, lastHighPrice, lastLowPrice, true, "HID", timeAtMinRSI);
-                        string sigKey = sym + "|" + tfStr + "|BUY|Hid|" + IntegerToString(timeAtMinRSI);
-                        PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "BUY", "Hid", currentPrice, slHidBull, timeAtMinRSI, sigKey);
-                     }
-                  }
-
-                  if(timeAtMinRSI >= g_initTime && timeAtMinRSI != arrSymTF[idx].lastBullNotifyBar)
-                  {
-                     datetime now2 = TimeCurrent();
-                     if(EnablePushNotify && now2 - arrSymTF[idx].lastBullNotifyTime >= NotifyCooldownMinutes * 60 && IsNewsSafe())
-                     {
-                        SendDivergenceNotify(sym, tfStr, "Hid", "BUY", timeStr);
-                        arrSymTF[idx].lastBullNotifyTime = now2;
-                        arrSymTF[idx].lastBullNotifyBar = timeAtMinRSI;
-                     }
-                  }
-               }
-            }
-         }
-      }
+      lastHistorySyncMs = nowMs;
+      PublishRealClosedDeals();
    }
 }
-
-//+------------------------------------------------------------------+
-//| ONCALCULATE                                                       |
-//+------------------------------------------------------------------+
-int OnCalculate(const int rates_total, const int prev_calculated, const datetime &time[], const double &open[], const double &high[], const double &low[], const double &close[], const long &tick_volume[], const long &volume[], const int &spread[])
-{
-   return rates_total;
-}
-//+------------------------------------------------------------------+
