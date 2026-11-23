@@ -594,14 +594,22 @@ bool PublishCandleBatch(string symbol, string tfText, ENUM_TIMEFRAMES period)
    string body=StringFormat("{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"digits\":%d,\"tick_size\":%.10f,\"tick_value\":%.10f,\"volume_min\":%.8f,\"volume_max\":%.8f,\"volume_step\":%.8f,\"candles\":%s}",
       JsonEscape(symbol),JsonEscape(tfText),digits,tickSize,tickValue,volumeMin,volumeMax,volumeStep,candles);
    string response; int status;
-   if(!HttpRequest("POST","/api/mt5/candles",body,response,status))
+   bool posted=HttpRequest("POST","/api/mt5/candles",body,response,status);
+   if(!posted)
    {
       Sleep(100);
-      if(!HttpRequest("POST","/api/mt5/candles",body,response,status))
-      {
-         Print("[CHART FEED] Upload failed for ",symbol," ",tfText,". HTTP=",status," response=",response);
-         return false;
-      }
+      posted=HttpRequest("POST","/api/mt5/candles",body,response,status);
+   }
+   if(!posted)
+   {
+      Print("[CHART FEED] Upload failed for ",symbol," ",tfText,". HTTP=",status," response=",response);
+      return false;
+   }
+   if(JsonValue(response,"mongo_synced")!="true")
+   {
+      Print("[CHART FEED] API received bars but MongoDB mirror is not ready for ",
+            symbol," ",tfText,". response=",response);
+      return false;
    }
    return true;
 }
