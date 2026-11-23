@@ -1221,7 +1221,6 @@ function startAuthorizedPolling() {
   if (authorizedPollingStarted || !apiAccessGranted) return;
   authorizedPollingStarted = true;
   void syncEaSettings();
-  void syncSymbolCommission($('symbol').value);
   void refreshCommissionInfo();
   void refreshEmergencyModalWarning();
   void checkServerStatus();
@@ -1229,7 +1228,7 @@ function startAuthorizedPolling() {
   void refreshChartPositions();
   authorizedTimers = [
     setInterval(() => { if (apiAccessGranted) void syncEaSettings(); }, 30000),
-    setInterval(() => { if (apiAccessGranted) { void syncSymbolCommission($('symbol').value); void refreshCommissionInfo(); } }, 60000),
+    setInterval(() => { if (apiAccessGranted) void refreshCommissionInfo(); }, 60000),
     setInterval(() => { if (apiAccessGranted) void refreshEmergencyModalWarning(); }, 30000),
     setInterval(() => { if (apiAccessGranted) void checkServerStatus(); }, 30000),
     setInterval(() => { if (apiAccessGranted) void load(); }, 10000),
