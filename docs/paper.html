@@ -1193,7 +1193,7 @@ function init(){
 async function seed(resetLevels=true){
  const selectedSymbol=symbol,selectedTf=$('tf').value;
  if(resetLevels){bars=[];rsiPoints=[];candles.setData([]);rsi.setData([]);}
- const base=String(window.FOREX_API_BASE||'').replace(/\\/+$/,'');
+ let base=String(window.FOREX_API_BASE||'');while(base.endsWith('/'))base=base.slice(0,-1);
  if(!base){text('feedState','CHƯA CẤU HÌNH API');return;}
  text('feedState','ĐANG ĐỒNG BỘ...');
  try{
