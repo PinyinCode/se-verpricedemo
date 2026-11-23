@@ -717,6 +717,53 @@ const API_KEY_STORAGE = 'chartApiKey';
 let chartApiKey = (() => {
   try { return localStorage.getItem(API_KEY_STORAGE) || ''; } catch { return ''; }
 })();
+let chartAuthorized = false;
+let chartPollingTimers = [];
+function stopChartPolling() {
+  chartAuthorized = false;
+  chartPollingTimers.forEach(id => clearInterval(id));
+  chartPollingTimers = [];
+}
+function startChartPolling() {
+  if (chartAuthorized) return;
+  chartAuthorized = true;
+  void checkServerStatus();
+  void load();
+  void refreshChartPositions();
+  chartPollingTimers = [
+    setInterval(() => { if (chartAuthorized) void checkServerStatus(); }, 30000),
+    setInterval(() => { if (chartAuthorized) void load(); }, 10000),
+    setInterval(() => { if (chartAuthorized) void refreshChartPositions(); }, 5000)
+  ];
+}
+async function validateChartApiKey() {
+  if (!chartApiKey) {
+    stopChartPolling();
+    $('feedState').textContent = 'Nhập API key để tải dữ liệu';
+    $('positionsUpdated').textContent = 'Chưa nhập API key';
+    return false;
+  }
+  try {
+    const r = await fetch('/api/dashboard', {
+      cache: 'no-store',
+      headers: { 'X-API-Key': chartApiKey }
+    });
+    if (!r.ok) {
+      stopChartPolling();
+      $('apiKeyBox').classList.add('err');
+      $('feedState').textContent = r.status === 401 ? 'API key không hợp lệ' : 'Không xác thực được máy chủ';
+      $('positionsUpdated').textContent = 'Chưa được cấp quyền truy cập';
+      return false;
+    }
+    $('apiKeyBox').classList.remove('err');
+    startChartPolling();
+    return true;
+  } catch (_) {
+    stopChartPolling();
+    $('feedState').textContent = 'Không thể kết nối máy chủ';
+    return false;
+  }
+}
 
 function refreshApiKeyBox() {
   const box = $('apiKeyBox'), inp = $('apiKeyInput');
@@ -737,7 +784,12 @@ function maskKey(k) {
 async function apiFetch(url, options = {}) {
   const opts = { ...options, headers: { ...(options.headers || {}) } };
   if (chartApiKey) opts.headers['X-API-Key'] = chartApiKey;
-  return fetch(url, opts);
+  const response = await fetch(url, opts);
+  if (response.status === 401 || response.status === 503) {
+    stopChartPolling();
+    $('apiKeyBox').classList.add('err');
+  }
+  return response;
 }
 
 const fmt = n => Number(n).toLocaleString('en-US', { minimumFractionDigits: mt5Digits, maximumFractionDigits: mt5Digits });
@@ -1025,11 +1077,12 @@ function activateMarketPreset() {
 }
 
 async function load() {
+  if (!chartAuthorized) return;
   const symbol = $('symbol').value, tf = $('tf').value;
   $('chartTitle').textContent = symbol + ' · ' + tf;
   $('feedState').textContent = 'Đang tải...';
   try {
-    const res = await fetch('/api/chart/data?symbol=' + encodeURIComponent(symbol) + '&timeframe=' + encodeURIComponent(tf) + '&limit=1000', { cache: 'no-store' });
+    const res = await apiFetch('/api/chart/data?symbol=' + encodeURIComponent(symbol) + '&timeframe=' + encodeURIComponent(tf) + '&limit=1000', { cache: 'no-store' });
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     mt5Digits = Math.max(0, Math.min(10, Number(data.digits ?? 5)));
@@ -1236,8 +1289,9 @@ function renderChartPositions(positions, pendingOrders = []) {
 }
 
 async function refreshChartPositions() {
+  if (!chartAuthorized) return;
   try {
-    const r = await fetch('/api/dashboard', { cache: 'no-store' });
+    const r = await apiFetch('/api/dashboard', { cache: 'no-store' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     const mergedOpen = new Map();
@@ -1332,8 +1386,9 @@ function renderStats(data) {
   $('statsUpdated').textContent = 'Cập nhật ' + new Date().toLocaleTimeString('vi-VN');
 }
 async function refreshStats() {
+  if (!chartAuthorized) return;
   try {
-    const r = await fetch('/api/dashboard', { cache: 'no-store' });
+    const r = await apiFetch('/api/dashboard', { cache: 'no-store' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     renderStats(await r.json());
   } catch (e) {
@@ -1668,6 +1723,7 @@ const formatLatency = ms => {
   return n >= 1000 ? (n / 1000).toFixed(1) + 's' : n + 'ms';
 };
 async function checkServerStatus() {
+  if (!chartAuthorized) return;
   const t0 = performance.now();
   try {
     const res = await fetch('/api/health', { cache: 'no-store' });
@@ -1693,13 +1749,17 @@ refreshApiKeyBox();
 
 $('apiKeySave').addEventListener('click', () => {
   saveApiKey($('apiKeyInput').value);
-  $('requestState').textContent = 'Đã lưu API key (' + maskKey(chartApiKey) + ') · thử đặt lệnh để kiểm tra.';
+  stopChartPolling();
+  $('requestState').textContent = 'Đang xác thực API key (' + maskKey(chartApiKey) + ')...';
+  void validateChartApiKey();
 });
 $('apiKeyInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') {
     saveApiKey($('apiKeyInput').value);
+    stopChartPolling();
     $('apiKeyInput').blur();
-    $('requestState').textContent = 'Đã lưu API key (' + maskKey(chartApiKey) + ') · thử đặt lệnh để kiểm tra.';
+    $('requestState').textContent = 'Đang xác thực API key (' + maskKey(chartApiKey) + ')...';
+    void validateChartApiKey();
   }
 });
 $('apiKeyInput').addEventListener('input', () => {
@@ -1712,13 +1772,12 @@ $('apiKeyToggle').addEventListener('click', () => {
 });
 
 updateGMT7Clock();
-checkServerStatus();
 setInterval(updateGMT7Clock, 1000);
-setInterval(checkServerStatus, 15000);
-load();
-setInterval(load, 5000);
-refreshChartPositions();
-setInterval(refreshChartPositions, 3000);
+if (chartApiKey) void validateChartApiKey();
+else {
+  $('feedState').textContent = 'Nhập API key để tải dữ liệu';
+  $('positionsUpdated').textContent = 'Chưa nhập API key';
+}
 </script>
 </body>
 </html>
