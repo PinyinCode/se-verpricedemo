@@ -77,7 +77,7 @@
     .emergency h2, .emergency p, .emergency-btn { grid-column:1; grid-row:auto; justify-self:start; }
     .emergency-btn { max-width:100%; }
   }
-  .emergency-btn:hover { background: #b91c1c; }
+  .emergency-btn:hover { background: #991b1b; }
   .emergency-btn.active { background: #991b1b; animation: pulse 1.5s infinite; }
   @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.7; } }
   .status-bar {
@@ -128,7 +128,7 @@
   <!-- Emergency -->
   <div class="emergency">
     <h2>🚨 EMERGENCY STOP</h2>
-    <p style="color:#fca5a5;font-size:13px;margin:8px 0 16px">
+    <p>
       Công tắc gửi trạng thái dừng về EA. Không coi đây là xác nhận rằng mọi vị thế/pending đã được đóng hoặc hủy.
     </p>
     <button class="emergency-btn" id="emergencyBtn">BẬT EMERGENCY STOP</button>
@@ -247,11 +247,13 @@ const API_KEY_STORAGE = "chartApiKey";
 
 let currentSettings = {};
 let pendingChanges = {};
+let isSaving = false;
+let toastTimer = null;
 
 function getApiKey() {
-  let key = localStorage.getItem(API_KEY_STORAGE);
+  let key = (localStorage.getItem(API_KEY_STORAGE) || "").trim();
   if (!key) {
-    key = prompt("Nhập API Key:");
+    key = (prompt("Nhập API Key:") || "").trim();
     if (key) localStorage.setItem(API_KEY_STORAGE, key);
   }
   return key;
@@ -262,41 +264,45 @@ function showToast(msg, isError = false) {
   t.textContent = msg;
   t.classList.toggle("error", isError);
   t.classList.add("show");
-  setTimeout(() => t.classList.remove("show"), 2500);
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove("show"), 2500);
 }
 
 function updateSaveButton() {
   const btn = document.getElementById("saveBtn");
-  btn.disabled = Object.keys(pendingChanges).length === 0;
-  btn.textContent = Object.keys(pendingChanges).length > 0
-    ? `Lưu ${Object.keys(pendingChanges).length} thay đổi`
-    : "Lưu thay đổi";
+  const count = Object.keys(pendingChanges).length;
+  btn.disabled = count === 0 || isSaving;
+  btn.textContent = isSaving
+    ? "Đang lưu..."
+    : (count > 0 ? `Lưu ${count} thay đổi` : "Lưu thay đổi");
 }
 
-function renderSettings(settings) {
-  currentSettings = settings;
-  pendingChanges = {};
+function renderSettings(settings, { preserveDraft = false } = {}) {
+  currentSettings = settings || {};
+  if (!preserveDraft) {
+    pendingChanges = {};
+  }
 
-  // Toggles
   document.querySelectorAll(".switch").forEach(sw => {
     const key = sw.dataset.key;
-    const on = !!settings[key];
+    if (preserveDraft && Object.prototype.hasOwnProperty.call(pendingChanges, key)) return;
+    const on = !!currentSettings[key];
     sw.classList.toggle("on", on);
     sw.classList.toggle("off", !on);
   });
 
-  // Inputs
   document.querySelectorAll("[data-key]").forEach(el => {
     if (el.classList.contains("switch")) return;
     const key = el.dataset.key;
-    if (settings[key] !== undefined) {
-      el.value = settings[key];
+    if (document.activeElement === el) return;
+    if (preserveDraft && Object.prototype.hasOwnProperty.call(pendingChanges, key)) return;
+    if (currentSettings[key] !== undefined) {
+      el.value = currentSettings[key];
     }
   });
 
-  // Emergency
   const em = document.getElementById("emergencyBtn");
-  if (settings.emergency_stop) {
+  if (currentSettings.emergency_stop) {
     em.textContent = "🚨 EMERGENCY ĐANG BẬT — Nhấn để TẮT";
     em.classList.add("active");
   } else {
@@ -305,7 +311,7 @@ function renderSettings(settings) {
   }
 
   document.getElementById("lastUpdated").textContent =
-    settings.updated_at ? new Date(settings.updated_at).toLocaleTimeString("vi-VN") : "—";
+    currentSettings.updated_at ? new Date(currentSettings.updated_at).toLocaleTimeString("vi-VN") : "—";
   document.getElementById("statusDot").className = "status-dot online";
   document.getElementById("statusText").textContent = "Kết nối OK";
 
@@ -313,11 +319,13 @@ function renderSettings(settings) {
 }
 
 async function loadSettings() {
+  if (isSaving) return;
   try {
-    const r = await fetch(`${API_BASE}/api/settings`);
+    const r = await fetch(`${API_BASE}/api/settings`, { cache: "no-store" });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const data = await r.json();
-    renderSettings(data.settings);
+    const hasDraft = Object.keys(pendingChanges).length > 0;
+    renderSettings(data.settings, { preserveDraft: hasDraft });
   } catch (e) {
     document.getElementById("statusDot").className = "status-dot offline";
     document.getElementById("statusText").textContent = "Lỗi kết nối: " + e.message;
@@ -325,10 +333,22 @@ async function loadSettings() {
 }
 
 async function saveSettings() {
-  if (Object.keys(pendingChanges).length === 0) return;
+  if (Object.keys(pendingChanges).length === 0 || isSaving) return;
+
+  const payload = { updated_by: "web-dashboard" };
+  for (const [key, rawVal] of Object.entries(pendingChanges)) {
+    if (typeof rawVal === "number" && !Number.isFinite(rawVal)) {
+      showToast(`Giá trị không hợp lệ cho ${key}`, true);
+      return;
+    }
+    payload[key] = rawVal;
+  }
+
   const key = getApiKey();
   if (!key) { showToast("Cần API Key", true); return; }
 
+  isSaving = true;
+  updateSaveButton();
   try {
     const r = await fetch(`${API_BASE}/api/settings`, {
       method: "PUT",
@@ -336,7 +356,7 @@ async function saveSettings() {
         "Content-Type": "application/json",
         "X-API-Key": key,
       },
-      body: JSON.stringify({ ...pendingChanges, updated_by: "web-dashboard" }),
+      body: JSON.stringify(payload),
     });
     if (r.status === 401) {
       localStorage.removeItem(API_KEY_STORAGE);
@@ -347,22 +367,27 @@ async function saveSettings() {
       throw new Error(err.detail || `HTTP ${r.status}`);
     }
     const data = await r.json();
-    renderSettings(data.settings);
+    isSaving = false;
+    renderSettings(data.settings, { preserveDraft: false });
     showToast("✅ Đã lưu");
   } catch (e) {
+    isSaving = false;
+    updateSaveButton();
     showToast("❌ " + e.message, true);
   }
 }
 
-// ---- Events ----
 document.querySelectorAll(".switch").forEach(sw => {
   sw.addEventListener("click", () => {
     const key = sw.dataset.key;
-    const current = sw.classList.contains("on");
-    const next = !current;
+    const next = !sw.classList.contains("on");
     sw.classList.toggle("on", next);
     sw.classList.toggle("off", !next);
-    pendingChanges[key] = next;
+    if (Boolean(currentSettings[key]) === next) {
+      delete pendingChanges[key];
+    } else {
+      pendingChanges[key] = next;
+    }
     updateSaveButton();
   });
 });
@@ -371,8 +396,14 @@ document.querySelectorAll("input[data-key], select[data-key]").forEach(el => {
   el.addEventListener("input", () => {
     const key = el.dataset.key;
     let val = el.value;
-    if (el.type === "number") val = parseFloat(val);
-    pendingChanges[key] = val;
+    if (el.type === "number") {
+      val = el.value.trim() === "" ? NaN : parseFloat(el.value);
+    }
+    if (currentSettings[key] !== undefined && String(currentSettings[key]) === String(val)) {
+      delete pendingChanges[key];
+    } else {
+      pendingChanges[key] = val;
+    }
     updateSaveButton();
   });
 });
@@ -380,7 +411,7 @@ document.querySelectorAll("input[data-key], select[data-key]").forEach(el => {
 document.getElementById("saveBtn").addEventListener("click", saveSettings);
 
 document.getElementById("emergencyBtn").addEventListener("click", async () => {
-  const isActive = currentSettings.emergency_stop;
+  const isActive = !!currentSettings.emergency_stop;
   if (isActive) {
     if (!confirm("TẮT Emergency Stop?\n\nEA sẽ chạy lại theo các toggle khác.")) return;
   } else {
@@ -394,20 +425,26 @@ document.getElementById("emergencyBtn").addEventListener("click", async () => {
       headers: { "Content-Type": "application/json", "X-API-Key": key },
       body: JSON.stringify({
         emergency_stop: !isActive,
-        emergency_close_all: true,
+        emergency_close_all: !isActive,
         updated_by: "emergency-button",
       }),
     });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    if (r.status === 401) {
+      localStorage.removeItem(API_KEY_STORAGE);
+      throw new Error("API key sai, nhập lại");
+    }
+    if (!r.ok) {
+      const err = await r.json().catch(() => ({}));
+      throw new Error(err.detail || `HTTP ${r.status}`);
+    }
     const data = await r.json();
-    renderSettings(data.settings);
+    renderSettings(data.settings, { preserveDraft: false });
     showToast(isActive ? "✅ Đã tắt Emergency" : "🚨 EMERGENCY ĐÃ BẬT");
   } catch (e) {
     showToast("❌ " + e.message, true);
   }
 });
 
-// ---- Init ----
 loadSettings();
 setInterval(loadSettings, 5000);
 </script>
