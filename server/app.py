@@ -783,7 +783,7 @@ def _settings_row_to_dict(row: sqlite3.Row) -> dict:
     return d
 
 
-@app.get("/api/settings")
+@app.get("/api/settings", dependencies=[Depends(require_key)])
 def get_settings():
     """Public read: dashboard và EA cần đọc cấu hình đồng bộ."""
     with db() as conn:
@@ -1779,7 +1779,7 @@ def get_commissions(symbol: str | None = Query(default=None, min_length=3, max_l
     return {"ok": True, "items": rows}
 
 
-@app.get("/api/chart/data")
+@app.get("/api/chart/data", dependencies=[Depends(require_key)])
 def chart_data(
     symbol: str = Query(min_length=3, max_length=32),
     timeframe: Literal["M1", "M5", "M15", "M30", "H1", "H4", "D1"] = Query(default="M15"),
