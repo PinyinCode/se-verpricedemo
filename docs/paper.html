@@ -1212,51 +1212,49 @@ function demoRsi(data, period=14){
  }
  return out;
 }
-function buildDemoBars(selectedSymbol, selectedTf){
- const spec=cfg[selectedSymbol]||cfg.EURUSD;
- const base=spec[0],step=spec[1],digits=spec[2];
- const seconds=(selectedTf==='H1'?3600:900);
- const now=Math.floor(Date.now()/1000),lastTime=Math.floor(now/seconds)*seconds;
- const seedCode=[...selectedSymbol].reduce((n,ch)=>n+ch.charCodeAt(0),0);
- const result=[];
- for(let i=499;i>=0;i--){
-  const index=Math.floor(lastTime/seconds)-i;
-  const wave=Math.sin(index*.071+seedCode)*.9+Math.sin(index*.019+seedCode*.3)*.55+Math.sin(index*.31+seedCode*.7)*.18;
-  const prevWave=Math.sin((index-1)*.071+seedCode)*.9+Math.sin((index-1)*.019+seedCode*.3)*.55+Math.sin((index-1)*.31+seedCode*.7)*.18;
-  const open=base+prevWave*step*10;
-  let close=base+wave*step*10;
-  if(i===0){
-   const pulse=Math.sin(Date.now()/17000+seedCode)*step*1.1;
-   close+=pulse;
-  }
-  const wick=step*(.7+Math.abs(Math.sin(index*.43+seedCode))*.9);
-  const high=Math.max(open,close)+wick;
-  const low=Math.min(open,close)-wick*.83;
-  result.push({time:lastTime-i*seconds,open:Number(open.toFixed(digits)),high:Number(high.toFixed(digits)),low:Number(low.toFixed(digits)),close:Number(close.toFixed(digits))});
- }
- return result;
-}
-function seed(resetLevels=true){
+let historyPayload=null,historyCacheKey='',historyLoading=false;
+async function seed(resetLevels=true,force=false){
  const selectedSymbol=symbol,selectedTf=$('tf').value;
- if(resetLevels){bars=[];rsiPoints=[];candles.setData([]);rsi.setData([]);}
- text('feedState','ĐANG TẠO DỮ LIỆU PAPER...');
- const nextBars=buildDemoBars(selectedSymbol,selectedTf);
- if(symbol!==selectedSymbol||$('tf').value!==selectedTf)return;
- bars=nextBars;
- rsiPoints=demoRsi(bars);
- price=bars[bars.length-1].close;
- if(resetLevels||!Number($('entryPrice').value)){
-  $('entryPrice').value=fmt(price);
-  $('slPrice').value=fmt(price-cfg[symbol][1]*12);
-  $('tpPrice').value=fmt(price+cfg[symbol][1]*20);
- }
- candles.setData(bars);rsi.setData(rsiPoints);
- if(resetLevels){chart.timeScale().fitContent();rsiChart.timeScale().fitContent();}
- header();createLines();
- text('feedState','PAPER SIMULATION · 500 NẾN');
- const ss=$('serverState');
- if(ss){ss.classList.remove('offline');ss.classList.add('online');ss.title='Dữ liệu mô phỏng cục bộ, không phải giá thị trường';ss.innerHTML='<i></i><span>DEMO</span>';}
- text('requestState','DỮ LIỆU GIẢ LẬP · '+selectedSymbol+' '+selectedTf+' · KHÔNG KẾT NỐI API');
+ const cacheKey=selectedSymbol+'|'+selectedTf;
+ if(historyLoading)return;
+ historyLoading=true;
+ try{
+  text('feedState','ĐANG ĐỌC DỮ LIỆU LỊCH SỬ...');
+  if(!historyPayload||force){
+   const response=await fetch('./data/history.json?ts='+Date.now(),{cache:'no-store'});
+   if(!response.ok)throw new Error('GitHub không trả dữ liệu lịch sử (HTTP '+response.status+').');
+   historyPayload=await response.json();
+  }
+  if(symbol!==selectedSymbol||$('tf').value!==selectedTf)return;
+  const dataset=historyPayload?.symbols?.[selectedSymbol]?.[selectedTf];
+  if(!Array.isArray(dataset)||dataset.length<20)throw new Error('Chưa có dữ liệu '+selectedSymbol+' '+selectedTf+' trên GitHub. Hãy chờ workflow tải dữ liệu tuần.');
+  bars=dataset.map(x=>({time:Number(x.time),open:Number(x.open),high:Number(x.high),low:Number(x.low),close:Number(x.close)}))
+   .filter(x=>Number.isFinite(x.time)&&[x.open,x.high,x.low,x.close].every(Number.isFinite))
+   .sort((a,b)=>a.time-b.time);
+  if(bars.length<20)throw new Error('Dữ liệu lịch sử không hợp lệ hoặc không đủ nến.');
+  rsiPoints=demoRsi(bars);
+  price=bars[bars.length-1].close;
+  if(resetLevels||!Number($('entryPrice').value)){
+   $('entryPrice').value=fmt(price);
+   $('slPrice').value=fmt(price-cfg[symbol][1]*12);
+   $('tpPrice').value=fmt(price+cfg[symbol][1]*20);
+  }
+  candles.setData(bars);rsi.setData(rsiPoints);
+  if(resetLevels){chart.timeScale().fitContent();rsiChart.timeScale().fitContent();}
+  header();createLines();
+  const updated=historyPayload.generatedAt||'không rõ';
+  const last=new Date(bars[bars.length-1].time*1000).toLocaleString('vi-VN');
+  text('feedState','HISTORICAL · '+bars.length+' NẾN · CẬP NHẬT '+updated);
+  const ss=$('serverState');
+  if(ss){ss.classList.remove('offline');ss.classList.add('online');ss.title='Dữ liệu lịch sử công khai lưu trên GitHub; nến cuối: '+last;ss.innerHTML='<i></i><span>HISTORY</span>';}
+  text('requestState','DỮ LIỆU LỊCH SỬ · '+selectedSymbol+' '+selectedTf+' · NẾN CUỐI '+last+' · NGUỒN '+(historyPayload.source||'Yahoo Finance'));
+ }catch(err){
+  bars=[];rsiPoints=[];candles.setData([]);rsi.setData([]);
+  text('feedState','KHÔNG CÓ DỮ LIỆU LỊCH SỬ');
+  const ss=$('serverState');
+  if(ss){ss.classList.remove('online');ss.classList.add('offline');ss.title=String(err.message||err);ss.innerHTML='<i></i><span>NO DATA</span>';}
+  text('requestState','LỖI TẢI DỮ LIỆU: '+String(err.message||err));
+ }finally{historyLoading=false;}
 }
 function header(){
  text('chartTitle',symbol+' · '+$('tf').value+' · PAPER');text('feedState','PAPER SIMULATION');text('positionCount',positions.length);
@@ -1309,7 +1307,7 @@ function close(id){const d=$(id);if(d?.open)d.close();}
 function bind(){
  $('symbol').addEventListener('change',()=>{symbol=$('symbol').value;seed();});
  $('tf').addEventListener('change',()=>{tf=$('tf').value==='H1'?60:15;seed();});
- $('refresh').addEventListener('click',()=>seed());$('fitChart').addEventListener('click',()=>{chart.timeScale().fitContent();rsiChart.timeScale().fitContent();placeLines();});
+ $('refresh').addEventListener('click',()=>seed(true,true));$('fitChart').addEventListener('click',()=>{chart.timeScale().fitContent();rsiChart.timeScale().fitContent();placeLines();});
  let pendingDemoSide='';
  function askDemo(side){
   pendingDemoSide=side;
@@ -1362,7 +1360,7 @@ authInput.placeholder='API key không khả dụng trong Paper Demo';
 authButton.addEventListener('click',enterIndex);
 authInput.addEventListener('keydown',e=>{if(e.key==='Enter')enterIndex();});
 
-restore();init();bind();renderPositions();renderHistory();clock();seed(true);setInterval(clock,1000);setInterval(()=>seed(false),15000);
+restore();init();bind();renderPositions();renderHistory();clock();seed(true,true);setInterval(clock,1000);
 document.querySelectorAll('dialog').forEach(d=>d.addEventListener('click',e=>{if(e.target===d)d.close();}));
 
 </script>
