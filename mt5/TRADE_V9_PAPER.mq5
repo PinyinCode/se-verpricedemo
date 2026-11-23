@@ -5,7 +5,7 @@
 //| Tự tính SL/TP/Lot, tự trailing/BE, đọc settings từ server.       |
 //+------------------------------------------------------------------+
 #property strict
-#property version "3.11"
+#property version "3.12"
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
@@ -34,13 +34,14 @@ input bool   CommissionIsRoundTurn = false;
 CTrade        trade;
 CPositionInfo posInfo;
 
-// ===== Settings cache (poll từ server) =====
+// ===== Settings cache (khớp Control Panel /api/settings) =====
 struct SSettings {
    bool   auto_trade_enabled;
    bool   trailing_enabled;
    bool   breakeven_enabled;
    bool   news_filter_enabled;
    bool   time_filter_enabled;
+   bool   telegram_notifications_enabled;
    bool   emergency_stop;
    bool   emergency_close_all;
    double risk_money;
@@ -126,6 +127,7 @@ void SendAccountSnapshot();
 void PublishRealClosedDeals();
 int  CountRealExposure();
 void PollSettings();
+void SyncDashboardGlobalVariables();
 void PollCommissions();
 void ManageTrailing();
 void CheckEmergencyStop();
@@ -393,29 +395,40 @@ void MarkProcessedPendingModify(string id)
    processedPendingModifyIds[n] = id;
 }
 
-//--- Settings polling -----------------------------------------------
+//--- Settings polling & GV sync -----------------------------------
 void InitDefaultSettings()
 {
-   g_settings.auto_trade_enabled    = true;
-   g_settings.trailing_enabled      = true;
-   g_settings.breakeven_enabled     = true;
-   g_settings.news_filter_enabled   = true;
-   g_settings.time_filter_enabled   = true;
-   g_settings.emergency_stop        = false;
-   g_settings.emergency_close_all   = true;
-   g_settings.risk_money            = 25.0;
-   g_settings.max_positions         = 3;
-   g_settings.reward_risk_ratio     = 2.0;
-   g_settings.risk_tolerance_pct    = 0.5;
-   g_settings.commission_fallback   = 0.0;
-   g_settings.spread_buffer_points  = 20;
-   g_settings.trailing_trigger_rr   = 1.0;
-   g_settings.trailing_lock_rr      = 0.5;
-   g_settings.breakeven_trigger_rr  = 0.5;
-   g_settings.trailing_mode         = "static";
-   g_settings.trading_start_hour    = 7;
-   g_settings.trading_end_hour      = 23;
-   g_settings.last_synced           = 0;
+   g_settings.auto_trade_enabled             = true;
+   g_settings.trailing_enabled               = true;
+   g_settings.breakeven_enabled              = true;
+   g_settings.news_filter_enabled            = true;
+   g_settings.time_filter_enabled            = true;
+   g_settings.telegram_notifications_enabled = true;
+   g_settings.emergency_stop                 = false;
+   g_settings.emergency_close_all            = true;
+   g_settings.risk_money                     = 25.0;
+   g_settings.max_positions                  = 3;
+   g_settings.reward_risk_ratio              = 2.0;
+   g_settings.risk_tolerance_pct             = 0.5;
+   g_settings.commission_fallback            = 0.0;
+   g_settings.spread_buffer_points           = 20;
+   g_settings.trailing_trigger_rr            = 1.0;
+   g_settings.trailing_lock_rr               = 0.5;
+   g_settings.breakeven_trigger_rr           = 0.5;
+   g_settings.trailing_mode                  = "static";
+   g_settings.trading_start_hour             = 7;
+   g_settings.trading_end_hour               = 23;
+   g_settings.last_synced                    = 0;
+}
+
+void SyncDashboardGlobalVariables()
+{
+   GlobalVariableSet("GV_Dash_TimeFilterEnabled", g_settings.time_filter_enabled ? 1.0 : 0.0);
+   GlobalVariableSet("GV_Dash_NewsFilterEnabled", g_settings.news_filter_enabled ? 1.0 : 0.0);
+   GlobalVariableSet("GV_Dash_TradingStartHour",  (double)g_settings.trading_start_hour);
+   GlobalVariableSet("GV_Dash_TradingEndHour",    (double)g_settings.trading_end_hour);
+   GlobalVariableSet("GV_Dash_TelegramEnabled",   g_settings.telegram_notifications_enabled ? 1.0 : 0.0);
+   GlobalVariableSet("GV_Dash_EmergencyStop",     g_settings.emergency_stop ? 1.0 : 0.0);
 }
 
 void PollSettings()
@@ -429,32 +442,37 @@ void PollSettings()
    string obj = JsonObjectValue(response, "settings");
    if(obj == "") return;
 
-   g_settings.auto_trade_enabled    = JsonBoolValue(obj, "auto_trade_enabled", true);
-   g_settings.trailing_enabled      = JsonBoolValue(obj, "trailing_enabled", true);
-   g_settings.breakeven_enabled     = JsonBoolValue(obj, "breakeven_enabled", true);
-   g_settings.news_filter_enabled   = JsonBoolValue(obj, "news_filter_enabled", true);
-   g_settings.time_filter_enabled   = JsonBoolValue(obj, "time_filter_enabled", true);
-   g_settings.emergency_stop        = JsonBoolValue(obj, "emergency_stop", false);
-   g_settings.emergency_close_all   = JsonBoolValue(obj, "emergency_close_all", true);
-   g_settings.risk_money            = StringToDouble(JsonValue(obj, "risk_money"));
-   g_settings.max_positions         = (int)StringToInteger(JsonValue(obj, "max_positions"));
-   g_settings.reward_risk_ratio     = StringToDouble(JsonValue(obj, "reward_risk_ratio"));
-   g_settings.risk_tolerance_pct    = StringToDouble(JsonValue(obj, "risk_tolerance_pct"));
-   g_settings.commission_fallback   = StringToDouble(JsonValue(obj, "commission_fallback"));
-   g_settings.spread_buffer_points  = (int)StringToInteger(JsonValue(obj, "spread_buffer_points"));
-   g_settings.trailing_trigger_rr   = StringToDouble(JsonValue(obj, "trailing_trigger_rr"));
-   g_settings.trailing_lock_rr      = StringToDouble(JsonValue(obj, "trailing_lock_rr"));
-   g_settings.breakeven_trigger_rr  = StringToDouble(JsonValue(obj, "breakeven_trigger_rr"));
-   g_settings.trailing_mode         = JsonValue(obj, "trailing_mode");
+   g_settings.auto_trade_enabled             = JsonBoolValue(obj, "auto_trade_enabled", true);
+   g_settings.trailing_enabled               = JsonBoolValue(obj, "trailing_enabled", true);
+   g_settings.breakeven_enabled              = JsonBoolValue(obj, "breakeven_enabled", true);
+   g_settings.news_filter_enabled            = JsonBoolValue(obj, "news_filter_enabled", true);
+   g_settings.time_filter_enabled            = JsonBoolValue(obj, "time_filter_enabled", true);
+   g_settings.telegram_notifications_enabled = JsonBoolValue(obj, "telegram_notifications_enabled", true);
+   g_settings.emergency_stop                 = JsonBoolValue(obj, "emergency_stop", false);
+   g_settings.emergency_close_all            = JsonBoolValue(obj, "emergency_close_all", true);
+   g_settings.risk_money                     = StringToDouble(JsonValue(obj, "risk_money"));
+   g_settings.max_positions                  = (int)StringToInteger(JsonValue(obj, "max_positions"));
+   g_settings.reward_risk_ratio              = StringToDouble(JsonValue(obj, "reward_risk_ratio"));
+   g_settings.risk_tolerance_pct             = StringToDouble(JsonValue(obj, "risk_tolerance_pct"));
+   g_settings.commission_fallback            = StringToDouble(JsonValue(obj, "commission_fallback"));
+   g_settings.spread_buffer_points           = (int)StringToInteger(JsonValue(obj, "spread_buffer_points"));
+   g_settings.trailing_trigger_rr            = StringToDouble(JsonValue(obj, "trailing_trigger_rr"));
+   g_settings.trailing_lock_rr               = StringToDouble(JsonValue(obj, "trailing_lock_rr"));
+   g_settings.breakeven_trigger_rr           = StringToDouble(JsonValue(obj, "breakeven_trigger_rr"));
+   g_settings.trailing_mode                  = JsonValue(obj, "trailing_mode");
    if(g_settings.trailing_mode == "") g_settings.trailing_mode = "static";
-   g_settings.trading_start_hour    = (int)StringToInteger(JsonValue(obj, "trading_start_hour"));
-   g_settings.trading_end_hour      = (int)StringToInteger(JsonValue(obj, "trading_end_hour"));
-   g_settings.last_synced           = TimeCurrent();
+   g_settings.trading_start_hour             = (int)StringToInteger(JsonValue(obj, "trading_start_hour"));
+   g_settings.trading_end_hour               = (int)StringToInteger(JsonValue(obj, "trading_end_hour"));
+   g_settings.last_synced                    = TimeCurrent();
 
    if(g_settings.risk_money <= 0) g_settings.risk_money = 25;
    if(g_settings.max_positions < 0) g_settings.max_positions = 0;
    if(g_settings.reward_risk_ratio <= 0) g_settings.reward_risk_ratio = 2.0;
    if(g_settings.spread_buffer_points < 0) g_settings.spread_buffer_points = 0;
+   if(g_settings.trading_start_hour < 0 || g_settings.trading_start_hour > 23) g_settings.trading_start_hour = 7;
+   if(g_settings.trading_end_hour < 0 || g_settings.trading_end_hour > 23) g_settings.trading_end_hour = 23;
+
+   SyncDashboardGlobalVariables();
 }
 
 //--- Commission cache -----------------------------------------------
@@ -932,7 +950,6 @@ bool OpenTrade(string id, string symbol, string tf, string direction, string raw
    if((direction == "BUY" && sl >= entry) || (direction == "SELL" && sl <= entry))
    { Ack(id, "REJECTED", "Invalid SL geometry"); return false; }
 
-   // 1) Tính lot ban đầu (dùng công thức thống nhất)
    double volume = CalculateLotWithCommission(symbol, slDistance, riskMoney);
    if(volume <= 0)
    {
@@ -942,7 +959,6 @@ bool OpenTrade(string id, string symbol, string tf, string direction, string raw
       return false;
    }
 
-   // 2) Verify risk cho volume đã chọn
    SRiskBreakdown rb = ComputeRiskBreakdown(symbol, slDistance, volume);
    if(!rb.valid)
    {
@@ -952,7 +968,6 @@ bool OpenTrade(string id, string symbol, string tf, string direction, string raw
 
    double budget = riskMoney * (1.0 + g_settings.risk_tolerance_pct / 100.0);
 
-   // 3) Nếu vượt budget -> GIẢM LOT theo floor chuẩn của step (không cộng +0.5*step)
    if(rb.total > budget + 1e-9)
    {
       double vmin = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
@@ -1002,7 +1017,6 @@ bool OpenTrade(string id, string symbol, string tf, string direction, string raw
       }
    }
 
-   // 4) Kiểm tra sau khi giảm lot
    if(rb.total > budget + 1e-9 && !AllowMinLotWhenExceedBudget)
    {
       Ack(id, "REJECTED", StringFormat(
@@ -1522,13 +1536,14 @@ int OnInit()
 
    trade.SetExpertMagicNumber(MagicNumber);
    InitDefaultSettings();
+   SyncDashboardGlobalVariables();
    CalculateServerGMTOffset();
 
    PollSettings();
    PollCommissions();
 
    EventSetTimer(1);
-   Print("[V9] Started v3.11 REAL HUB. magic=", MagicNumber,
+   Print("[V9] Started v3.12 REAL HUB. magic=", MagicNumber,
          " | AutoTrade=", g_settings.auto_trade_enabled ? "ON" : "OFF",
          " | Trailing=", g_settings.trailing_enabled ? "ON" : "OFF",
          " | Risk=$", DoubleToString(g_settings.risk_money, 2),
