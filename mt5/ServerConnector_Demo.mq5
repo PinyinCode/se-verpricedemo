@@ -4,7 +4,7 @@
 //| Chart feed only (no trade execution). Complements TRADE_V9.      |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.13"
+#property version "1.14"
 
 #include <Trade\Trade.mqh>
 
@@ -48,6 +48,7 @@ datetime g_lastCommissionPost = 0;
 string g_queueCursorName = "DIVSERVER_QUEUE_CURSOR";
 string g_lastHistoryDigest = "";
 string g_lastChartFeedState = "";
+string g_lastCommissionState = "";
 
 string JsonEscape(string s)
 {
@@ -194,6 +195,7 @@ void PublishCommissionSnapshot()
    if(count <= 0) return;
 
    string items = "[";
+   string stateSig = "acc=" + accountId + "|";
    int sent = 0;
 
    for(int i = 0; i < count; i++)
@@ -235,6 +237,8 @@ void PublishCommissionSnapshot()
       items += ",\"point_size\":" + DoubleToString(point, 10);
       items += ",\"source_updated_at\":" + IntegerToString((int)TimeCurrent()) + "}";
 
+      stateSig += symbol + ":" + DoubleToString(commission, 6) + ":" +
+                  DoubleToString(swapLong, 6) + ":" + DoubleToString(swapShort, 6) + ";";
       sent++;
    }
 
@@ -250,13 +254,23 @@ void PublishCommissionSnapshot()
 
    if(HttpRequest("POST", "/api/mt5/commissions", body, response, status))
    {
-      Print("[COMMISSION] History snapshot synced: ",
-            sent, " symbols for account ", accountId);
+      string okState = "OK|" + stateSig;
+      if(okState != g_lastCommissionState)
+      {
+         g_lastCommissionState = okState;
+         Print("[COMMISSION] History snapshot synced: ",
+               sent, " symbols for account ", accountId);
+      }
    }
    else
    {
-      Print("[COMMISSION] Sync failed. HTTP=", status,
-            " response=", response);
+      string errState = "ERR|" + IntegerToString(status) + "|" + response;
+      if(errState != g_lastCommissionState)
+      {
+         g_lastCommissionState = errState;
+         Print("[COMMISSION] Sync failed. HTTP=", status,
+               " response=", response);
+      }
    }
 }
 
@@ -735,7 +749,7 @@ int OnInit()
       return INIT_PARAMETERS_INCORRECT;
    }
    EventSetTimer(1);
-   Print("ServerConnector v1.13 initialized. Chart feed + AI OOP V8 sync only. ",
+   Print("ServerConnector v1.14 initialized. Chart feed + AI OOP V8 sync only. ",
          "Add ",ServerBaseURL," to MT5 WebRequest allowlist.");
    return INIT_SUCCEEDED;
 }
@@ -748,7 +762,7 @@ void OnTimer()
 {
    if(TimeCurrent()-g_lastHeartbeat>=HeartbeatSeconds) SendHeartbeat();
 
-   if(EnableCommissionSync && TimeCurrent()-g_lastCommissionPost>=MathMax(15,CommissionSyncSeconds))
+   if(EnableCommissionSync && TimeCurrent()-g_lastCommissionPost>=MathMax(60,CommissionSyncSeconds))
    {
       g_lastCommissionPost=TimeCurrent();
       PublishCommissionSnapshot();
