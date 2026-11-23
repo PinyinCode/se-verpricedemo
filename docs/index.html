@@ -1206,6 +1206,75 @@ const API_KEY_STORAGE = 'chartApiKey';
 let chartApiKey = (() => {
   try { return localStorage.getItem(API_KEY_STORAGE) || ''; } catch { return ''; }
 })();
+let apiAccessGranted = false;
+let apiValidationBusy = false;
+let authorizedPollingStarted = false;
+let authorizedTimers = [];
+
+function stopAuthorizedPolling() {
+  authorizedTimers.forEach(id => clearInterval(id));
+  authorizedTimers = [];
+  authorizedPollingStarted = false;
+  apiAccessGranted = false;
+}
+function startAuthorizedPolling() {
+  if (authorizedPollingStarted || !apiAccessGranted) return;
+  authorizedPollingStarted = true;
+  void syncEaSettings();
+  void syncSymbolCommission($('symbol').value);
+  void refreshCommissionInfo();
+  void refreshEmergencyModalWarning();
+  void checkServerStatus();
+  void load();
+  void refreshChartPositions();
+  authorizedTimers = [
+    setInterval(() => { if (apiAccessGranted) void syncEaSettings(); }, 30000),
+    setInterval(() => { if (apiAccessGranted) { void syncSymbolCommission($('symbol').value); void refreshCommissionInfo(); } }, 60000),
+    setInterval(() => { if (apiAccessGranted) void refreshEmergencyModalWarning(); }, 30000),
+    setInterval(() => { if (apiAccessGranted) void checkServerStatus(); }, 30000),
+    setInterval(() => { if (apiAccessGranted) void load(); }, 10000),
+    setInterval(() => { if (apiAccessGranted) void refreshChartPositions(); }, 5000)
+  ];
+}
+async function validateApiAccess() {
+  if (!chartApiKey) {
+    stopAuthorizedPolling();
+    setApiAuthWarning('error', 'Chưa nhập API Key. Mở Cài đặt để nhập khóa được cấp.');
+    $('feedState').textContent = 'Nhập API key để kết nối dữ liệu';
+    return false;
+  }
+  if (apiValidationBusy) return false;
+  apiValidationBusy = true;
+  apiAccessGranted = false;
+  try {
+    const response = await fetch(API_BASE + '/api/dashboard', {
+      cache: 'no-store',
+      headers: { 'X-API-Key': chartApiKey }
+    });
+    if (!response.ok) {
+      stopAuthorizedPolling();
+      const message = response.status === 401
+        ? 'API key không hợp lệ hoặc đã bị thu hồi.'
+        : response.status === 503
+          ? 'Server chưa cấu hình FOREX_API_KEY.'
+          : 'Không thể xác thực API key (HTTP ' + response.status + ').';
+      setApiAuthWarning('error', message);
+      $('feedState').textContent = 'Chưa được cấp quyền truy cập';
+      return false;
+    }
+    apiAccessGranted = true;
+    setApiAuthWarning('', '');
+    startAuthorizedPolling();
+    return true;
+  } catch (error) {
+    stopAuthorizedPolling();
+    setApiAuthWarning('error', 'Không thể kết nối máy chủ để xác thực API key.');
+    $('feedState').textContent = 'Không thể kết nối máy chủ';
+    return false;
+  } finally {
+    apiValidationBusy = false;
+  }
+}
 
 function refreshApiKeyBox() {
   const inp = $('apiKeyInput');
@@ -1267,8 +1336,9 @@ function commissionNumber(value) {
 }
 
 async function syncEaSettings() {
+  if (!apiAccessGranted) return;
   try {
-    const r = await fetch(API_BASE + '/api/settings', { cache: 'no-store' });
+    const r = await apiFetch(API_BASE + '/api/settings', { cache: 'no-store' });
     if (!r.ok) return;
     const d = await r.json();
     const s = d && d.settings ? d.settings : null;
@@ -1305,7 +1375,7 @@ async function syncEaSettings() {
 async function syncSymbolCommission(symbol) {
   const sym = String(symbol || $('symbol').value || '').trim().toUpperCase();
   eaState.commission.symbol = sym;
-  if (!chartApiKey || !sym) {
+  if (!apiAccessGranted || !sym) {
     eaState.commission.has_data = false;
     eaState.commission.commission_per_lot = eaState.settings.commission_fallback;
     eaState.commission.point_size = 0;
@@ -1349,9 +1419,9 @@ async function refreshCommissionInfo() {
   const symbol = String($('symbol').value || '').toUpperCase();
   const valueIds = ['commissionValue','swapLongValue','swapShortValue','contractSizeValue','commissionTickValue','commissionPointSize'];
   const resetValues = () => valueIds.forEach(id => { $(id).textContent = '—'; });
-  if (!chartApiKey) {
+  if (!apiAccessGranted) {
     resetValues();
-    state.textContent = 'Cần API key';
+    state.textContent = 'Cần API key hợp lệ';
     state.className = 'small warn';
     meta.textContent = 'Nhập API key hợp lệ để đọc snapshot commission từ MT5.';
     await syncSymbolCommission(symbol);
@@ -2497,6 +2567,10 @@ async function writeChartCache(key, value) {
 }
 
 async function load(forceNetwork = false) {
+  if (!apiAccessGranted) {
+    $('feedState').textContent = 'Nhập API key để tải dữ liệu';
+    return;
+  }
   const symbol = $('symbol').value, tf = $('tf').value;
   $('chartTitle').textContent = symbol + ' · ' + tf;
   $('feedState').textContent = 'Đang tải...';
@@ -2512,7 +2586,7 @@ async function load(forceNetwork = false) {
       }
     }
     if (!data) {
-      const res = await fetch(API_BASE + '/api/chart/data?symbol=' + encodeURIComponent(symbol) + '&timeframe=' + encodeURIComponent(tf) + '&limit=1000', { cache: 'no-store' });
+      const res = await apiFetch(API_BASE + '/api/chart/data?symbol=' + encodeURIComponent(symbol) + '&timeframe=' + encodeURIComponent(tf) + '&limit=1000', { cache: 'no-store' });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       data = await res.json();
       chartCachePrimed.add(cacheKey);
@@ -2811,7 +2885,7 @@ function renderChartPositions(positions, pendingOrders = []) {
 }
 
 async function refreshChartPositions() {
-  if (activeRealDragItem || pendingSltpChange || pendingPendingChange) return;
+  if (!apiAccessGranted || activeRealDragItem || pendingSltpChange || pendingPendingChange) return;
   try {
     const r = await apiFetch(API_BASE + '/api/dashboard', { cache: 'no-store' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -2829,6 +2903,7 @@ async function refreshChartPositions() {
 }
 
 async function refreshEmergencyModalWarning() {
+  if (!apiAccessGranted) return;
   const banners = [$('emergencyModalWarning'), $('positionsEmergencyWarning')].filter(Boolean);
   if (!banners.length) return;
   const render = (banner, state, message) => {
@@ -2838,7 +2913,7 @@ async function refreshEmergencyModalWarning() {
     banner.innerHTML = message;
   };
   try {
-    const r = await fetch(API_BASE + '/api/settings', { cache: 'no-store' });
+    const r = await apiFetch(API_BASE + '/api/settings', { cache: 'no-store' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     const enabled = !!(d.settings && d.settings.emergency_stop);
@@ -3579,6 +3654,7 @@ const formatLatency = ms => {
   return n >= 1000 ? (n / 1000).toFixed(1) + 's' : n + 'ms';
 };
 async function checkServerStatus() {
+  if (!apiAccessGranted) return;
   const t0 = performance.now();
   try {
     const res = await fetch(API_BASE + '/api/health', { cache: 'no-store' });
@@ -3600,15 +3676,13 @@ async function checkServerStatus() {
 }
 
 ensureApiAuthWarnings();
-if (!chartApiKey) setApiAuthWarning('error', 'Chưa nhập API Key. Mở Cài đặt để nhập khóa được cấp.');
 refreshApiKeyBox();
-void syncEaSettings();
-void syncSymbolCommission($('symbol').value);
-refreshCommissionInfo();
-setInterval(() => { void syncEaSettings(); }, 10000);
-setInterval(() => { void syncSymbolCommission($('symbol').value); refreshCommissionInfo(); }, 60000);
-refreshEmergencyModalWarning();
-setInterval(refreshEmergencyModalWarning, 10000);
+if (!chartApiKey) {
+  setApiAuthWarning('error', 'Chưa nhập API Key. Mở Cài đặt để nhập khóa được cấp.');
+  $('feedState').textContent = 'Nhập API key để kết nối dữ liệu';
+} else {
+  void validateApiAccess();
+}
 syncRealLayerToggles();
 bindRealLayerToggles();
 applyLockState();
@@ -3616,19 +3690,17 @@ syncPresetButtons();
 
 $('apiKeySave').addEventListener('click', () => {
   saveApiKey($('apiKeyInput').value);
-  setApiAuthWarning('', '');
-  $('requestState').textContent = 'Đã lưu API key (' + maskKey(chartApiKey) + ').';
-  void syncSymbolCommission($('symbol').value);
-  refreshCommissionInfo();
+  stopAuthorizedPolling();
+  $('requestState').textContent = 'Đang xác thực API key (' + maskKey(chartApiKey) + ')...';
+  void validateApiAccess();
 });
 $('apiKeyInput').addEventListener('keydown', e => {
   if (e.key === 'Enter') {
     saveApiKey($('apiKeyInput').value);
-    setApiAuthWarning('', '');
+    stopAuthorizedPolling();
     $('apiKeyInput').blur();
-    $('requestState').textContent = 'Đã lưu API key (' + maskKey(chartApiKey) + ').';
-    void syncSymbolCommission($('symbol').value);
-    refreshCommissionInfo();
+    $('requestState').textContent = 'Đang xác thực API key (' + maskKey(chartApiKey) + ')...';
+    void validateApiAccess();
   }
 });
 $('commissionRefresh').addEventListener('click', refreshCommissionInfo);
@@ -3642,13 +3714,7 @@ $('apiKeyToggle').addEventListener('click', () => {
 });
 
 updateGMT7Clock();
-checkServerStatus();
 setInterval(updateGMT7Clock, 1000);
-setInterval(checkServerStatus, 15000);
-load();
-setInterval(load, 5000);
-refreshChartPositions();
-setInterval(refreshChartPositions, 3000);
 </script>
 </body>
 </html>
