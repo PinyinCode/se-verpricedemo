@@ -567,6 +567,7 @@ class CandleBatchIn(BaseModel):
 class TodaySignalsIn(BaseModel):
     signals: list[TodaySignalItem] = Field(default_factory=list, max_length=200)
 
+
 class CommissionItemIn(BaseModel):
     symbol: str = Field(min_length=3, max_length=32)
     commission_per_lot: float = Field(ge=0, le=1000000)
@@ -753,16 +754,31 @@ def get_commission_for_symbol(
 
 # ---- Original signal endpoints ----
 
+def _get_latest_market_price(
+    conn: sqlite3.Connection,
+    symbol: str,
+    timeframe: str | None = None,
+) -> float | None:
+    if timeframe:
+        row = conn.execute(
+            "SELECT close FROM candles WHERE symbol=? AND timeframe=? ORDER BY candle_time DESC LIMIT 1",
+            (symbol, timeframe),
+        ).fetchone()
+        if row is not None:
+            return float(row["close"])
+    row = conn.execute(
+        "SELECT close FROM candles WHERE symbol=? ORDER BY candle_time DESC LIMIT 1",
+        (symbol,),
+    ).fetchone()
+    return float(row["close"]) if row is not None else None
+
+
 def _validate_limit_against_market(conn: sqlite3.Connection, payload: SignalIn) -> None:
     if payload.order_type not in ("BUY_LIMIT", "SELL_LIMIT"):
         return
-    row = conn.execute(
-        "SELECT close FROM candles WHERE symbol=? AND timeframe=? ORDER BY candle_time DESC LIMIT 1",
-        (payload.symbol, payload.timeframe),
-    ).fetchone()
-    if row is None:
+    market_price = _get_latest_market_price(conn, payload.symbol, payload.timeframe)
+    if market_price is None:
         return
-    market_price = float(row["close"])
     if payload.order_type == "BUY_LIMIT" and payload.entry >= market_price:
         raise HTTPException(status_code=422, detail="BUY_LIMIT yêu cầu Entry thấp hơn giá hiện tại")
     if payload.order_type == "SELL_LIMIT" and payload.entry <= market_price:
@@ -1182,6 +1198,15 @@ def ack_sltp_request(payload: SltpRequestAckIn):
     return {"ok": True}
 
 
+def _expire_stale_pending_modifies(conn: sqlite3.Connection) -> None:
+    cutoff = datetime.fromtimestamp(time.time() - PENDING_MODIFY_TTL, timezone.utc).isoformat()
+    conn.execute(
+        "UPDATE pending_modify_requests SET status='expired',acked_at=?,message='Hết hạn chờ MT5' "
+        "WHERE status='pending' AND created_at < ?",
+        (utc_now(), cutoff),
+    )
+
+
 @app.post("/api/mt5/modify-pending", dependencies=[Depends(require_key)])
 def modify_pending(payload: ModifyPendingIn):
     ticket_str = str(payload.ticket).strip()
@@ -1200,23 +1225,33 @@ def modify_pending(payload: ModifyPendingIn):
             raise HTTPException(status_code=404, detail="Không tìm thấy lệnh chờ với ticket này")
 
         sym = row["symbol"]
-        order_type = row["order_type"] or ""
+        order_type = (payload.order_type or row["order_type"] or "").strip().upper()
         direction = row["direction"]
 
         entry_for_check = payload.new_entry if payload.new_entry > 0 else float(row["entry"])
         sl_for_check = payload.new_sl if payload.new_sl > 0 else float(row["sl"])
         tp_for_check = payload.new_tp if payload.new_tp > 0 else float(row["tp"])
 
+        market_price = _get_latest_market_price(conn, sym, row["timeframe"] if row["timeframe"] != "MT5" else None)
+
         if order_type == "BUY_LIMIT" or (not order_type and direction == "BUY"):
+            if market_price is not None and entry_for_check >= market_price:
+                raise HTTPException(status_code=422, detail="BUY LIMIT yêu cầu Entry thấp hơn giá hiện tại")
             if sl_for_check > 0 and sl_for_check >= entry_for_check:
                 raise HTTPException(status_code=422, detail="BUY LIMIT yêu cầu SL < Entry")
             if tp_for_check > 0 and tp_for_check <= entry_for_check:
                 raise HTTPException(status_code=422, detail="BUY LIMIT yêu cầu TP > Entry")
         elif order_type == "SELL_LIMIT" or (not order_type and direction == "SELL"):
+            if market_price is not None and entry_for_check <= market_price:
+                raise HTTPException(status_code=422, detail="SELL LIMIT yêu cầu Entry cao hơn giá hiện tại")
             if sl_for_check > 0 and sl_for_check <= entry_for_check:
                 raise HTTPException(status_code=422, detail="SELL LIMIT yêu cầu SL > Entry")
             if tp_for_check > 0 and tp_for_check >= entry_for_check:
                 raise HTTPException(status_code=422, detail="SELL LIMIT yêu cầu TP < Entry")
+
+        old_entry = payload.old_entry if payload.old_entry > 0 else float(row["entry"])
+        old_sl = payload.old_sl if payload.old_sl > 0 else float(row["sl"])
+        old_tp = payload.old_tp if payload.old_tp > 0 else float(row["tp"])
 
         existing = conn.execute(
             "SELECT request_id FROM pending_modify_requests WHERE status='pending' AND ticket=?",
@@ -1236,37 +1271,59 @@ def modify_pending(payload: ModifyPendingIn):
                 "old_entry,old_sl,old_tp,new_entry,new_sl,new_tp,status,created_at) "
                 "VALUES(?,?,?,?,?,?,?,?,?,?,'pending',?)",
                 (request_id, ticket_str, sym, order_type,
-                 payload.old_entry, payload.old_sl, payload.old_tp,
+                 old_entry, old_sl, old_tp,
                  payload.new_entry, payload.new_sl, payload.new_tp, now),
             )
         conn.execute(
             "INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
             ("pending_modify_requested",
              f"ticket={ticket_str} {sym} {order_type} "
-             f"Entry {payload.old_entry}->{payload.new_entry} "
-             f"SL {payload.old_sl}->{payload.new_sl} "
-             f"TP {payload.old_tp}->{payload.new_tp}",
+             f"Entry {old_entry}->{payload.new_entry} "
+             f"SL {old_sl}->{payload.new_sl} "
+             f"TP {old_tp}->{payload.new_tp}",
              now),
         )
-    return {"ok": True, "request_id": request_id, "status": "pending", "ticket": ticket_str}
+    return {
+        "ok": True,
+        "request_id": request_id,
+        "status": "pending",
+        "ticket": ticket_str,
+        "symbol": sym,
+        "order_type": order_type,
+    }
 
 
 @app.get("/api/mt5/pending-modify-requests", dependencies=[Depends(require_key)])
 def get_pending_modify_requests():
-    now = time.time()
-    cutoff = datetime.fromtimestamp(now - PENDING_MODIFY_TTL, timezone.utc).isoformat()
     with db() as conn:
-        conn.execute(
-            "UPDATE pending_modify_requests SET status='expired',acked_at=?,message='Hết hạn chờ MT5' "
-            "WHERE status='pending' AND created_at < ?",
-            (utc_now(), cutoff),
-        )
+        _expire_stale_pending_modifies(conn)
         rows = [dict(r) for r in conn.execute(
             "SELECT request_id, ticket, symbol, order_type, "
             "old_entry, old_sl, old_tp, new_entry, new_sl, new_tp "
             "FROM pending_modify_requests WHERE status='pending' ORDER BY created_at ASC LIMIT 20"
         ).fetchall()]
     return {"ok": True, "pending_modify_requests": rows}
+
+
+@app.get("/api/mt5/pending-modify-requests/{request_id}", dependencies=[Depends(require_key)])
+def get_pending_modify_request_status(request_id: str):
+    req_id = request_id.strip()
+    if not req_id:
+        raise HTTPException(status_code=422, detail="Thiếu request_id")
+    with db() as conn:
+        _expire_stale_pending_modifies(conn)
+        row = conn.execute(
+            "SELECT request_id, ticket, symbol, order_type, "
+            "old_entry, old_sl, old_tp, new_entry, new_sl, new_tp, "
+            "status, created_at, acked_at, ok, message "
+            "FROM pending_modify_requests WHERE request_id=?",
+            (req_id,),
+        ).fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Không tìm thấy pending modify request")
+        data = dict(row)
+        data["ok"] = None if data["ok"] is None else bool(data["ok"])
+    return {"ok": True, "request": data}
 
 
 @app.post("/api/mt5/pending-modify-requests/ack", dependencies=[Depends(require_key)])
@@ -1283,6 +1340,24 @@ def ack_pending_modify_request(payload: PendingModifyAckIn):
             "WHERE request_id=?",
             (now, 1 if payload.ok else 0, payload.message, payload.request_id),
         )
+        if payload.ok:
+            ticket_target = (payload.ticket or req_row["ticket"] or "").strip()
+            if ticket_target:
+                if float(req_row["new_entry"]) > 0:
+                    conn.execute(
+                        "UPDATE mt5_account_items SET entry=?, updated_at=? WHERE (id=? OR ticket=?) AND is_pending=1",
+                        (float(req_row["new_entry"]), now, ticket_target, ticket_target),
+                    )
+                if float(req_row["new_sl"]) > 0:
+                    conn.execute(
+                        "UPDATE mt5_account_items SET sl=?, updated_at=? WHERE (id=? OR ticket=?) AND is_pending=1",
+                        (float(req_row["new_sl"]), now, ticket_target, ticket_target),
+                    )
+                if float(req_row["new_tp"]) > 0:
+                    conn.execute(
+                        "UPDATE mt5_account_items SET tp=?, updated_at=? WHERE (id=? OR ticket=?) AND is_pending=1",
+                        (float(req_row["new_tp"]), now, ticket_target, ticket_target),
+                    )
         conn.execute(
             "INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
             ("pending_modify_ack",
@@ -1499,6 +1574,7 @@ def chart_data(
 def dashboard_data():
     _cleanup_recently_acked()
     with db() as conn:
+        _expire_stale_pending_modifies(conn)
         signals = [dict(r) for r in conn.execute(
             "SELECT id,symbol,timeframe,direction,order_type,entry,sl,tp,score,source,status,created_at,ack_status,ack_message "
             "FROM signals ORDER BY created_at DESC LIMIT 100").fetchall()]
@@ -1515,6 +1591,13 @@ def dashboard_data():
              "status": "Đang chờ trên MT5"}
             for p in mt5_account_items if p["is_pending"]
         ]
+        recent_pending_modifies = [dict(r) for r in conn.execute(
+            "SELECT request_id, ticket, symbol, order_type, old_entry, old_sl, old_tp, "
+            "new_entry, new_sl, new_tp, status, created_at, acked_at, ok, message "
+            "FROM pending_modify_requests ORDER BY created_at DESC LIMIT 30"
+        ).fetchall()]
+        for item in recent_pending_modifies:
+            item["ok"] = None if item["ok"] is None else bool(item["ok"])
         snapshot_state = conn.execute(
             "SELECT updated_at FROM heartbeats WHERE component='mt5-account-snapshot'"
         ).fetchone()
@@ -1572,6 +1655,7 @@ def dashboard_data():
         "today_signals": today_signals,
         "mt5_positions": mt5_positions,
         "mt5_pending_orders": mt5_pending_orders,
+        "recent_pending_modifies": recent_pending_modifies,
         "mt5_snapshot_updated_at": mt5_snapshot_updated_at,
         "real_history": real_history,
         "mt5_history": real_history,
