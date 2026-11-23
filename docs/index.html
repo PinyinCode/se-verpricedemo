@@ -210,11 +210,20 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
 #lotResizeHandle:active:after{background:var(--green)}
 
 .drag-overlay{position:absolute;inset:0;pointer-events:none;z-index:5}
+/* Tăng vùng bắt chuột ảo xung quanh line 2px để kéo dễ và không trượt */
 .drag-line{position:absolute;left:0;right:0;height:2px;cursor:ns-resize;pointer-events:auto;touch-action:none}
+.drag-line::before{
+  content:'';
+  position:absolute;
+  left:0;
+  right:0;
+  top:-7px;
+  bottom:-7px;
+}
 .drag-line span{
   position:absolute;
   left:8px;
-  top:-18px;
+  top:-20px;
   padding:1px 6px;
   border-radius:4px;
   background:#17253a;
@@ -223,6 +232,7 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
   font-size:11px;
   font-weight:700;
   white-space:nowrap;
+  user-select:none;
 }
 .drag-line.entry{background:var(--blue)}
 .drag-line.sl{background:var(--red)}
@@ -230,12 +240,20 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
 .drag-line.locked{cursor:not-allowed;opacity:.55}
 
 .real-line{position:absolute;left:0;right:0;height:2px;pointer-events:auto;touch-action:none;cursor:ns-resize;z-index:6}
+.real-line::before{
+  content:'';
+  position:absolute;
+  left:0;
+  right:0;
+  top:-7px;
+  bottom:-7px;
+}
 .real-line.draggable{cursor:ns-resize}
 .real-line.locked{cursor:not-allowed;opacity:.6}
 .real-line span{
   position:absolute;
   right:8px;
-  top:-18px;
+  top:-20px;
   padding:1px 6px;
   border-radius:4px;
   background:#0f1c2e;
@@ -245,6 +263,7 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
   font-weight:700;
   white-space:nowrap;
   color:#cbd5e1;
+  user-select:none;
 }
 .real-line.pos-entry{background:#60a5fa}
 .real-line.pos-sl{background:#f06478}
@@ -1279,7 +1298,6 @@ async function syncEaSettings() {
     eaState.settings.trading_start_hour = Number.isFinite(startH) ? Math.floor(startH) : 7;
     eaState.settings.trading_end_hour = Number.isFinite(endH) ? Math.floor(endH) : 23;
 
-    /* Đồng bộ input Risk trên chart nếu người dùng chưa tự sửa hoặc khớp EA */
     const riskInput = $('riskMoney');
     if (riskInput && document.activeElement !== riskInput && eaState.settings.risk_money > 0) {
       riskInput.value = String(eaState.settings.risk_money);
@@ -1516,6 +1534,23 @@ let lastBarsSignature = '';
 let syncing = false, firstLoad = true, autoDirection = 'BUY', pendingOrderType = 'BUY_LIMIT', lastLoadedSymbol = '';
 let activePreset = null;
 
+/* ================= TRẠNG THÁI KÉO THẢ CHUNG ================= */
+let activeFormDragKey = null; // 'entry' | 'sl' | 'tp' | null
+let activeRealDragItem = null; // { el, payload, key, labelTemplate, startPrice, startY, moved }
+
+function isAnyLineDragging() {
+  return Boolean(activeFormDragKey || activeRealDragItem);
+}
+
+function formatFormLineLabel(key, price) {
+  if (key === 'entry') {
+    return ($('orderMode').value === 'PENDING'
+      ? (pendingOrderType === 'BUY_LIMIT' ? 'BUY LIMIT' : 'SELL LIMIT')
+      : 'ENTRY') + ' ' + Number(price).toFixed(mt5Digits);
+  }
+  return key.toUpperCase() + ' ' + Number(price).toFixed(mt5Digits);
+}
+
 /* ================= FORM MỚI — DRAG OVERLAY ================= */
 const dragOverlay = document.createElement('div');
 dragOverlay.className = 'drag-overlay';
@@ -1580,45 +1615,28 @@ for (const key of ['entry', 'sl', 'tp']) {
     if (line.style.display === 'none') return;
     ev.preventDefault();
     ev.stopPropagation();
-    line.setPointerCapture(ev.pointerId);
+    activeFormDragKey = key;
     line.dataset.drag = '1';
     line.dataset.dragMoved = '0';
+    line.dataset.startX = String(ev.clientX);
+    line.dataset.startY = String(ev.clientY);
+    try { line.setPointerCapture(ev.pointerId); } catch (_) {}
   });
-  line.addEventListener('pointermove', ev => {
-    if (line.dataset.drag !== '1') return;
-    const rect = $('priceChart').getBoundingClientRect();
-    const pointerY = ev.clientY - rect.top;
-    // Giữ đường hiển thị bám con trỏ ngay trong frame kéo hiện tại.
-    line.style.top = pointerY + 'px';
-    const p = candleSeries.coordinateToPrice(pointerY);
-    if (p == null || !Number.isFinite(p)) return;
-    const id = key === 'entry' ? 'entryPrice' : key === 'sl' ? 'slPrice' : 'tpPrice';
-    $(id).value = Number(p).toFixed(mt5Digits);
-    line.dataset.dragMoved = '1';
-    handleLevelAdjusted();
-  });
-  const stop = ev => {
-    if (line.dataset.drag !== '1') return;
-    line.dataset.drag = '0';
-    try { line.releasePointerCapture(ev.pointerId); } catch (_) {}
-    if (key === 'entry' && line.dataset.dragMoved !== '1') {
-      openEntryPopupAt(ev.clientX, ev.clientY);
-    }
-    line.dataset.dragMoved = '0';
-    setLevelLines();
-  };
-  line.addEventListener('pointerup', stop);
-  line.addEventListener('pointercancel', stop);
 }
 
 priceChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
   if (syncing || !range) return;
   syncing = true; rsiChart.timeScale().setVisibleLogicalRange(range); syncing = false;
-  setLevelLines();
+  if (!isAnyLineDragging()) {
+    setLevelLines();
+    renderRealLines();
+  }
 });
 priceChart.subscribeCrosshairMove(param => {
-  setLevelLines();
-  renderRealLines();
+  if (!isAnyLineDragging()) {
+    setLevelLines();
+    renderRealLines();
+  }
   const bar = param && param.seriesData ? param.seriesData.get(candleSeries) : null;
   const el = $('ohlcLegend');
   if (!bar) { el.innerHTML = '<b>O —</b><span>H —</span><span>L —</span><span>C —</span><span class="ohlc-change">—</span>'; return; }
@@ -1771,6 +1789,7 @@ function clearRealLines() {
 }
 
 function renderRealLines() {
+  if (activeRealDragItem) return;
   clearRealLines();
   if (!realLayerVisible) return;
   const curSym = String($('symbol').value || '').toUpperCase();
@@ -1781,10 +1800,12 @@ function renderRealLines() {
   const makeLine = (opts) => {
     const { price, type, side, key, payload, label } = opts;
     const y = candleSeries.priceToCoordinate(price);
-    if (y == null) return;
+    if (y == null || !Number.isFinite(y)) return;
     const el = document.createElement('div');
     el.className = 'real-line ' + type;
-    if (realSltpLocked && (key === 'sl' || key === 'tp' || (payload && payload.isPending))) {
+    const isPendingOrder = Boolean(payload && payload.kind === 'pending');
+    const canDragReal = !realSltpLocked && (key === 'sl' || key === 'tp' || (key === 'entry' && isPendingOrder));
+    if (realSltpLocked && (key === 'sl' || key === 'tp' || isPendingOrder)) {
       el.classList.add('locked');
     }
     el.style.top = y + 'px';
@@ -1796,47 +1817,35 @@ function renderRealLines() {
     span.textContent = label;
     el.appendChild(span);
 
-    if (key === 'entry') {
+    if (canDragReal) {
+      const prefix = key === 'entry'
+        ? `#${String(payload.data.ticket ?? payload.data.id ?? '')} ${side} LIMIT `
+        : `#${String(payload.data.ticket ?? payload.data.id ?? '')} ${isPendingOrder ? 'P-' : ''}${key.toUpperCase()} `;
+
+      el.addEventListener('pointerdown', ev => {
+        if (realSltpLocked) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        activeRealDragItem = {
+          el,
+          span,
+          payload,
+          key,
+          prefix,
+          startPrice: Number(price),
+          currentPrice: Number(price),
+          startX: ev.clientX,
+          startY: ev.clientY,
+          moved: false,
+        };
+        try { el.setPointerCapture(ev.pointerId); } catch (_) {}
+      });
+    } else if (key === 'entry') {
       el.style.cursor = 'pointer';
       el.addEventListener('click', ev => {
         ev.stopPropagation();
         openRealPopup(payload, ev.clientX, ev.clientY);
       });
-    } else {
-      let isDragging = false;
-      el.addEventListener('pointerdown', ev => {
-        if (realSltpLocked) return;
-        ev.preventDefault();
-        isDragging = false;
-        el.setPointerCapture(ev.pointerId);
-        el.dataset.drag = '1';
-        el.dataset.dragStartPrice = String(price);
-        el.dataset.dragStartY = String(ev.clientY);
-      });
-      el.addEventListener('pointermove', ev => {
-        if (el.dataset.drag !== '1') return;
-        const startY = Number(el.dataset.dragStartY);
-        if (Math.abs(ev.clientY - startY) < 3 && !isDragging) return;
-        isDragging = true;
-        const rect = $('priceChart').getBoundingClientRect();
-        const p = candleSeries.coordinateToPrice(ev.clientY - rect.top);
-        if (p == null || !Number.isFinite(p)) return;
-        el.firstChild.textContent = label.replace(/\d+(\.\d+)?/, Number(p).toFixed(mt5Digits));
-        el.style.top = (ev.clientY - rect.top) + 'px';
-      });
-      const stop = (ev) => {
-        if (el.dataset.drag !== '1') return;
-        el.dataset.drag = '0';
-        if (!isDragging) return;
-        const rect = $('priceChart').getBoundingClientRect();
-        const newPrice = candleSeries.coordinateToPrice((ev && ev.clientY != null ? ev.clientY : 0) - rect.top);
-        if (newPrice == null || !Number.isFinite(newPrice)) { renderRealLines(); return; }
-        const oldPrice = Number(el.dataset.dragStartPrice);
-        if (Math.abs(newPrice - oldPrice) < mt5TickSize * 0.5) { renderRealLines(); return; }
-        proposeRealLevelChange(payload, key, oldPrice, newPrice);
-      };
-      el.addEventListener('pointerup', stop);
-      el.addEventListener('pointercancel', stop);
     }
 
     realOverlay.appendChild(el);
@@ -1845,7 +1854,7 @@ function renderRealLines() {
 
   const makeEntryMarker = (data, kind, entry, direction, index) => {
     const y = candleSeries.priceToCoordinate(entry);
-    if (y == null) return;
+    if (y == null || !Number.isFinite(y)) return;
     const marker = document.createElement('button');
     marker.type = 'button';
     marker.className = 'real-entry-marker ' + (direction === 'BUY' ? 'buy' : 'sell') + (kind === 'pending' ? ' pending' : '');
@@ -1965,6 +1974,105 @@ function proposeRealLevelChange(payload, key, oldPrice, newPrice) {
     $('confirmSltpDialog').showModal();
   }
 }
+
+/* ================= BỘ XỬ LÝ KÉO MƯỢT TRÊN WINDOW ================= */
+function updateFormDragAtClientY(clientY) {
+  if (!activeFormDragKey) return;
+  const key = activeFormDragKey;
+  const line = dragLevels[key];
+  const rect = $('priceChart').getBoundingClientRect();
+  const clampedY = Math.max(0, Math.min(rect.height, clientY - rect.top));
+  line.style.top = clampedY + 'px';
+
+  const rawPrice = candleSeries.coordinateToPrice(clampedY);
+  if (rawPrice == null || !Number.isFinite(rawPrice)) return;
+  const price = Math.max(0, Number(rawPrice));
+  const id = key === 'entry' ? 'entryPrice' : key === 'sl' ? 'slPrice' : 'tpPrice';
+  $(id).value = price.toFixed(mt5Digits);
+  line.firstChild.textContent = formatFormLineLabel(key, price);
+
+  // Chỉ tính lại lot khi kéo SL hoặc Entry; không tự nhảy giá/đổi hướng làm giật đường đang kéo
+  if (key === 'sl' || key === 'entry') {
+    calcLot();
+  }
+}
+
+function updateRealDragAtClientY(clientY) {
+  if (!activeRealDragItem) return;
+  const item = activeRealDragItem;
+  const rect = $('priceChart').getBoundingClientRect();
+  const clampedY = Math.max(0, Math.min(rect.height, clientY - rect.top));
+  item.el.style.top = clampedY + 'px';
+
+  const rawPrice = candleSeries.coordinateToPrice(clampedY);
+  if (rawPrice == null || !Number.isFinite(rawPrice)) return;
+  const price = Math.max(0, Number(rawPrice));
+  item.currentPrice = price;
+  item.span.textContent = item.prefix + price.toFixed(mt5Digits);
+}
+
+window.addEventListener('pointermove', ev => {
+  if (activeFormDragKey) {
+    const line = dragLevels[activeFormDragKey];
+    const startY = Number(line.dataset.startY || ev.clientY);
+    if (Math.abs(ev.clientY - startY) >= 2) line.dataset.dragMoved = '1';
+    updateFormDragAtClientY(ev.clientY);
+    return;
+  }
+  if (activeRealDragItem) {
+    if (Math.abs(ev.clientY - activeRealDragItem.startY) >= 2) {
+      activeRealDragItem.moved = true;
+    }
+    updateRealDragAtClientY(ev.clientY);
+  }
+}, { passive: true });
+
+function finishAnyLineDrag(ev) {
+  if (activeFormDragKey) {
+    const key = activeFormDragKey;
+    const line = dragLevels[key];
+    const moved = line.dataset.dragMoved === '1';
+    const clickX = ev && Number.isFinite(ev.clientX) ? ev.clientX : Number(line.dataset.startX || 0);
+    const clickY = ev && Number.isFinite(ev.clientY) ? ev.clientY : Number(line.dataset.startY || 0);
+    line.dataset.drag = '0';
+    line.dataset.dragMoved = '0';
+    activeFormDragKey = null;
+    try { if (ev && ev.pointerId != null) line.releasePointerCapture(ev.pointerId); } catch (_) {}
+
+    if (key === 'entry' && !moved) {
+      openEntryPopupAt(clickX, clickY);
+    } else if (moved) {
+      handleLevelAdjusted();
+    }
+    setLevelLines();
+    return;
+  }
+
+  if (activeRealDragItem) {
+    const item = activeRealDragItem;
+    activeRealDragItem = null;
+    try { if (ev && ev.pointerId != null) item.el.releasePointerCapture(ev.pointerId); } catch (_) {}
+
+    if (!item.moved) {
+      if (item.key === 'entry' && item.payload && item.payload.kind === 'pending') {
+        openRealPopup(item.payload, ev.clientX, ev.clientY);
+      }
+      renderRealLines();
+      return;
+    }
+
+    const oldPrice = item.startPrice;
+    const newPrice = item.currentPrice;
+    if (Math.abs(newPrice - oldPrice) < mt5TickSize * 0.5) {
+      renderRealLines();
+      return;
+    }
+    proposeRealLevelChange(item.payload, item.key, oldPrice, newPrice);
+  }
+}
+
+window.addEventListener('pointerup', finishAnyLineDrag);
+window.addEventListener('pointercancel', finishAnyLineDrag);
 
 $('cpCancel').addEventListener('click', () => {
   pendingPendingChange = null;
@@ -2212,32 +2320,11 @@ function handleLevelAdjusted() {
   const mode = $('orderMode').value;
   const entry = Number($('entryPrice').value);
   const sl = Number($('slPrice').value);
-  const ref = Number(latestMarketPrice);
   if (mode === 'PENDING' && entry > 0 && sl > 0 && entry !== sl) {
     const nextType = sl > entry ? 'SELL_LIMIT' : 'BUY_LIMIT';
     if (nextType !== pendingOrderType) {
       pendingOrderType = nextType;
       if (activePreset === 'BUY_LIMIT' || activePreset === 'SELL_LIMIT') activePreset = nextType;
-      const gap = defaultGap(entry);
-      if (nextType === 'SELL_LIMIT') {
-        if (ref > 0 && entry <= ref) {
-          const newEntry = ref + gap;
-          $('entryPrice').value = newEntry.toFixed(mt5Digits);
-          if (Number($('slPrice').value) <= newEntry) $('slPrice').value = (newEntry + gap).toFixed(mt5Digits);
-          $('tpPrice').value = (newEntry - gap).toFixed(mt5Digits);
-        } else if (Number($('tpPrice').value) >= entry) {
-          $('tpPrice').value = (entry - gap).toFixed(mt5Digits);
-        }
-      } else {
-        if (ref > 0 && entry >= ref) {
-          const newEntry = ref - gap;
-          $('entryPrice').value = newEntry.toFixed(mt5Digits);
-          if (Number($('slPrice').value) >= newEntry) $('slPrice').value = (newEntry - gap).toFixed(mt5Digits);
-          $('tpPrice').value = (newEntry + gap).toFixed(mt5Digits);
-        } else if (Number($('tpPrice').value) <= entry) {
-          $('tpPrice').value = (entry + gap).toFixed(mt5Digits);
-        }
-      }
     }
   }
   calcLot();
@@ -2370,6 +2457,7 @@ async function load(forceNetwork = false) {
       priceFormat: { type: 'price', precision: mt5Digits, minMove: mt5TickSize > 0 ? mt5TickSize : Math.pow(10, -mt5Digits) },
     });
     for (const id of ['entryPrice', 'slPrice', 'tpPrice']) {
+      if (activeFormDragKey === (id === 'entryPrice' ? 'entry' : id === 'slPrice' ? 'sl' : 'tp')) continue;
       if ($(id).value !== '' && Number.isFinite(Number($(id).value))) $(id).value = Number($(id).value).toFixed(mt5Digits);
     }
     const commPerLot = getCommissionPerLotForChart(symbol);
@@ -2422,7 +2510,9 @@ async function load(forceNetwork = false) {
         }
         lastLoadedSymbol = symbol;
       }
-      if ($('orderMode').value === 'MARKET') $('entryPrice').value = Number(bars[bars.length - 1].close).toFixed(mt5Digits);
+      if ($('orderMode').value === 'MARKET' && activeFormDragKey !== 'entry') {
+        $('entryPrice').value = Number(bars[bars.length - 1].close).toFixed(mt5Digits);
+      }
       const resetChartView = firstLoad || symbolChanged;
       if (resetChartView) {
         priceChart.priceScale('right').applyOptions({ autoScale: true });
@@ -2744,36 +2834,33 @@ $('statsDialog').addEventListener('click', e => { if (e.target === $('statsDialo
 function setLevelLines() {
   const mode = $('orderMode').value;
   for (const key of ['entry', 'sl', 'tp']) {
+    const line = dragLevels[key];
+    if (activeFormDragKey === key || line.dataset.drag === '1') continue;
     const id = key === 'entry' ? 'entryPrice' : key === 'sl' ? 'slPrice' : 'tpPrice';
     const value = Number($(id).value);
     const toggle = $(key === 'entry' ? 'showEntry' : key === 'sl' ? 'showSL' : 'showTP');
     const y = value > 0 ? candleSeries.priceToCoordinate(value) : null;
-    const line = dragLevels[key];
-    // Không để cập nhật overlay/crosshair ghi đè vị trí line khi người dùng đang kéo.
-    if (line.dataset.drag === '1') continue;
     const allowed = activePreset !== null && (key !== 'entry' || mode === 'PENDING');
-    line.style.display = allowed && toggle.checked && y != null ? 'block' : 'none';
-    if (allowed && toggle.checked && y != null) {
+    line.style.display = allowed && toggle.checked && y != null && Number.isFinite(y) ? 'block' : 'none';
+    if (allowed && toggle.checked && y != null && Number.isFinite(y)) {
       line.style.top = y + 'px';
-      line.firstChild.textContent = key === 'entry'
-        ? (pendingOrderType === 'BUY_LIMIT' ? 'BUY LIMIT' : 'SELL LIMIT') + ' ' + value.toFixed(mt5Digits)
-        : key.toUpperCase() + ' ' + value.toFixed(mt5Digits);
+      line.firstChild.textContent = formatFormLineLabel(key, value);
     }
   }
 }
 
-// Đồng bộ tọa độ các đường giá ngay trong lúc kéo/thay đổi thang giá.
-// Chỉ cập nhật lớp hiển thị; không thay đổi dữ liệu lệnh hoặc gửi API.
 function syncChartPriceOverlays() {
-  setLevelLines();
-  for (const item of realLineEls) {
-    const el = item && item.el;
-    if (!el || !el.isConnected) continue;
-    const price = Number(el.dataset.price);
-    if (!(price > 0)) continue;
-    const y = candleSeries.priceToCoordinate(price);
-    if (y == null || !Number.isFinite(y)) continue;
-    el.style.top = (item.type === 'entry-marker' ? Math.max(2, y - 11) : y) + 'px';
+  if (!activeFormDragKey) setLevelLines();
+  if (!activeRealDragItem) {
+    for (const item of realLineEls) {
+      const el = item && item.el;
+      if (!el || !el.isConnected) continue;
+      const price = Number(el.dataset.price);
+      if (!(price > 0)) continue;
+      const y = candleSeries.priceToCoordinate(price);
+      if (y == null || !Number.isFinite(y)) continue;
+      el.style.top = (item.type === 'entry-marker' ? Math.max(2, y - 11) : y) + 'px';
+    }
   }
 }
 
@@ -2786,11 +2873,7 @@ function requestChartPriceOverlaySync() {
   });
 }
 
-// Bắt sự kiện ở capture phase để vẫn nhận được thao tác kéo trực tiếp trên trục giá.
 const priceChartElement = $('priceChart');
-priceChartElement.addEventListener('pointermove', requestChartPriceOverlaySync, true);
-priceChartElement.addEventListener('pointerup', requestChartPriceOverlaySync, true);
-priceChartElement.addEventListener('pointercancel', requestChartPriceOverlaySync, true);
 priceChartElement.addEventListener('wheel', requestChartPriceOverlaySync, { capture: true, passive: true });
 window.addEventListener('resize', requestChartPriceOverlaySync, { passive: true });
 
@@ -2854,7 +2937,6 @@ function computeEaRiskBreakdown(symbol, slDistance, volume) {
     return { valid: false, error: 'Khoảng cách SL hoặc volume <= 0.' };
   }
 
-  /* Chart không có live Ask/Bid từng tick nên spread thực tế lấy 0 + spread_buffer_points của EA */
   const spreadPoints = Number(eaState.settings.spread_buffer_points) || 0;
   const commPerLot = getCommissionPerLotForChart(symbol);
 
@@ -2942,7 +3024,6 @@ function setLotStatus(message, isError = true) {
 
 function calcLot() {
   const inputRisk = Number($('riskMoney').value);
-  /* Trong PollServer() của EA: double useRisk = g_settings.risk_money > 0 ? g_settings.risk_money : riskMoney; */
   const effectiveRisk = eaState.settings.risk_money > 0 ? eaState.settings.risk_money : inputRisk;
   const sl = Number($('slPrice').value);
   const e = $('orderMode').value === 'MARKET' && Number(latestMarketPrice) > 0
@@ -3095,8 +3176,10 @@ function applyChartDimensions() {
   const rw = $('rsiChart').clientWidth, rh = $('rsiChart').clientHeight;
   if (pw > 0 && ph > 0) priceChart.applyOptions({ width: pw, height: ph });
   if (rw > 0 && rh > 0) rsiChart.applyOptions({ width: rw, height: Math.max(1, rh) });
-  setLevelLines();
-  renderRealLines();
+  if (!isAnyLineDragging()) {
+    setLevelLines();
+    renderRealLines();
+  }
 }
 const chartResizeObserver = new ResizeObserver(applyChartDimensions);
 chartResizeObserver.observe($('priceChart'));
