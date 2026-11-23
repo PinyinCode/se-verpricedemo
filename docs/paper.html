@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Forex AI · Paper Demo</title>
+<style>
+:root{color-scheme:dark;--bg:#080f1b;--panel:#101b2c;--panel2:#142239;--line:#26364c;--muted:#91a2b8;--text:#e8eef7;--green:#27c995;--red:#f06b7e;--blue:#60a5fa;--amber:#fbbf24}
+*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at 50% -20%,#172944 0%,#080f1b 58%);color:var(--text);font:13px/1.5 system-ui,-apple-system,Arial,sans-serif}
+header{min-height:58px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:9px 16px;border-bottom:1px solid var(--line);background:rgba(10,19,33,.96)}
+.brand{font-size:16px;font-weight:800}.muted,.small{color:var(--muted)}.small{font-size:11px}
+.tag{border:1px solid #166548;color:#45d6a1;border-radius:20px;padding:3px 10px;font-size:11px;font-weight:800;letter-spacing:.4px}
+a,button,select,input{font:inherit;color:var(--text)}a,button{border:1px solid #354963;border-radius:7px;padding:7px 11px;background:#192941;text-decoration:none;cursor:pointer}a:hover,button:hover{background:#213651}select,input{background:#111f33;border:1px solid #31445f;border-radius:7px;padding:8px}
+main{max-width:1500px;margin:auto;padding:12px;display:grid;gap:10px}.stats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.panel{min-width:0;background:var(--panel);border:1px solid #2a3b53;border-radius:11px;overflow:hidden}.stat{padding:12px}.stat label{display:block;color:var(--muted);font-size:10px;letter-spacing:.5px}.stat strong{display:block;font-size:clamp(17px,3vw,24px);font-variant-numeric:tabular-nums;margin-top:3px}.green{color:var(--green)}.red{color:var(--red)}
+.toolbar,.panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:10px 12px;background:var(--panel2);border-bottom:1px solid var(--line)}.toolbar-left,.toolbar-right{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+#priceChart{height:clamp(300px,52vh,560px);width:100%}.notice{padding:9px 12px;color:#f6d58a;background:rgba(251,191,36,.07);border-bottom:1px solid #4b4028;font-size:11px}
+.tradebar{display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding:12px}.tradebar label{color:var(--muted);font-size:11px}.tradebar input{width:100px}.tradebar button{min-width:100px;font-weight:800}.buy{background:rgba(39,201,149,.13);border-color:#217c62;color:#6de3b8}.sell{background:rgba(240,107,126,.12);border-color:#8c4050;color:#ff9aaa}.secondary{background:#142239}.section-body{overflow:auto}table{width:100%;border-collapse:collapse;min-width:650px}th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);font-size:11px;white-space:nowrap}th{color:var(--muted);font-weight:600}td.num{text-align:right;font-variant-numeric:tabular-nums}.empty{padding:24px;text-align:center;color:var(--muted)}.close{padding:4px 8px;color:#ff9aaa;background:rgba(240,107,126,.1);border-color:#8c4050;font-size:10px}
+@media(max-width:700px){.stats{grid-template-columns:repeat(2,minmax(0,1fr))}header{align-items:flex-start}.toolbar{align-items:flex-start}#priceChart{height:360px}.tradebar{gap:7px}.tradebar button{flex:1}}
+</style>
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.2/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+<header>
+  <div><div class="brand">Forex AI · Chart <span class="tag">PAPER DEMO</span></div><div class="small">Môi trường mô phỏng độc lập · không kết nối broker</div></div>
+  <div class="toolbar-right"><span class="small" id="clock">--:--:--</span><a href="./index.html?mode=live">MỞ LIVE / NHẬP API KEY</a></div>
+</header>
+<main>
+  <section class="stats">
+    <div class="panel stat"><label>BALANCE</label><strong id="balance">$10,000.00</strong></div>
+    <div class="panel stat"><label>EQUITY</label><strong id="equity">$10,000.00</strong></div>
+    <div class="panel stat"><label>FLOATING P/L</label><strong id="floating">$0.00</strong></div>
+    <div class="panel stat"><label>OPEN POSITIONS</label><strong id="positionCount">0</strong></div>
+  </section>
+  <section class="panel">
+    <div class="toolbar">
+      <div class="toolbar-left"><strong id="chartTitle">EURUSD · Simulated feed</strong><select id="symbol"><option>EURUSD</option><option>GBPUSD</option><option>USDJPY</option><option>XAUUSD</option><option>BTCUSD</option></select><select id="timeframe"><option value="1">M1</option><option value="5" selected>M5</option><option value="15">M15</option><option value="60">H1</option></select></div>
+      <div class="toolbar-right"><span class="tag">LOCAL SIMULATION</span><button id="reset" class="secondary">RESET DEMO</button></div>
+    </div>
+    <div class="notice">Giá và nến được tạo ngẫu nhiên ngay trên trình duyệt để minh họa giao diện. Không phải giá thị trường; lệnh và P/L chỉ lưu trong trình duyệt này.</div>
+    <div id="priceChart"></div>
+  </section>
+  <section class="panel">
+    <div class="panel-head"><strong>ĐẶT LỆNH MÔ PHỎNG</strong><span class="small" id="currentPrice">Giá: --</span></div>
+    <div class="tradebar">
+      <label>Khối lượng demo <input id="size" type="number" min="1" max="100000" step="1" value="1000"></label>
+      <button id="buy" class="buy">BUY DEMO</button><button id="sell" class="sell">SELL DEMO</button>
+      <span class="small" id="tradeMessage">Lệnh chỉ tác động đến tài khoản mô phỏng.</span>
+    </div>
+  </section>
+  <section class="panel">
+    <div class="panel-head"><strong>VỊ THẾ ĐANG MỞ</strong><span class="small">Được lưu cục bộ trên thiết bị</span></div>
+    <div class="section-body"><table><thead><tr><th>SYMBOL</th><th>TYPE</th><th>SIZE</th><th>ENTRY</th><th>PRICE</th><th>FLOATING P/L</th><th></th></tr></thead><tbody id="positions"><tr><td colspan="7" class="empty">Chưa có vị thế Demo</td></tr></tbody></table></div>
+  </section>
+  <section class="panel">
+    <div class="panel-head"><strong>LỊCH SỬ DEMO</strong><button id="clearHistory" class="secondary">XÓA LỊCH SỬ</button></div>
+    <div class="section-body"><table><thead><tr><th>TIME</th><th>SYMBOL</th><th>TYPE</th><th>SIZE</th><th>ENTRY</th><th>EXIT</th><th>RESULT</th></tr></thead><tbody id="history"><tr><td colspan="7" class="empty">Chưa có giao dịch</td></tr></tbody></table></div>
+  </section>
+</main>
+<script>
+'use strict';
+const $=id=>document.getElementById(id);
+const STORE='forexPaperDemo.v1';
+const START_BALANCE=10000;
+const CONFIG={EURUSD:{price:1.085,step:.00012,digits:5},GBPUSD:{price:1.271,step:.00015,digits:5},USDJPY:{price:149.2,step:.018,digits:3},XAUUSD:{price:2325,step:.65,digits:2},BTCUSD:{price:67500,step:38,digits:2}};
+let symbol=$('symbol').value, timeframe=5, price=CONFIG[symbol].price, bars=[], positions=[], history=[], balance=START_BALANCE, chart, candleSeries, volumeSeries, tickTimer;
+const fmtMoney=n=>(n<0?'-$':'$')+Math.abs(n).toFixed(2);
+const fmtPrice=n=>Number(n).toFixed(CONFIG[symbol].digits);
+function save(){try{localStorage.setItem(STORE,JSON.stringify({balance,positions,history}));}catch(_){}}
+function restore(){try{const d=JSON.parse(localStorage.getItem(STORE)||'null');if(d&&Number.isFinite(d.balance)){balance=d.balance;positions=Array.isArray(d.positions)?d.positions:[];history=Array.isArray(d.history)?d.history.slice(0,100):[];}}catch(_){}}
+function seedBars(){const c=CONFIG[symbol],now=Math.floor(Date.now()/60000)*60;let p=c.price;bars=[];for(let i=180;i>0;i--){const open=p;const drift=(Math.random()-.5)*c.step*5;p=Math.max(c.step,open+drift);const high=Math.max(open,p)+Math.random()*c.step*1.4;const low=Math.min(open,p)-Math.random()*c.step*1.4;bars.push({time:now-i*timeframe*60,open,high,low,close:p,volume:100+Math.random()*900});}price=p;renderBars();}
+function renderBars(){candleSeries.setData(bars.map(b=>({time:b.time,open:b.open,high:b.high,low:b.low,close:b.close})));volumeSeries.setData(bars.map(b=>({time:b.time,value:b.volume,color:b.close>=b.open?'rgba(39,201,149,.35)':'rgba(240,107,126,.35)'})));chart.timeScale().fitContent();updateUI();}
+function updateUI(){const floating=positions.reduce((sum,p)=>sum+((priceFor(p.symbol)-p.entry)*(p.side==='BUY'?1:-1)*p.size*Number(p.multiplier||1)),0);$('balance').textContent=fmtMoney(balance);$('equity').textContent=fmtMoney(balance+floating);$('floating').textContent=fmtMoney(floating);$('floating').className=floating>=0?'green':'red';$('positionCount').textContent=positions.length;$('currentPrice').textContent='Giá mô phỏng: '+fmtPrice(price);$('chartTitle').textContent=symbol+' · Simulated feed';renderPositions();renderHistory();}
+function priceFor(sym){return sym===symbol?price:(CONFIG[sym]?.price||price);}
+function pnl(p,at=priceFor(p.symbol)){return (at-p.entry)*(p.side==='BUY'?1:-1)*p.size*Number(p.multiplier||1);}
+function renderPositions(){const body=$('positions');if(!positions.length){body.innerHTML='<tr><td colspan="7" class="empty">Chưa có vị thế Demo</td></tr>';return;}body.innerHTML=positions.map(p=>{const v=pnl(p),pr=priceFor(p.symbol);return '<tr><td>'+p.symbol+'</td><td class="'+(p.side==='BUY'?'green':'red')+'">'+p.side+'</td><td class="num">'+p.size+'</td><td class="num">'+Number(p.entry).toFixed(CONFIG[p.symbol].digits)+'</td><td class="num">'+pr.toFixed(CONFIG[p.symbol].digits)+'</td><td class="num '+(v>=0?'green':'red')+'">'+fmtMoney(v)+'</td><td><button class="close" data-close="'+p.id+'">CLOSE</button></td></tr>';}).join('');}
+function renderHistory(){const body=$('history');if(!history.length){body.innerHTML='<tr><td colspan="7" class="empty">Chưa có giao dịch</td></tr>';return;}body.innerHTML=history.slice(0,30).map(h=>'<tr><td>'+h.time+'</td><td>'+h.symbol+'</td><td class="'+(h.side==='BUY'?'green':'red')+'">'+h.side+'</td><td class="num">'+h.size+'</td><td class="num">'+h.entry+'</td><td class="num">'+h.exit+'</td><td class="num '+(h.pnl>=0?'green':'red')+'">'+fmtMoney(h.pnl)+'</td></tr>').join('');}
+function openPosition(side){const size=Math.floor(Number($('size').value));if(!Number.isFinite(size)||size<1||size>100000){$('tradeMessage').textContent='Khối lượng Demo phải từ 1 đến 100.000.';return;}positions.unshift({id:Date.now()+Math.random(),symbol,side,size,entry:price,multiplier:1});$('tradeMessage').textContent='Đã tạo vị thế '+side+' mô phỏng tại '+fmtPrice(price)+'.';save();updateUI();}
+function closePosition(id){const i=positions.findIndex(p=>String(p.id)===String(id));if(i<0)return;const p=positions.splice(i,1)[0],result=pnl(p);balance+=result;history.unshift({time:new Date().toLocaleString('vi-VN'),symbol:p.symbol,side:p.side,size:p.size,entry:p.entry.toFixed(CONFIG[p.symbol].digits),exit:priceFor(p.symbol).toFixed(CONFIG[p.symbol].digits),pnl:result});history=history.slice(0,100);save();updateUI();}
+function tick(){const c=CONFIG[symbol],last=bars[bars.length-1],move=(Math.random()-.49)*c.step*2.2;price=Math.max(c.step,price+move);const now=Math.floor(Date.now()/(timeframe*60000))*(timeframe*60);if(last.time===now){last.close=price;last.high=Math.max(last.high,price);last.low=Math.min(last.low,price);last.volume+=Math.random()*20;candleSeries.update({time:last.time,open:last.open,high:last.high,low:last.low,close:last.close});volumeSeries.update({time:last.time,value:last.volume,color:last.close>=last.open?'rgba(39,201,149,.35)':'rgba(240,107,126,.35)'});}else{const b={time:now,open:last.close,high:Math.max(last.close,price),low:Math.min(last.close,price),close:price,volume:100+Math.random()*300};bars.push(b);if(bars.length>500)bars.shift();candleSeries.update({time:b.time,open:b.open,high:b.high,low:b.low,close:b.close});volumeSeries.update({time:b.time,value:b.volume,color:b.close>=b.open?'rgba(39,201,149,.35)':'rgba(240,107,126,.35)'});}updateUI();}
+function initChart(){chart=LightweightCharts.createChart($('priceChart'),{layout:{background:{color:'#101b2c'},textColor:'#a9b8ca'},grid:{vertLines:{color:'#1c2a3e'},horzLines:{color:'#1c2a3e'}},rightPriceScale:{borderColor:'#34445c'},timeScale:{borderColor:'#34445c',timeVisible:true,secondsVisible:false},crosshair:{mode:LightweightCharts.CrosshairMode.Normal},handleScroll:true,handleScale:true});candleSeries=chart.addCandlestickSeries({upColor:'#22c58b',downColor:'#f06478',borderUpColor:'#22c58b',borderDownColor:'#f06478',wickUpColor:'#22c58b',wickDownColor:'#f06478'});volumeSeries=chart.addHistogramSeries({priceScaleId:'volume',priceLineVisible:false,lastValueVisible:false,base:0});chart.priceScale('volume').applyOptions({scaleMargins:{top:.82,bottom:0},visible:false});new ResizeObserver(()=>chart.applyOptions({width:$('priceChart').clientWidth,height:$('priceChart').clientHeight})).observe($('priceChart'));}
+function switchSymbol(){symbol=$('symbol').value;price=CONFIG[symbol].price;seedBars();$('tradeMessage').textContent='Đã chuyển sang luồng giá mô phỏng '+symbol+'.';}
+$('buy').addEventListener('click',()=>openPosition('BUY'));$('sell').addEventListener('click',()=>openPosition('SELL'));
+$('positions').addEventListener('click',e=>{const b=e.target.closest('[data-close]');if(b)closePosition(b.dataset.close);});
+$('symbol').addEventListener('change',switchSymbol);
+$('timeframe').addEventListener('change',()=>{timeframe=Number($('timeframe').value);seedBars();});
+$('reset').addEventListener('click',()=>{if(!confirm('Khôi phục tài khoản Paper Demo về $10,000 và xóa toàn bộ vị thế/lịch sử?'))return;balance=START_BALANCE;positions=[];history=[];try{localStorage.removeItem(STORE);}catch(_){}$('tradeMessage').textContent='Đã khôi phục tài khoản Demo.';updateUI();});
+$('clearHistory').addEventListener('click',()=>{history=[];save();renderHistory();});
+function clock(){ $('clock').textContent=new Intl.DateTimeFormat('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date());}
+restore();initChart();seedBars();clock();setInterval(clock,1000);tickTimer=setInterval(tick,1500);window.addEventListener('beforeunload',()=>clearInterval(tickTimer));
+</script>
+</body>
+</html>
