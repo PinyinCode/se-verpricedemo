@@ -35,10 +35,103 @@ _db_lock = threading.Lock()
 _conn: sqlite3.Connection | None = None
 _recently_acked: dict[str, float] = {}
 _ACK_COOLDOWN = 10.0
+_GMT7 = timezone(timedelta(hours=7))
 
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _parse_news_timestamp(raw_time: object) -> float | None:
+    if raw_time is None:
+        return None
+    if isinstance(raw_time, (int, float)):
+        return float(raw_time)
+    s = str(raw_time).strip()
+    if not s:
+        return None
+    if s.isdigit():
+        return float(s)
+    if s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M"):
+            try:
+                dt = datetime.strptime(s, fmt)
+                break
+            except ValueError:
+                dt = None
+        if dt is None:
+            return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_GMT7)
+    return dt.timestamp()
+
+
+def evaluate_news_filter(settings_dict: dict, now_ts: float | None = None) -> dict:
+    enabled = bool(settings_dict.get("news_filter_enabled", True))
+    before_min = max(0, int(settings_dict.get("news_block_before_min", 3)))
+    after_min = max(0, int(settings_dict.get("news_block_after_min", 3)))
+    before_sec = before_min * 60
+    after_sec = after_min * 60
+
+    raw_events = settings_dict.get("news_events_json", "[]")
+    try:
+        events = json.loads(raw_events) if isinstance(raw_events, str) else (raw_events or [])
+        if not isinstance(events, list):
+            events = []
+    except Exception:
+        events = []
+
+    if not enabled:
+        return {
+            "blocked": False,
+            "reason": None,
+            "before_min": before_min,
+            "after_min": after_min,
+            "active_event": None,
+        }
+
+    if now_ts is None:
+        now_ts = datetime.now(timezone.utc).timestamp()
+
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        ev_ts = _parse_news_timestamp(ev.get("time") or ev.get("timestamp") or ev.get("date"))
+        if ev_ts is None:
+            continue
+        window_start = ev_ts - before_sec
+        window_end = ev_ts + after_sec
+        if window_start <= now_ts <= window_end:
+            title = str(ev.get("title") or ev.get("name") or ev.get("event") or "News Event").strip()
+            currency = str(ev.get("currency") or "").strip()
+            label = f"{currency} {title}".strip() if currency else title
+            return {
+                "blocked": True,
+                "reason": "news_window_3m",
+                "detail": f"Chặn tin (-{before_min}m / +{after_min}m): {label}",
+                "before_min": before_min,
+                "after_min": after_min,
+                "active_event": {
+                    "title": title,
+                    "currency": currency,
+                    "event_time": ev_ts,
+                    "blocked_from": window_start,
+                    "blocked_until": window_end,
+                },
+            }
+
+    return {
+        "blocked": False,
+        "reason": None,
+        "detail": None,
+        "before_min": before_min,
+        "after_min": after_min,
+        "active_event": None,
+    }
 
 
 def send_telegram_rt_signal(item: "TodaySignalItem") -> bool:
@@ -46,7 +139,7 @@ def send_telegram_rt_signal(item: "TodaySignalItem") -> bool:
         return False
     local_time = datetime.fromtimestamp(
         item.signal_time, timezone.utc
-    ).astimezone(timezone(timedelta(hours=7)))
+    ).astimezone(_GMT7)
     direction = "▲ BUY" if item.direction == "BUY" else "▼ SELL"
     div_name = "Regular" if item.divergence.lower() in ("reg", "regular") else "Hidden"
     message = (
@@ -104,6 +197,9 @@ def _init_settings_table(conn: sqlite3.Connection) -> None:
         trailing_enabled      INTEGER NOT NULL DEFAULT 1,
         breakeven_enabled     INTEGER NOT NULL DEFAULT 1,
         news_filter_enabled   INTEGER NOT NULL DEFAULT 1,
+        news_block_before_min INTEGER NOT NULL DEFAULT 3,
+        news_block_after_min  INTEGER NOT NULL DEFAULT 3,
+        news_events_json      TEXT    NOT NULL DEFAULT '[]',
         time_filter_enabled   INTEGER NOT NULL DEFAULT 1,
         telegram_notifications_enabled INTEGER NOT NULL DEFAULT 1,
         emergency_stop        INTEGER NOT NULL DEFAULT 0,
@@ -125,8 +221,14 @@ def _init_settings_table(conn: sqlite3.Connection) -> None:
     )
     """)
     settings_cols = {row[1] for row in conn.execute("PRAGMA table_info(settings)")}
-    if "telegram_notifications_enabled" not in settings_cols:
-        conn.execute("ALTER TABLE settings ADD COLUMN telegram_notifications_enabled INTEGER NOT NULL DEFAULT 1")
+    for col, sql in [
+        ("telegram_notifications_enabled", "ALTER TABLE settings ADD COLUMN telegram_notifications_enabled INTEGER NOT NULL DEFAULT 1"),
+        ("news_block_before_min", "ALTER TABLE settings ADD COLUMN news_block_before_min INTEGER NOT NULL DEFAULT 3"),
+        ("news_block_after_min", "ALTER TABLE settings ADD COLUMN news_block_after_min INTEGER NOT NULL DEFAULT 3"),
+        ("news_events_json", "ALTER TABLE settings ADD COLUMN news_events_json TEXT NOT NULL DEFAULT '[]'"),
+    ]:
+        if col not in settings_cols:
+            conn.execute(sql)
 
     now = utc_now()
     conn.execute(
@@ -594,6 +696,9 @@ class SettingsIn(BaseModel):
     trailing_enabled: bool | None = None
     breakeven_enabled: bool | None = None
     news_filter_enabled: bool | None = None
+    news_block_before_min: int | None = Field(default=None, ge=0, le=120)
+    news_block_after_min: int | None = Field(default=None, ge=0, le=120)
+    news_events_json: str | None = Field(default=None, max_length=20000)
     time_filter_enabled: bool | None = None
     emergency_stop: bool | None = None
     emergency_close_all: bool | None = None
@@ -616,6 +721,17 @@ class SettingsIn(BaseModel):
     trading_end_hour: int | None = Field(default=None, ge=0, le=23)
 
     updated_by: str = Field(default="dashboard", max_length=40)
+
+    @field_validator("news_events_json")
+    @classmethod
+    def validate_news_events_json(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip() or "[]"
+        parsed = json.loads(cleaned)
+        if not isinstance(parsed, list):
+            raise ValueError("news_events_json phải là một JSON array [...]")
+        return json.dumps(parsed, ensure_ascii=False)
 
 
 # ============ Routes ============
@@ -649,7 +765,7 @@ def health():
         raise HTTPException(status_code=503, detail=f"database_error: {type(exc).__name__}")
 
 
-# ---- SETTINGS endpoints ----
+# ---- SETTINGS & NEWS endpoints ----
 
 def _settings_row_to_dict(row: sqlite3.Row) -> dict:
     d = dict(row)
@@ -660,6 +776,10 @@ def _settings_row_to_dict(row: sqlite3.Row) -> dict:
     ):
         if k in d:
             d[k] = bool(d[k])
+    d["news_block_before_min"] = int(d.get("news_block_before_min") if d.get("news_block_before_min") is not None else 3)
+    d["news_block_after_min"] = int(d.get("news_block_after_min") if d.get("news_block_after_min") is not None else 3)
+    if not d.get("news_events_json"):
+        d["news_events_json"] = "[]"
     return d
 
 
@@ -705,6 +825,15 @@ def update_settings(payload: SettingsIn):
         row = conn.execute("SELECT * FROM settings WHERE id=1").fetchone()
 
     return {"ok": True, "settings": _settings_row_to_dict(row), "updated_at": now}
+
+
+@app.get("/api/news/status")
+def get_news_status():
+    with db() as conn:
+        row = conn.execute("SELECT * FROM settings WHERE id=1").fetchone()
+        s = _settings_row_to_dict(row) if row else {}
+    status = evaluate_news_filter(s)
+    return {"ok": True, **status, "server_time": utc_now()}
 
 
 @app.get("/api/settings/commission", dependencies=[Depends(require_key)])
@@ -825,7 +954,8 @@ def create_signal(payload: SignalIn):
 
 @app.post("/api/signals/realtime", dependencies=[Depends(require_key)])
 def create_realtime_signal(payload: SignalIn):
-    now_dt = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=7)))
+    now_dt = datetime.now(timezone.utc).astimezone(_GMT7)
+    now_ts = now_dt.timestamp()
     with db() as conn:
         settings_row = conn.execute("SELECT * FROM settings WHERE id=1").fetchone()
         s = _settings_row_to_dict(settings_row) if settings_row else {}
@@ -834,6 +964,23 @@ def create_realtime_signal(payload: SignalIn):
             return {"ok": True, "queued": False, "reason": "emergency_stop"}
         if not s.get("auto_trade_enabled", True):
             return {"ok": True, "queued": False, "reason": "auto_trade_disabled"}
+
+        news_status = evaluate_news_filter(s, now_ts=now_ts)
+        if news_status["blocked"]:
+            conn.execute(
+                "INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
+                ("signal_news_blocked",
+                 f"{payload.symbol} {payload.timeframe} {payload.direction} ({payload.source}) - {news_status.get('detail')}",
+                 utc_now()),
+            )
+            return {
+                "ok": True,
+                "queued": False,
+                "blocked_by_news": True,
+                "reason": news_status["reason"],
+                "detail": news_status.get("detail"),
+                "active_event": news_status.get("active_event"),
+            }
 
         if s.get("time_filter_enabled", True):
             start_h = int(s.get("trading_start_hour", 7))
@@ -1708,6 +1855,7 @@ def dashboard_data():
             "FROM today_signals ORDER BY signal_time DESC LIMIT 200").fetchall()]
         settings_row = conn.execute("SELECT * FROM settings WHERE id=1").fetchone()
         settings_dict = _settings_row_to_dict(settings_row) if settings_row else {}
+        news_status = evaluate_news_filter(settings_dict)
     return {
         "mode": "REAL_ONLY",
         "signals": signals,
@@ -1723,5 +1871,6 @@ def dashboard_data():
         "counts": counts,
         "events": events,
         "settings": settings_dict,
+        "news_status": news_status,
         "server_time": utc_now(),
     }
