@@ -1190,17 +1190,35 @@ function init(){
  bindCrosshair();
  new ResizeObserver(()=>{chart.applyOptions({width:$('priceChart').clientWidth,height:$('priceChart').clientHeight});rsiChart.applyOptions({width:$('rsiChart').clientWidth,height:$('rsiChart').clientHeight});placeLines();}).observe($('priceChart'));
 }
-function seed(){
- const step=cfg[symbol][1],now=Math.floor(Date.now()/(tf*60000))*(tf*60);let p=cfg[symbol][0];bars=[];
- for(let i=180;i>=0;i--){const o=p;p=Math.max(step,p+(Math.random()-.5)*step*4);bars.push({time:now-i*tf*60,open:o,high:Math.max(o,p)+Math.random()*step,low:Math.min(o,p)-Math.random()*step,close:p});}
- price=p;$('entryPrice').value=fmt(price);$('slPrice').value=fmt(price-cfg[symbol][1]*12);$('tpPrice').value=fmt(price+cfg[symbol][1]*20);candles.setData(bars);rsiPoints=bars.map((b,i)=>({time:b.time,value:50+Math.sin(i/8)*17+(Math.random()-.5)*6}));rsi.setData(rsiPoints);chart.timeScale().fitContent();rsiChart.timeScale().fitContent();header();createLines();
+async function seed(){
+ const selectedSymbol=symbol,selectedTf=$('tf').value;
+ text('feedState','ĐANG TẢI SNAPSHOT DỮ LIỆU...');
+ try{
+  const response=await fetch('./data/paper-snapshot.json?v='+encodeURIComponent(window.PAPER_SNAPSHOT_VERSION||''),{cache:'no-store'});
+  if(!response.ok)throw new Error('Không tải được snapshot ('+response.status+').');
+  const snapshot=await response.json();
+  const item=snapshot?.data?.[selectedSymbol]?.[selectedTf];
+  if(!item||!Array.isArray(item.candles)||!item.candles.length)throw new Error('Chưa có snapshot cho '+selectedSymbol+' '+selectedTf+'.');
+  if(symbol!==selectedSymbol||$('tf').value!==selectedTf)return;
+  bars=item.candles.map(c=>({time:Number(c.time),open:Number(c.open),high:Number(c.high),low:Number(c.low),close:Number(c.close)}));
+  rsiPoints=(item.rsi||[]).map(p=>({time:Number(p.time),value:Number(p.value)})).filter(p=>Number.isFinite(p.time)&&Number.isFinite(p.value));
+  price=bars[bars.length-1].close;
+  $('entryPrice').value=fmt(price);$('slPrice').value=fmt(price-cfg[symbol][1]*12);$('tpPrice').value=fmt(price+cfg[symbol][1]*20);
+  candles.setData(bars);rsi.setData(rsiPoints);chart.timeScale().fitContent();rsiChart.timeScale().fitContent();header();createLines();
+  text('feedState','SNAPSHOT · '+item.trading_day+' · '+snapshot.timezone);
+  const ss=$('serverState');if(ss){ss.classList.remove('offline');ss.classList.add('online');ss.title='Dữ liệu nến thực tế được snapshot tự động';ss.innerHTML='<i></i><span>DATA</span>';}
+  text('requestState','DỮ LIỆU THỰC TẾ · NGÀY '+item.trading_day+' · PAPER LOCAL');
+ }catch(error){
+  bars=[];rsiPoints=[];candles.setData([]);rsi.setData([]);text('feedState','KHÔNG CÓ SNAPSHOT');text('requestState',error.message+' Hãy thử tải lại sau khi hệ thống cập nhật dữ liệu.');
+  const ss=$('serverState');if(ss){ss.classList.remove('online');ss.classList.add('offline');ss.title=error.message;ss.innerHTML='<i></i><span>OFFLINE</span>';}
+ }
 }
 function header(){
  text('chartTitle',symbol+' · '+$('tf').value+' · PAPER');text('feedState','PAPER SIMULATION');text('positionCount',positions.length);
  const b=bars[bars.length-1];if(b)$('ohlcLegend').innerHTML='<b>O '+fmt(b.open)+'</b><span>H '+fmt(b.high)+'</span><span>L '+fmt(b.low)+'</span><span>C '+fmt(b.close)+'</span>';
  const ss=$('serverState');if(ss){ss.classList.remove('offline');ss.classList.add('online');ss.title='Dữ liệu mô phỏng cục bộ';ss.innerHTML='<i></i><span>DEMO</span>';}
 }
-function tick(){const last=bars[bars.length-1];if(!last)return;const step=cfg[symbol][1];price=Math.max(step,price+(Math.random()-.49)*step*1.8);const now=Math.floor(Date.now()/(tf*60000))*(tf*60);if(last.time===now){last.close=price;last.high=Math.max(last.high,price);last.low=Math.min(last.low,price);candles.update(last);const rp=rsiPoints[rsiPoints.length-1];if(rp){rp.value=Math.max(5,Math.min(95,rp.value+(Math.random()-.5)*2.2));rsi.update(rp);}}else{const b={time:now,open:last.close,high:Math.max(last.close,price),low:Math.min(last.close,price),close:price};bars.push(b);candles.update(b);const prior=rsiPoints[rsiPoints.length-1]?.value||50,rp={time:now,value:Math.max(5,Math.min(95,prior+(Math.random()-.5)*5))};rsiPoints.push(rp);rsi.update(rp);}header();placeLines();}
+
 let demoMode='MARKET',resizeDrag=null,crosshairSyncing=false;
 function levelValue(k,fallback){const id={entry:'entryPrice',sl:'slPrice',tp:'tpPrice'}[k],v=Number($(id)?.value);return Number.isFinite(v)&&v>0?v:fallback;}
 function createLines(){
@@ -1291,7 +1309,7 @@ async function enterIndex(){
 authButton.addEventListener('click',enterIndex);
 authInput.addEventListener('keydown',e=>{if(e.key==='Enter')enterIndex();});
 
-restore();init();seed();bind();renderPositions();renderHistory();clock();setInterval(clock,1000);setInterval(tick,1200);
+restore();init();bind();renderPositions();renderHistory();clock();seed();setInterval(clock,1000);
 document.querySelectorAll('dialog').forEach(d=>d.addEventListener('click',e=>{if(e.target===d)d.close();}));
 
 </script>
