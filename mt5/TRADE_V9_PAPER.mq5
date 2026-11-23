@@ -5,7 +5,7 @@
 //| Tự tính SL/TP/Lot, chặn tin ±N phút, tự trailing/BE, cache local.|
 //+------------------------------------------------------------------+
 #property strict
-#property version "3.17"
+#property version "3.18"
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
@@ -18,7 +18,7 @@ input string ApiKey                       = "SET_A_LONG_RANDOM_API_KEY";
 input string ConsumerId                   = "trade-v9";
 input long   MagicNumber                  = 20240915;
 input string OrderComment                 = "TRADE-V9";
-input string IndicatorSymbolsCsv          = ""; // Để trống = tự quét Market Watch & chart symbols; hoặc nhập "XAUUSD,EURUSD"
+input string IndicatorSymbolsCsv          = ""; // Để trống = quét chart hiện tại + Market Watch; hoặc nhập "XAUUSD,EURUSD"
 
 //--- Globals --------------------------------------------------------
 CTrade        trade;
@@ -126,7 +126,7 @@ uint lastTrailingCheckMs     = 0;
 
 int g_serverToGMTOffset = 0;
 datetime g_lastOffsetCalcTime = 0;
-bool g_emergencyInProgress = false;
+bool g_emergencyClosedOnce = false;
 
 //--- Forward declarations -------------------------------------------
 void SendAccountSnapshot();
@@ -266,12 +266,14 @@ void RebuildNewsScheduleCache()
    {
       string tStr = JsonValue(objs[i], "time");
       if(tStr == "") tStr = JsonValue(objs[i], "timestamp");
+      if(tStr == "") tStr = JsonValue(objs[i], "date");
       long evTs = ParseIsoOrEpochToUtc(tStr);
       if(evTs <= 0) continue;
 
       SNewsEventItem item;
       item.title    = JsonValue(objs[i], "title");
       if(item.title == "") item.title = JsonValue(objs[i], "name");
+      if(item.title == "") item.title = JsonValue(objs[i], "event");
       if(item.title == "") item.title = "News Event";
       item.currency = JsonValue(objs[i], "currency");
       item.event_ts = evTs;
@@ -351,7 +353,10 @@ string JsonValue(string json, string key)
          if(ch == '\\' && i+1 < StringLen(json))
          {
             ushort nx = StringGetCharacter(json, i+1);
-            if(nx == '"' || nx == '\\') { out += ShortToString(nx); i++; continue; }
+            if(nx == '"' || nx == '\\' || nx == '/') { out += ShortToString(nx); i++; continue; }
+            if(nx == 'n') { out += "\n"; i++; continue; }
+            if(nx == 'r') { out += "\r"; i++; continue; }
+            if(nx == 't') { out += "\t"; i++; continue; }
          }
          if(ch == '"') return out;
          out += ShortToString(ch);
@@ -647,6 +652,9 @@ bool ApplySettingsJson(string obj, bool saveDisk)
    if(g_settings.news_block_after_min < 0) g_settings.news_block_after_min = 3;
    if(g_settings.trading_start_hour < 0 || g_settings.trading_start_hour > 23) g_settings.trading_start_hour = 7;
    if(g_settings.trading_end_hour < 0 || g_settings.trading_end_hour > 23) g_settings.trading_end_hour = 23;
+
+   if(!g_settings.emergency_stop)
+      g_emergencyClosedOnce = false;
 
    g_settings.last_synced = TimeCurrent();
    RebuildNewsScheduleCache();
@@ -1064,17 +1072,18 @@ void CancelAllMagicPending()
 
 void CheckEmergencyStop()
 {
-   if(!g_settings.emergency_stop) { g_emergencyInProgress = false; return; }
-   if(g_emergencyInProgress) return;
-   g_emergencyInProgress = true;
-
-   if(g_settings.emergency_close_all)
+   if(!g_settings.emergency_stop)
    {
+      g_emergencyClosedOnce = false;
+      return;
+   }
+   if(g_settings.emergency_close_all && !g_emergencyClosedOnce)
+   {
+      g_emergencyClosedOnce = true;
       CloseAllMagicPositions();
       CancelAllMagicPending();
       SendAccountSnapshot();
    }
-   Print("[V9 EMERGENCY] Stop active (close_all=", g_settings.emergency_close_all ? "true" : "false", ")");
 }
 
 //--- Heartbeat ------------------------------------------------------
@@ -1371,10 +1380,8 @@ void PollIndicatorSignals()
       return;
    }
 
-   // Luôn ưu tiên symbol của chart hiện tại trước
    CheckIndicatorSymbolSignal(_Symbol);
 
-   // Quét các symbol đang mở trong Market Watch
    int totalSym = SymbolsTotal(true);
    for(int i = 0; i < totalSym; i++)
    {
@@ -1853,7 +1860,7 @@ int OnInit()
    PollCommissions();
 
    EventSetTimer(1);
-   Print("[V9] Started v3.17 DIRECT-INDICATOR HUB. magic=", MagicNumber,
+   Print("[V9] Started v3.18 DIRECT-INDICATOR HUB. magic=", MagicNumber,
          " | AutoTrade=", g_settings.auto_trade_enabled ? "ON" : "OFF",
          " | Trailing=", g_settings.trailing_enabled ? "ON" : "OFF",
          " | NewsWindow=-", g_settings.news_block_before_min, "m/+", g_settings.news_block_after_min, "m",
@@ -1865,7 +1872,6 @@ void OnDeinit(const int reason) { EventKillTimer(); }
 
 void OnTick()
 {
-   // Đọc tín hiệu trực tiếp từ Indicator ngay khi có tick mới (nhanh nhất có thể)
    PollIndicatorSignals();
 }
 
