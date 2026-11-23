@@ -290,7 +290,7 @@ void ExtractTopLevelObjects(string arrJson, string &outObjects[])
    for(int i = 0; i < StringLen(arrJson); i++)
    {
       ushort c = StringGetCharacter(arrJson, i);
-      if(c == '"' && (i == 0 || StringGetCharacter(json,i-1) != '\\')) quoted = !quoted;
+      if(c == '"' && (i == 0 || StringGetCharacter(arrJson,i-1) != '\\')) quoted = !quoted;
       if(quoted) continue;
       if(c == '{')
       {
