@@ -605,6 +605,17 @@ def _daily_history_export_loop() -> None:
     global _last_history_export_day
     target_hour = min(23, max(0, HISTORY_EXPORT_HOUR))
     target_minute = min(59, max(0, HISTORY_EXPORT_MINUTE))
+
+    # Bootstrap Paper history immediately after server startup. The GitHub
+    # commit-date check inside the exporter still enforces at most one
+    # snapshot commit per GMT+7 day, including across restarts.
+    bootstrap_day = datetime.now(_GMT7).date().isoformat()
+    try:
+        if _export_mongo_history_to_github(bootstrap_day):
+            _last_history_export_day = bootstrap_day
+    except Exception as exc:
+        print(f"[GITHUB_HISTORY] Initial export failed: {type(exc).__name__}: {exc}")
+
     while not _history_export_stop.is_set():
         now = datetime.now(_GMT7)
         target = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
