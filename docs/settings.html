@@ -8,7 +8,7 @@
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background: #0f1419; color: #e6e6e6; min-height: 100vh; padding: 24px;
+    background: #0f1419; color: #e6e6e6; min-height: 100vh; padding: 24px 24px 92px;
   }
   .container { max-width: 1100px; margin: 0 auto; }
   .page-header { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:8px; }
@@ -20,6 +20,7 @@
   .card {
     background: #1a1f29; border: 1px solid #2a3040; border-radius: 12px; padding: 20px;
   }
+  .card-wide { grid-column: 1 / -1; }
   .card h2 { font-size: 14px; color: #4fc3f7; margin-bottom: 16px; text-transform: uppercase; letter-spacing: 0.5px; }
   .toggle-row {
     display: flex; align-items: center; justify-content: space-between;
@@ -41,14 +42,67 @@
     transition: transform 0.25s;
   }
   .switch.on::after { transform: translateX(22px); }
-  .input-row { display: flex; align-items: center; justify-content: space-between; padding: 8px 0; }
+  .input-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 8px 0; }
   .input-row label { font-size: 13px; color: #c8d0dc; }
   .input-row input, .input-row select {
     background: #0f1419; border: 1px solid #2a3040; color: #e6e6e6;
     padding: 6px 10px; border-radius: 6px; width: 110px; text-align: right;
     font-size: 13px; font-family: "SF Mono", Consolas, monospace;
   }
+  .input-row select { text-align: left; }
   .input-row input:focus, .input-row select:focus { outline: none; border-color: #4fc3f7; }
+
+  .news-add-form {
+    display: grid; grid-template-columns: minmax(140px, 1fr) minmax(95px, 0.6fr) minmax(210px, 1.2fr) auto;
+    gap: 10px; align-items: end; margin-bottom: 14px;
+  }
+  .field-box { display: flex; flex-direction: column; gap: 5px; }
+  .field-box label { font-size: 12px; color: #9ca3af; }
+  .field-box input, .field-box select {
+    background: #0f1419; border: 1px solid #2a3040; color: #e6e6e6;
+    padding: 8px 10px; border-radius: 6px; font-size: 13px;
+    font-family: "SF Mono", Consolas, monospace; width: 100%;
+  }
+  .field-box input:focus, .field-box select:focus { outline: none; border-color: #4fc3f7; }
+  .btn-add-news {
+    padding: 8px 14px; background: #0284c7; color: #fff; border: none;
+    border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer;
+    height: 35px; white-space: nowrap;
+  }
+  .btn-add-news:hover { background: #0369a1; }
+  .news-list {
+    display: flex; flex-direction: column; gap: 8px; max-height: 240px; overflow-y: auto;
+  }
+  .news-item {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    background: #0f1419; border: 1px solid #262d3d; border-radius: 8px; padding: 9px 12px;
+    font-size: 13px;
+  }
+  .news-item-main { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .news-badge {
+    background: #1e293b; color: #7dd3fc; border: 1px solid #334155;
+    border-radius: 5px; padding: 2px 7px; font-size: 11px; font-weight: 700;
+    font-family: "SF Mono", Consolas, monospace;
+  }
+  .news-window { color: #94a3b8; font-size: 12px; font-family: "SF Mono", Consolas, monospace; }
+  .btn-del-news {
+    background: #3f1d24; color: #fca5a5; border: 1px solid #7f1d1d;
+    border-radius: 6px; padding: 4px 9px; font-size: 12px; cursor: pointer;
+  }
+  .btn-del-news:hover { background: #7f1d1d; color: #fff; }
+  .news-empty { color: #6a7078; font-size: 13px; padding: 8px 0; }
+  .news-banner {
+    margin-top: 12px; padding: 9px 12px; border-radius: 8px; font-size: 12px;
+    background: #111827; border: 1px solid #262d3d; color: #cbd5e1;
+  }
+  .news-banner.blocked {
+    background: #3b1419; border-color: #ef4444; color: #fecaca; font-weight: 600;
+  }
+  @media (max-width: 780px) {
+    .news-add-form { grid-template-columns: 1fr 1fr; }
+    .btn-add-news { grid-column: 1 / -1; }
+  }
+
   .emergency {
     display:grid; grid-template-columns:minmax(150px, 0.8fr) minmax(220px, 1.7fr) auto;
     align-items:center; gap:12px;
@@ -72,7 +126,7 @@
     .emergency-btn { grid-column:2; grid-row:1; max-width:170px; }
   }
   @media (max-width:390px) {
-    body { padding:14px; }
+    body { padding:14px 14px 92px; }
     .emergency { grid-template-columns:1fr; }
     .emergency h2, .emergency p, .emergency-btn { grid-column:1; grid-row:auto; justify-self:start; }
     .emergency-btn { max-width:100%; }
@@ -93,7 +147,7 @@
     padding: 14px 32px; background: #2563eb; color: white;
     border: none; border-radius: 8px; font-size: 15px; font-weight: 600;
     cursor: pointer; box-shadow: 0 4px 16px rgba(37,99,235,0.4);
-    transition: background 0.2s;
+    transition: background 0.2s; z-index: 20;
   }
   .save-btn:hover { background: #1d4ed8; }
   .save-btn:disabled { background: #4b5563; cursor: not-allowed; }
@@ -101,7 +155,7 @@
     position: fixed; bottom: 90px; right: 24px; padding: 12px 20px;
     background: #22c55e; color: white; border-radius: 8px; font-size: 14px;
     opacity: 0; transform: translateY(10px); transition: all 0.3s;
-    pointer-events: none;
+    pointer-events: none; z-index: 30;
   }
   .toast.show { opacity: 1; transform: translateY(0); }
   .toast.error { background: #ef4444; }
@@ -151,7 +205,7 @@
         <div class="switch" data-key="breakeven_enabled"></div>
       </div>
       <div class="toggle-row">
-        <div class="toggle-label">News Filter<small>Block trade khi có tin</small></div>
+        <div class="toggle-label">News Filter<small>Chặn tín hiệu RT quanh giờ tin</small></div>
         <div class="switch" data-key="news_filter_enabled"></div>
       </div>
       <div class="toggle-row">
@@ -234,6 +288,47 @@
         <input type="number" min="0" max="23" step="1" data-key="trading_end_hour">
       </div>
     </div>
+
+    <!-- News Filter Config & Schedule -->
+    <div class="card card-wide">
+      <h2>📰 Cấu hình chặn tin & Nhập giờ tin (GMT+7)</h2>
+      <div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin-bottom: 14px;">
+        <div class="input-row">
+          <label>Chặn trước tin (phút)</label>
+          <input type="number" min="0" max="120" step="1" data-key="news_block_before_min">
+        </div>
+        <div class="input-row">
+          <label>Chặn sau tin (phút)</label>
+          <input type="number" min="0" max="120" step="1" data-key="news_block_after_min">
+        </div>
+      </div>
+
+      <div class="news-add-form">
+        <div class="field-box">
+          <label for="newsTitleInput">Tên tin / Sự kiện</label>
+          <input type="text" id="newsTitleInput" placeholder="VD: CPI, Non-Farm, FOMC...">
+        </div>
+        <div class="field-box">
+          <label for="newsCurrencyInput">Tiền tệ</label>
+          <select id="newsCurrencyInput">
+            <option value="USD">USD</option>
+            <option value="EUR">EUR</option>
+            <option value="GBP">GBP</option>
+            <option value="JPY">JPY</option>
+            <option value="XAU">XAU</option>
+            <option value="ALL">ALL</option>
+          </select>
+        </div>
+        <div class="field-box">
+          <label for="newsTimeInput">Giờ ra tin (GMT+7)</label>
+          <input type="datetime-local" id="newsTimeInput">
+        </div>
+        <button type="button" class="btn-add-news" id="addNewsBtn">+ Thêm giờ tin</button>
+      </div>
+
+      <div class="news-list" id="newsList"></div>
+      <div class="news-banner" id="newsBanner">Đang kiểm tra trạng thái chặn tin...</div>
+    </div>
   </div>
 </div>
 
@@ -247,6 +342,8 @@ const API_KEY_STORAGE = "chartApiKey";
 
 let currentSettings = {};
 let pendingChanges = {};
+let newsEventsDraft = [];
+let hasNewsDraftEdit = false;
 let isSaving = false;
 let toastTimer = null;
 
@@ -268,6 +365,55 @@ function showToast(msg, isError = false) {
   toastTimer = setTimeout(() => t.classList.remove("show"), 2500);
 }
 
+function parseNewsEvents(raw) {
+  if (!raw) return [];
+  try {
+    const arr = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter(ev => ev && typeof ev === "object")
+      .map(ev => ({
+        title: String(ev.title || ev.name || ev.event || "News Event").trim(),
+        currency: String(ev.currency || "USD").trim().toUpperCase(),
+        time: String(ev.time || ev.timestamp || "").trim(),
+      }))
+      .filter(ev => ev.time !== "");
+  } catch (_) {
+    return [];
+  }
+}
+
+function parseEventMs(rawTime) {
+  if (rawTime === null || rawTime === undefined || rawTime === "") return NaN;
+  if (typeof rawTime === "number") return rawTime > 1e12 ? rawTime : rawTime * 1000;
+  const s = String(rawTime).trim();
+  if (/^\d+(\.\d+)?$/.test(s)) {
+    const n = parseFloat(s);
+    return n > 1e12 ? n : n * 1000;
+  }
+  const hasTz = /[zZ]|[+-]\d{2}:?\d{2}$/.test(s);
+  const iso = hasTz ? s : `${s.replace(" ", "T")}+07:00`;
+  const ms = Date.parse(iso);
+  return Number.isNaN(ms) ? NaN : ms;
+}
+
+function formatGmt7(ms) {
+  return new Intl.DateTimeFormat("vi-VN", {
+    timeZone: "Asia/Ho_Chi_Minh",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(ms));
+}
+
+function toDatetimeLocalGmt7(date = new Date()) {
+  const gmt7 = new Date(date.getTime() + 7 * 3600 * 1000);
+  return gmt7.toISOString().slice(0, 16);
+}
+
 function updateSaveButton() {
   const btn = document.getElementById("saveBtn");
   const count = Object.keys(pendingChanges).length;
@@ -277,10 +423,91 @@ function updateSaveButton() {
     : (count > 0 ? `Lưu ${count} thay đổi` : "Lưu thay đổi");
 }
 
+function renderNewsList() {
+  const listEl = document.getElementById("newsList");
+  if (!newsEventsDraft.length) {
+    listEl.innerHTML = `<div class="news-empty">Chưa có mốc tin nào được thêm. Vẫn áp dụng chặn tin nếu có lịch tin trên server.</div>`;
+  } else {
+    listEl.innerHTML = newsEventsDraft.map((ev, idx) => {
+      const ms = parseEventMs(ev.time);
+      const timeLabel = Number.isNaN(ms) ? ev.time : `${formatGmt7(ms)} (GMT+7)`;
+      return `
+        <div class="news-item">
+          <div class="news-item-main">
+            <span class="news-badge">${ev.currency}</span>
+            <strong>${ev.title}</strong>
+            <span class="news-window">${timeLabel}</span>
+          </div>
+          <button type="button" class="btn-del-news" data-idx="${idx}">Xóa</button>
+        </div>
+      `;
+    }).join("");
+
+    listEl.querySelectorAll(".btn-del-news").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const idx = parseInt(btn.dataset.idx, 10);
+        newsEventsDraft.splice(idx, 1);
+        hasNewsDraftEdit = true;
+        pendingChanges.news_events_json = JSON.stringify(newsEventsDraft);
+        renderNewsList();
+        renderNewsBanner();
+        updateSaveButton();
+      });
+    });
+  }
+}
+
+function renderNewsBanner() {
+  const banner = document.getElementById("newsBanner");
+  const enabled = Object.prototype.hasOwnProperty.call(pendingChanges, "news_filter_enabled")
+    ? Boolean(pendingChanges.news_filter_enabled)
+    : Boolean(currentSettings.news_filter_enabled);
+
+  const beforeMin = Math.max(0, parseInt(
+    Object.prototype.hasOwnProperty.call(pendingChanges, "news_block_before_min")
+      ? pendingChanges.news_block_before_min
+      : (currentSettings.news_block_before_min ?? 3),
+    10
+  ) || 0);
+
+  const afterMin = Math.max(0, parseInt(
+    Object.prototype.hasOwnProperty.call(pendingChanges, "news_block_after_min")
+      ? pendingChanges.news_block_after_min
+      : (currentSettings.news_block_after_min ?? 3),
+    10
+  ) || 0);
+
+  if (!enabled) {
+    banner.className = "news-banner";
+    banner.textContent = `News Filter đang TẮT · Cửa sổ cấu hình: -${beforeMin} phút / +${afterMin} phút`;
+    return;
+  }
+
+  const nowMs = Date.now();
+  let active = null;
+  for (const ev of newsEventsDraft) {
+    const evMs = parseEventMs(ev.time);
+    if (Number.isNaN(evMs)) continue;
+    if (nowMs >= evMs - beforeMin * 60000 && nowMs <= evMs + afterMin * 60000) {
+      active = ev;
+      break;
+    }
+  }
+
+  if (active) {
+    banner.className = "news-banner blocked";
+    banner.textContent = `⛔ ĐANG CHẶN LỆNH RT (-${beforeMin}p / +${afterMin}p): [${active.currency}] ${active.title}`;
+  } else {
+    banner.className = "news-banner";
+    banner.textContent = `✅ Đang BẬT chặn tin (-${beforeMin} phút trước tin / +${afterMin} phút sau tin) · Hiện không nằm trong vùng tin bị chặn`;
+  }
+}
+
 function renderSettings(settings, { preserveDraft = false } = {}) {
   currentSettings = settings || {};
   if (!preserveDraft) {
     pendingChanges = {};
+    hasNewsDraftEdit = false;
   }
 
   document.querySelectorAll(".switch").forEach(sw => {
@@ -296,10 +523,18 @@ function renderSettings(settings, { preserveDraft = false } = {}) {
     const key = el.dataset.key;
     if (document.activeElement === el) return;
     if (preserveDraft && Object.prototype.hasOwnProperty.call(pendingChanges, key)) return;
-    if (currentSettings[key] !== undefined) {
+    if (currentSettings[key] !== undefined && currentSettings[key] !== null) {
       el.value = currentSettings[key];
+    } else if (key === "news_block_before_min" || key === "news_block_after_min") {
+      el.value = 3;
     }
   });
+
+  if (!preserveDraft || !hasNewsDraftEdit) {
+    newsEventsDraft = parseNewsEvents(currentSettings.news_events_json);
+  }
+  renderNewsList();
+  renderNewsBanner();
 
   const em = document.getElementById("emergencyBtn");
   if (currentSettings.emergency_stop) {
@@ -324,7 +559,7 @@ async function loadSettings() {
     const r = await fetch(`${API_BASE}/api/settings`, { cache: "no-store" });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const data = await r.json();
-    const hasDraft = Object.keys(pendingChanges).length > 0;
+    const hasDraft = Object.keys(pendingChanges).length > 0 || hasNewsDraftEdit;
     renderSettings(data.settings, { preserveDraft: hasDraft });
   } catch (e) {
     document.getElementById("statusDot").className = "status-dot offline";
@@ -377,6 +612,39 @@ async function saveSettings() {
   }
 }
 
+document.getElementById("addNewsBtn").addEventListener("click", () => {
+  const titleEl = document.getElementById("newsTitleInput");
+  const curEl = document.getElementById("newsCurrencyInput");
+  const timeEl = document.getElementById("newsTimeInput");
+
+  const title = (titleEl.value || "").trim() || "News Event";
+  const currency = (curEl.value || "USD").trim().toUpperCase();
+  const dtVal = (timeEl.value || "").trim();
+  if (!dtVal) {
+    showToast("Vui lòng chọn giờ ra tin", true);
+    return;
+  }
+
+  const isoWithTz = `${dtVal}:00+07:00`;
+  newsEventsDraft.push({
+    title,
+    currency,
+    time: isoWithTz,
+  });
+  newsEventsDraft.sort((a, b) => {
+    const ma = parseEventMs(a.time);
+    const mb = parseEventMs(b.time);
+    return (Number.isNaN(ma) ? 0 : ma) - (Number.isNaN(mb) ? 0 : mb);
+  });
+
+  hasNewsDraftEdit = true;
+  pendingChanges.news_events_json = JSON.stringify(newsEventsDraft);
+  titleEl.value = "";
+  renderNewsList();
+  renderNewsBanner();
+  updateSaveButton();
+});
+
 document.querySelectorAll(".switch").forEach(sw => {
   sw.addEventListener("click", () => {
     const key = sw.dataset.key;
@@ -387,6 +655,9 @@ document.querySelectorAll(".switch").forEach(sw => {
       delete pendingChanges[key];
     } else {
       pendingChanges[key] = next;
+    }
+    if (key === "news_filter_enabled") {
+      renderNewsBanner();
     }
     updateSaveButton();
   });
@@ -403,6 +674,9 @@ document.querySelectorAll("input[data-key], select[data-key]").forEach(el => {
       delete pendingChanges[key];
     } else {
       pendingChanges[key] = val;
+    }
+    if (key === "news_block_before_min" || key === "news_block_after_min") {
+      renderNewsBanner();
     }
     updateSaveButton();
   });
@@ -445,6 +719,7 @@ document.getElementById("emergencyBtn").addEventListener("click", async () => {
   }
 });
 
+document.getElementById("newsTimeInput").value = toDatetimeLocalGmt7(new Date());
 loadSettings();
 setInterval(loadSettings, 5000);
 </script>
