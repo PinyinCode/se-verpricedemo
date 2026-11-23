@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
 //| TRADE_V9_PAPER.mq5                                               |
-//| Forex AI Server consumer - REAL orders only, hub executor.       |
-//| Pending orders: LIMIT ONLY (BUY_LIMIT / SELL_LIMIT).             |
-//| Tự tính SL/TP/Lot, tự trailing/BE, cache settings & vào lệnh nhanh|
+//| Đọc tín hiệu trực tiếp từ Indicator qua MT5 Global Variables.    |
+//| Server chỉ cung cấp & đồng bộ thông số (/api/settings).           |
+//| Tự tính SL/TP/Lot, chặn tin ±N phút, tự trailing/BE, cache local.|
 //+------------------------------------------------------------------+
 #property strict
-#property version "3.16"
+#property version "3.17"
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
@@ -18,6 +18,7 @@ input string ApiKey                       = "SET_A_LONG_RANDOM_API_KEY";
 input string ConsumerId                   = "trade-v9";
 input long   MagicNumber                  = 20240915;
 input string OrderComment                 = "TRADE-V9";
+input string IndicatorSymbolsCsv          = ""; // Để trống = tự quét Market Watch & chart symbols; hoặc nhập "XAUUSD,EURUSD"
 
 //--- Globals --------------------------------------------------------
 CTrade        trade;
@@ -29,7 +30,6 @@ struct SNewsEventItem {
    long   event_ts;
 };
 
-// ===== Settings cache (khớp Control Panel /api/settings + runtime) =====
 struct SSettings {
    bool   auto_trade_enabled;
    bool   trailing_enabled;
@@ -74,7 +74,6 @@ SSettings g_settings;
 SNewsEventItem g_newsEvents[];
 string g_lastSavedSettingsJson = "";
 
-// ===== Commission cache =====
 struct SCommission {
    string symbol;
    double commission_per_lot;
@@ -88,18 +87,16 @@ struct SCommission {
 SCommission g_commissionCache[];
 string g_lastCommissionDigest = "";
 
-// ===== Risk breakdown (nguồn duy nhất cho mọi phép tính risk) =====
 struct SRiskBreakdown {
    bool   valid;
-   double slRisk;         // $
-   double commission;     // $
-   double spreadCost;     // $
-   double total;          // $
-   double riskPerLot;     // $/lot
+   double slRisk;
+   double commission;
+   double spreadCost;
+   double total;
+   double riskPerLot;
    string error;
 };
 
-// ===== Trailing state =====
 struct STrailState {
    ulong  ticket;
    string sym;
@@ -112,14 +109,12 @@ struct STrailState {
 };
 STrailState g_trailStates[];
 
-// ===== Signal & processing dedup =====
-string   processedSignalIds[];
+string   processedSignalKeys[];
 string   processedSltpRequestIds[];
 string   processedPendingModifyIds[];
 string   lastHistoryDigest = "";
 
-// ===== Timers =====
-uint lastPollMs              = 0;
+uint lastIndicatorPollMs     = 0;
 uint lastSettingsPollMs      = 0;
 uint lastCommissionPollMs    = 0;
 uint lastPositionsSyncMs     = 0;
@@ -129,11 +124,8 @@ uint lastSltpPollMs          = 0;
 uint lastPendingModifyPollMs = 0;
 uint lastTrailingCheckMs     = 0;
 
-// ===== Server GMT offset =====
 int g_serverToGMTOffset = 0;
 datetime g_lastOffsetCalcTime = 0;
-
-// ===== Emergency =====
 bool g_emergencyInProgress = false;
 
 //--- Forward declarations -------------------------------------------
@@ -314,7 +306,7 @@ bool IsNewsBlocked()
    return false;
 }
 
-//--- JSON helpers ---------------------------------------------------
+//--- JSON & string helpers ------------------------------------------
 string JsonEscape(string s)
 {
    StringReplace(s, "\\", "\\\\");
@@ -490,7 +482,7 @@ bool Request(string method, string path, string body, string &response, int &sta
 }
 
 //--- Dedup tracking -------------------------------------------------
-void PushDedupId(string &arr[], string id, int maxItems = 500)
+void PushDedupId(string &arr[], string id, int maxItems = 1000)
 {
    if(id == "") return;
    for(int i = 0; i < ArraySize(arr); i++)
@@ -506,13 +498,13 @@ void PushDedupId(string &arr[], string id, int maxItems = 500)
    arr[n] = id;
 }
 
-bool HasProcessedSignal(string id)
+bool HasProcessedSignalKey(string key)
 {
-   for(int i = 0; i < ArraySize(processedSignalIds); i++)
-      if(processedSignalIds[i] == id) return true;
+   for(int i = 0; i < ArraySize(processedSignalKeys); i++)
+      if(processedSignalKeys[i] == key) return true;
    return false;
 }
-void MarkProcessedSignal(string id) { PushDedupId(processedSignalIds, id); }
+void MarkProcessedSignalKey(string key) { PushDedupId(processedSignalKeys, key); }
 
 bool HasProcessedSltp(string id)
 {
@@ -530,7 +522,7 @@ bool HasProcessedPendingModify(string id)
 }
 void MarkProcessedPendingModify(string id) { PushDedupId(processedPendingModifyIds, id); }
 
-//--- Settings cache & polling -------------------------------------
+//--- Settings cache & polling (server chỉ gửi thông số) -----------
 void InitDefaultSettings()
 {
    g_settings.auto_trade_enabled             = true;
@@ -557,7 +549,7 @@ void InitDefaultSettings()
    g_settings.trading_start_hour             = 7;
    g_settings.trading_end_hour               = 23;
 
-   g_settings.poll_seconds                   = 3;
+   g_settings.poll_seconds                   = 1;
    g_settings.settings_poll_seconds          = 5;
    g_settings.commission_poll_seconds        = 60;
    g_settings.heartbeat_seconds              = 15;
@@ -869,15 +861,6 @@ int CountRealExposure()
    return CountRealPositions() + CountRealLimitOrders();
 }
 
-//--- Ack ------------------------------------------------------------
-bool Ack(string id, string state, string message)
-{
-   Print("[V9 ACK] signal=", id, " status=", state, " message=", message);
-   string body = "{\"signal_id\":\""+JsonEscape(id)+"\",\"status\":\""+JsonEscape(state)+"\",\"message\":\""+JsonEscape(message)+"\"}";
-   string response; int status;
-   return Request("POST", "/api/mt5/ack", body, response, status);
-}
-
 //--- Trailing state tracking ----------------------------------------
 int FindTrailIndex(ulong ticket)
 {
@@ -1099,112 +1082,129 @@ void SendHeartbeat()
 {
    int openCount = CountRealExposure();
    string body = StringFormat(
-      "{\"component\":\"TRADE-V9-REAL\",\"status\":\"online\",\"details\":\"REAL consumer active; positions=%d; emergency=%s; news_block=%s\"}",
+      "{\"component\":\"TRADE-V9-REAL\",\"status\":\"online\",\"details\":\"DIRECT-IND consumer; positions=%d; emergency=%s; news_block=%s\"}",
       openCount, g_settings.emergency_stop ? "ON" : "OFF", IsNewsBlocked() ? "ON" : "OFF");
    string response; int status;
    if(Request("POST", "/api/heartbeat", body, response, status))
       lastHeartbeatMs = GetTickCount();
 }
 
-//--- Open trade -----------------------------------------------------
-bool ResolveOrderType(string rawOrderType, string direction, string &normOrderType, string &errOut)
+//--- Open trade directly from Indicator signal -----------------------
+bool ResolveOrderTypeFromCode(int otCode, string direction, string &normOrderType, string &errOut)
 {
-   string ot = UpperTrim(rawOrderType);
-   string dir = UpperTrim(direction);
-   if(StringFind(ot, "STOP") >= 0) { errOut = "Stop orders not supported"; return false; }
-   if(ot == "" || ot == "MARKET")
+   if(otCode == 0)
    {
       normOrderType = "MARKET";
-      if(dir == "BUY" || dir == "SELL") return true;
-      errOut = "Invalid direction for MARKET"; return false;
+      if(direction == "BUY" || direction == "SELL") return true;
+      errOut = "Invalid direction for MARKET";
+      return false;
    }
-   if(ot == "BUY_LIMIT")
+   if(otCode == 1)
    {
       normOrderType = "BUY_LIMIT";
-      if(dir != "BUY") { errOut = "BUY_LIMIT requires direction=BUY"; return false; }
+      if(direction != "BUY") { errOut = "BUY_LIMIT requires direction=BUY"; return false; }
       return true;
    }
-   if(ot == "SELL_LIMIT")
+   if(otCode == 2)
    {
       normOrderType = "SELL_LIMIT";
-      if(dir != "SELL") { errOut = "SELL_LIMIT requires direction=SELL"; return false; }
+      if(direction != "SELL") { errOut = "SELL_LIMIT requires direction=SELL"; return false; }
       return true;
    }
-   errOut = "Unsupported order_type: " + ot;
+   errOut = "Unsupported order_type code";
    return false;
 }
 
-bool OpenTrade(string id, string symbol, string tf, string direction, string rawOrderType,
-               double entry, double sl, double tpRequested, double riskMoney)
+bool ExecuteIndicatorSignal(string sigKey, string symbol, string direction, int otCode,
+                            double entry, double sl, double tpRequested)
 {
-   if(!SymbolSelect(symbol, true)) { Ack(id, "REJECTED", "Symbol unavailable"); return false; }
+   if(!SymbolSelect(symbol, true))
+   {
+      Print("[V9 IND SKIP] ", sigKey, " symbol unavailable: ", symbol);
+      return false;
+   }
 
    double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
    double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
-   if(bid <= 0 || ask <= 0 || point <= 0) { Ack(id, "REJECTED", "No live quote"); return false; }
+   if(bid <= 0 || ask <= 0 || point <= 0)
+   {
+      Print("[V9 IND SKIP] ", sigKey, " no live quote");
+      return false;
+   }
 
    if(g_settings.reject_when_spread_exceeds_buf && g_settings.spread_buffer_points > 0)
    {
       double curSpread = (ask - bid) / point;
       if(curSpread > (double)g_settings.spread_buffer_points)
       {
-         Ack(id, "REJECTED", StringFormat("Spread %.1f > buffer %d points",
-             curSpread, g_settings.spread_buffer_points));
+         Print("[V9 IND SKIP] ", sigKey, " spread ", DoubleToString(curSpread, 1),
+               " > buffer ", g_settings.spread_buffer_points);
          return false;
       }
    }
 
    string normOrderType = "";
    string typeErr = "";
-   if(!ResolveOrderType(rawOrderType, direction, normOrderType, typeErr))
-   { Ack(id, "REJECTED", typeErr); return false; }
+   if(!ResolveOrderTypeFromCode(otCode, direction, normOrderType, typeErr))
+   {
+      Print("[V9 IND SKIP] ", sigKey, " ", typeErr);
+      return false;
+   }
+
+   if(normOrderType == "MARKET" && entry <= 0)
+      entry = (direction == "BUY") ? ask : bid;
 
    bool isLimit = (normOrderType == "BUY_LIMIT" || normOrderType == "SELL_LIMIT");
    if(isLimit)
    {
       if(normOrderType == "BUY_LIMIT" && entry >= ask)
-      { Ack(id, "REJECTED", "BUY_LIMIT requires entry < current Ask"); return false; }
+      {
+         Print("[V9 IND SKIP] ", sigKey, " BUY_LIMIT requires entry < Ask");
+         return false;
+      }
       if(normOrderType == "SELL_LIMIT" && entry <= bid)
-      { Ack(id, "REJECTED", "SELL_LIMIT requires entry > current Bid"); return false; }
+      {
+         Print("[V9 IND SKIP] ", sigKey, " SELL_LIMIT requires entry > Bid");
+         return false;
+      }
    }
 
    double slDistance = MathAbs(entry - sl);
-   if(slDistance <= 0) { Ack(id, "REJECTED", "SL distance zero"); return false; }
-
+   if(slDistance <= 0)
+   {
+      Print("[V9 IND SKIP] ", sigKey, " SL distance zero");
+      return false;
+   }
    if((direction == "BUY" && sl >= entry) || (direction == "SELL" && sl <= entry))
-   { Ack(id, "REJECTED", "Invalid SL geometry"); return false; }
+   {
+      Print("[V9 IND SKIP] ", sigKey, " invalid SL geometry");
+      return false;
+   }
 
+   double riskMoney = g_settings.risk_money > 0 ? g_settings.risk_money : 25.0;
    double volume = CalculateLotWithCommission(symbol, slDistance, riskMoney);
    if(volume <= 0)
    {
-      Ack(id, "REJECTED", StringFormat(
-         "Cannot compute valid lot for risk $%.2f, SL dist %.5f (below min volume or bad symbol params)",
-         riskMoney, slDistance));
+      Print("[V9 IND SKIP] ", sigKey, " cannot compute valid lot for risk $", DoubleToString(riskMoney, 2));
       return false;
    }
 
    SRiskBreakdown rb = ComputeRiskBreakdown(symbol, slDistance, volume);
    if(!rb.valid)
    {
-      Ack(id, "REJECTED", rb.error);
+      Print("[V9 IND SKIP] ", sigKey, " ", rb.error);
       return false;
    }
 
    double budget = riskMoney * (1.0 + g_settings.risk_tolerance_pct / 100.0);
-
    if(rb.total > budget + 1e-9)
    {
       double vmin = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
       double vmax = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
       double step = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
-      if(step <= 0)
-      {
-         Ack(id, "REJECTED", "Symbol VOLUME_STEP invalid");
-         return false;
-      }
+      if(step <= 0) return false;
       int stepDigits = VolumeStepDigits(symbol);
-
       double maxLotForBudget = budget / rb.riskPerLot;
       double reducedLot = MathFloor((maxLotForBudget + 1e-9) / step) * step;
       reducedLot = NormalizeDouble(reducedLot, stepDigits);
@@ -1212,45 +1212,25 @@ bool OpenTrade(string id, string symbol, string tf, string direction, string raw
       if(reducedLot < vmin)
       {
          if(g_settings.allow_min_lot_when_exceed_budget && vmin > 0 && vmin <= vmax)
-         {
             reducedLot = NormalizeDouble(vmin, stepDigits);
-         }
          else
          {
-            Ack(id, "REJECTED", StringFormat(
-               "Risk $%.2f/lot -> max lot %.4f < min %.4f (budget $%.2f). Reduce risk or widen budget.",
-               rb.riskPerLot, reducedLot, vmin, budget));
+            Print("[V9 IND SKIP] ", sigKey, " risk/lot exceeds budget");
             return false;
          }
       }
       if(reducedLot > vmax) reducedLot = vmax;
-
-      Print("[V9 LOT REDUCE] signal=", id,
-            " risk/lot=$", DoubleToString(rb.riskPerLot, 4),
-            " budget=$", DoubleToString(budget, 2),
-            " lot ", DoubleToString(volume, 4), " -> ", DoubleToString(reducedLot, 4),
-            " total ", DoubleToString(rb.total, 2), " -> $",
-            DoubleToString(rb.riskPerLot * reducedLot, 2));
-
       volume = reducedLot;
-
       rb = ComputeRiskBreakdown(symbol, slDistance, volume);
-      if(!rb.valid)
-      {
-         Ack(id, "REJECTED", rb.error);
-         return false;
-      }
+      if(!rb.valid) return false;
    }
 
    if(rb.total > budget + 1e-9 && !g_settings.allow_min_lot_when_exceed_budget)
    {
-      Ack(id, "REJECTED", StringFormat(
-         "Total risk $%.2f > budget $%.2f (lot=%.4f)",
-         rb.total, budget, volume));
+      Print("[V9 IND SKIP] ", sigKey, " total risk ", DoubleToString(rb.total, 2),
+            " > budget ", DoubleToString(budget, 2));
       return false;
    }
-
-   double totalRisk = rb.total;
 
    double tp = tpRequested > 0
       ? tpRequested
@@ -1259,7 +1239,10 @@ bool OpenTrade(string id, string symbol, string tf, string direction, string raw
          : entry - slDistance * g_settings.reward_risk_ratio);
 
    if((direction == "BUY" && tp <= entry) || (direction == "SELL" && tp >= entry))
-   { Ack(id, "REJECTED", "Invalid TP geometry"); return false; }
+   {
+      Print("[V9 IND SKIP] ", sigKey, " invalid TP geometry");
+      return false;
+   }
 
    int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
    entry = NormalizeDouble(entry, digits);
@@ -1283,9 +1266,8 @@ bool OpenTrade(string id, string symbol, string tf, string direction, string raw
 
    if(!ok || trade.ResultRetcode() != TRADE_RETCODE_DONE)
    {
-      string err = StringFormat("OrderSend failed retcode=%d (%s)",
-         trade.ResultRetcode(), trade.ResultRetcodeDescription());
-      Ack(id, "REJECTED", err);
+      Print("[V9 IND ERR] ", sigKey, " OrderSend failed retcode=", trade.ResultRetcode(),
+            " (", trade.ResultRetcodeDescription(), ")");
       return false;
    }
 
@@ -1293,20 +1275,116 @@ bool OpenTrade(string id, string symbol, string tf, string direction, string raw
    if(PositionSelectByTicket(posTicket))
       posTicket = (ulong)PositionGetInteger(POSITION_TICKET);
 
-   Print("[V9 OPEN] signal=", id, " ", symbol, " ", tf, " ", normOrderType, " ", direction,
+   Print("[V9 IND OPEN] ", sigKey, " ", symbol, " ", normOrderType, " ", direction,
          " lots=", DoubleToString(volume, 4),
          " entry=", DoubleToString(entry, digits),
          " SL=", DoubleToString(sl, digits),
          " TP=", DoubleToString(tp, digits),
-         " risk=$", DoubleToString(totalRisk, 2),
+         " risk=$", DoubleToString(rb.total, 2),
          " ticket=", posTicket);
-
-   Ack(id, "PLACED", StringFormat("Order placed lot=%.4f ticket=%I64u risk=$%.2f",
-      volume, posTicket, totalRisk));
    return true;
 }
 
-//--- Close / Cancel -------------------------------------------------
+void CheckIndicatorSymbolSignal(string symbol)
+{
+   string symUp = UpperTrim(symbol);
+   if(symUp == "") return;
+
+   string pfx = "GV_IND_" + symUp + "_";
+   if(!GlobalVariableCheck(pfx + "SEQ")) return;
+
+   long seq = (long)GlobalVariableGet(pfx + "SEQ");
+   if(seq <= 0) return;
+
+   long sigTime = (long)GlobalVariableGet(pfx + "TIME");
+   double dirVal = GlobalVariableGet(pfx + "DIR");
+   int otCode = (int)MathRound(GlobalVariableGet(pfx + "ORDER_TYPE"));
+   double entry = GlobalVariableGet(pfx + "ENTRY");
+   double sl = GlobalVariableGet(pfx + "SL");
+   double tp = GlobalVariableGet(pfx + "TP");
+
+   string sigKey = symUp + ":" + IntegerToString(seq) + ":" + IntegerToString(sigTime);
+   if(HasProcessedSignalKey(sigKey)) return;
+
+   // Bỏ qua tín hiệu quá cũ (> 5 phút) khi EA mới khởi động
+   long nowTs = (long)TimeCurrent();
+   if(sigTime > 0 && (nowTs - sigTime) > 300)
+   {
+      MarkProcessedSignalKey(sigKey);
+      return;
+   }
+
+   string direction = (dirVal > 0) ? "BUY" : ((dirVal < 0) ? "SELL" : "");
+   if(direction == "" || sl <= 0)
+   {
+      MarkProcessedSignalKey(sigKey);
+      return;
+   }
+
+   // Áp dụng toàn bộ thông số lấy từ server (g_settings) ngay tại chỗ
+   if(g_settings.emergency_stop)
+   {
+      MarkProcessedSignalKey(sigKey);
+      Print("[V9 IND BLOCK] ", sigKey, " Emergency Stop ON");
+      return;
+   }
+   if(!g_settings.auto_trade_enabled)
+   {
+      MarkProcessedSignalKey(sigKey);
+      Print("[V9 IND BLOCK] ", sigKey, " AutoTrade OFF");
+      return;
+   }
+   if(!IsInTradingHours())
+   {
+      MarkProcessedSignalKey(sigKey);
+      Print("[V9 IND BLOCK] ", sigKey, " outside trading hours");
+      return;
+   }
+   if(IsNewsBlocked())
+   {
+      MarkProcessedSignalKey(sigKey);
+      Print("[V9 IND BLOCK] ", sigKey, " news block active (-",
+            g_settings.news_block_before_min, "m/+", g_settings.news_block_after_min, "m)");
+      return;
+   }
+   int openCount = CountRealExposure();
+   if(openCount >= g_settings.max_positions)
+   {
+      MarkProcessedSignalKey(sigKey);
+      Print("[V9 IND BLOCK] ", sigKey, " max positions reached (", openCount, "/", g_settings.max_positions, ")");
+      return;
+   }
+
+   MarkProcessedSignalKey(sigKey);
+   if(ExecuteIndicatorSignal(sigKey, symUp, direction, otCode, entry, sl, tp))
+      SendAccountSnapshot();
+}
+
+void PollIndicatorSignals()
+{
+   if(IndicatorSymbolsCsv != "")
+   {
+      string parts[];
+      int cnt = StringSplit(IndicatorSymbolsCsv, ',', parts);
+      for(int i = 0; i < cnt; i++)
+         CheckIndicatorSymbolSignal(parts[i]);
+      return;
+   }
+
+   // Luôn ưu tiên symbol của chart hiện tại trước
+   CheckIndicatorSymbolSignal(_Symbol);
+
+   // Quét các symbol đang mở trong Market Watch
+   int totalSym = SymbolsTotal(true);
+   for(int i = 0; i < totalSym; i++)
+   {
+      string s = SymbolName(i, true);
+      if(s != "" && s != _Symbol)
+         CheckIndicatorSymbolSignal(s);
+   }
+}
+
+//--- Close / Cancel / SLTP / Pending Modify from Server Bridge ------
 void AckCloseCommand(string requestId, string targetId, bool ok, string detail, string kind)
 {
    string body = StringFormat(
@@ -1430,7 +1508,6 @@ void PollCloseCommands()
       ExecuteCloseCommand(items[i]);
 }
 
-//--- SL/TP modify ---------------------------------------------------
 void AckSltpCommand(string requestId, string ticket, bool ok, string detail)
 {
    string body = StringFormat(
@@ -1488,7 +1565,6 @@ void PollSltpRequests()
       ExecuteSltpCommand(items[i]);
 }
 
-//--- Pending modify (LIMIT orders) ----------------------------------
 void AckPendingModify(string requestId, string ticket, bool ok, string detail)
 {
    string body = StringFormat(
@@ -1637,85 +1713,7 @@ void PollPendingModifyRequests()
       ExecutePendingModify(items[i]);
 }
 
-//--- Poll signal & immediate execution from cached settings -------
-void PollServer()
-{
-   string path = "/api/mt5/next?consumer=" + ConsumerId;
-   string response; int status;
-   if(!Request("GET", path, "", response, status)) return;
-   if(StringFind(response, "\"signal\":null") >= 0) return;
-
-   string obj = JsonObjectValue(response, "signal");
-   if(obj == "") return;
-
-   string id = JsonValue(obj, "id");
-   string symbol = JsonValue(obj, "symbol");
-   string tf = JsonValue(obj, "timeframe");
-   string direction = JsonValue(obj, "direction");
-   string orderType = JsonValue(obj, "order_type");
-   double entry = StringToDouble(JsonValue(obj, "entry"));
-   double sl = StringToDouble(JsonValue(obj, "sl"));
-   double tp = StringToDouble(JsonValue(obj, "tp"));
-   double riskMoney = StringToDouble(JsonValue(obj, "risk_money"));
-
-   if(id == "") return;
-   if(HasProcessedSignal(id)) return;
-
-   if(symbol == "" || entry <= 0 || sl <= 0 ||
-      (direction != "BUY" && direction != "SELL"))
-   {
-      MarkProcessedSignal(id);
-      Ack(id, "REJECTED", "Malformed signal");
-      return;
-   }
-
-   // Kiểm tra trực tiếp từ cached settings trên RAM/đĩa (không gọi thêm server)
-   if(g_settings.emergency_stop)
-   {
-      MarkProcessedSignal(id);
-      Ack(id, "REJECTED", "Emergency Stop ON");
-      return;
-   }
-
-   if(!g_settings.auto_trade_enabled)
-   {
-      MarkProcessedSignal(id);
-      Ack(id, "REJECTED", "AutoTrade OFF (dashboard toggle)");
-      return;
-   }
-
-   if(!IsInTradingHours())
-   {
-      MarkProcessedSignal(id);
-      Ack(id, "REJECTED", StringFormat("Outside trading hours (%d-%d GMT+7)",
-         g_settings.trading_start_hour, g_settings.trading_end_hour));
-      return;
-   }
-
-   if(IsNewsBlocked())
-   {
-      MarkProcessedSignal(id);
-      Ack(id, "REJECTED", StringFormat("News block active (-%dm/+%dm)",
-         g_settings.news_block_before_min, g_settings.news_block_after_min));
-      return;
-   }
-
-   int openCount = CountRealExposure();
-   if(openCount >= g_settings.max_positions)
-   {
-      MarkProcessedSignal(id);
-      Ack(id, "REJECTED", StringFormat("Max positions reached (%d/%d)", openCount, g_settings.max_positions));
-      return;
-   }
-
-   double useRisk = g_settings.risk_money > 0 ? g_settings.risk_money : riskMoney;
-   if(useRisk <= 0) useRisk = 25.0;
-
-   MarkProcessedSignal(id);
-   OpenTrade(id, symbol, tf, direction, orderType, entry, sl, tp, useRisk);
-}
-
-//--- Account snapshot ----------------------------------------------
+//--- Account snapshot & history -------------------------------------
 void SendAccountSnapshot()
 {
    string itemsJson = "";
@@ -1855,17 +1853,21 @@ int OnInit()
    PollCommissions();
 
    EventSetTimer(1);
-   Print("[V9] Started v3.16 REAL HUB. magic=", MagicNumber,
+   Print("[V9] Started v3.17 DIRECT-INDICATOR HUB. magic=", MagicNumber,
          " | AutoTrade=", g_settings.auto_trade_enabled ? "ON" : "OFF",
          " | Trailing=", g_settings.trailing_enabled ? "ON" : "OFF",
          " | NewsWindow=-", g_settings.news_block_before_min, "m/+", g_settings.news_block_after_min, "m",
-         " | Risk=$", DoubleToString(g_settings.risk_money, 2),
-         " | CommRoundTurn=", g_settings.commission_is_round_turn ? "Y" : "N");
+         " | Risk=$", DoubleToString(g_settings.risk_money, 2));
    return INIT_SUCCEEDED;
 }
 
 void OnDeinit(const int reason) { EventKillTimer(); }
-void OnTick() {}
+
+void OnTick()
+{
+   // Đọc tín hiệu trực tiếp từ Indicator ngay khi có tick mới (nhanh nhất có thể)
+   PollIndicatorSignals();
+}
 
 void OnTimer()
 {
@@ -1901,12 +1903,12 @@ void OnTimer()
       ManageTrailing();
    }
 
-   if(lastPollMs == 0 ||
-      (uint)(nowMs - lastPollMs) >= (uint)(g_settings.poll_seconds * 1000))
+   if(lastIndicatorPollMs == 0 ||
+      (uint)(nowMs - lastIndicatorPollMs) >= (uint)(g_settings.poll_seconds * 1000))
    {
-      lastPollMs = nowMs;
+      lastIndicatorPollMs = nowMs;
+      PollIndicatorSignals();
       PollCloseCommands();
-      PollServer();
    }
 
    if(lastSltpPollMs == 0 ||
