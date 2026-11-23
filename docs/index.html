@@ -2960,7 +2960,7 @@ function setTradePanelVisible(visible) {
 setTradePanelVisible(false);
 async function verifyEmergencyBeforeTradePanel() {
   try {
-    const response = await fetch(API_BASE + '/api/settings', { cache: 'no-store' });
+    const response = await apiFetch(API_BASE + '/api/settings', { cache: 'no-store' });
     if (!response.ok) throw new Error('HTTP ' + response.status);
     const data = await response.json();
     return { known: true, enabled: !!(data.settings && data.settings.emergency_stop) };
