@@ -87,7 +87,8 @@ def test_chart_page_and_candle_feed(tmp_path, monkeypatch):
         assert posted.status_code == 200
         assert posted.json()["received"] == 1
 
-        chart = client.get("/api/chart/data?symbol=eurusd&timeframe=M15")
+        assert client.get("/api/chart/data?symbol=eurusd&timeframe=M15").status_code == 401
+        chart = client.get("/api/chart/data?symbol=eurusd&timeframe=M15", headers=headers)
         assert chart.status_code == 200
         data = chart.json()
         assert data["mode"] == "DEMO_ONLY"
@@ -109,3 +110,11 @@ def test_candle_feed_requires_api_key_and_valid_ohlc(tmp_path, monkeypatch):
         response = client.post("/api/mt5/candles", json=payload,
                                headers={"X-API-Key": "test-secret"})
         assert response.status_code == 422
+
+def test_settings_read_requires_api_key(tmp_path, monkeypatch):
+    with setup_client(tmp_path, monkeypatch) as client:
+        assert client.get("/api/settings").status_code == 401
+        response = client.get("/api/settings", headers={"X-API-Key": "test-secret"})
+        assert response.status_code == 200
+        assert "settings" in response.json()
+
