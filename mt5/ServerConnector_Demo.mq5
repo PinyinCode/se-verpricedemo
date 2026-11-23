@@ -47,6 +47,7 @@ datetime g_lastHistoryPost = 0;
 datetime g_lastCommissionPost = 0;
 string g_queueCursorName = "DIVSERVER_QUEUE_CURSOR";
 string g_lastHistoryDigest = "";
+string g_lastChartFeedState = "";
 
 string JsonEscape(string s)
 {
@@ -585,6 +586,7 @@ bool PublishCandleBatch(string symbol, string tfText, ENUM_TIMEFRAMES period)
    return true;
 }
 
+// Chỉ log khi danh sách symbol/TF thay đổi hoặc trạng thái kết nối/gửi (ok/fail) thay đổi; bỏ qua nến/giá mới.
 void PublishChartCandles()
 {
    string symbols[];
@@ -593,14 +595,31 @@ void PublishChartCandles()
    if(total<=0) return;
 
    int ok=0, fail=0;
+   string targetSig = "";
+   string perItemStatus = "";
+
    for(int i=0;i<total;i++)
    {
       ENUM_TIMEFRAMES period=ChartTimeframeFromText(timeframes[i]);
-      if(PublishCandleBatch(symbols[i], timeframes[i], period)) ok++;
+      bool sent = PublishCandleBatch(symbols[i], timeframes[i], period);
+      if(sent) ok++;
       else fail++;
+
+      targetSig += symbols[i] + "|" + timeframes[i] + ";";
+      perItemStatus += symbols[i] + "|" + timeframes[i] + ":" + (sent ? "OK" : "FAIL") + ";";
    }
+
+   string stateSig = "targets=" + targetSig +
+                     "#ok=" + IntegerToString(ok) +
+                     "/fail=" + IntegerToString(fail) +
+                     "/total=" + IntegerToString(total) +
+                     "#items=" + perItemStatus;
+
+   if(stateSig == g_lastChartFeedState) return;
+
+   g_lastChartFeedState = stateSig;
    if(ok>0 || fail>0)
-      Print("[CHART FEED] batch done: ok=",ok," skip=",fail," total=",total);
+      Print("[CHART FEED] batch done: ok=",ok," skip=",fail," total=",total," | ",targetSig);
 }
 
 void PublishRealHistory()
