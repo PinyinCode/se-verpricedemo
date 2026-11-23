@@ -5,30 +5,31 @@
 //| Tự tính SL/TP/Lot, tự trailing/BE, đọc settings từ server.       |
 //+------------------------------------------------------------------+
 #property strict
-#property version "3.12"
+#property version "3.13"
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 
 //--- Inputs ---------------------------------------------------------
-input string ServerBaseURL       = "https://investforex.onrender.com";
-input string ApiKey              = "SET_A_LONG_RANDOM_API_KEY";
-input string ConsumerId          = "trade-v9";
-input int    PollSeconds         = 3;
-input int    SettingsPollSeconds = 5;
-input int    CommissionPollSeconds = 60;
-input int    HeartbeatSeconds    = 15;
-input int    TrailingCheckSeconds = 2;
+input string ServerBaseURL                = "https://investforex.onrender.com";
+input string ApiKey                       = "SET_A_LONG_RANDOM_API_KEY";
+input string ConsumerId                   = "trade-v9";
+input int    PollSeconds                  = 3;
+input int    SettingsPollSeconds          = 5;
+input int    CommissionPollSeconds        = 60;
+input int    HeartbeatSeconds             = 15;
+input int    TrailingCheckSeconds         = 2;
 
-input long   MagicNumber         = 20240915;
-input int    SlippagePoints      = 20;
-input string OrderComment        = "TRADE-V9";
-input bool   SyncRealHistory     = true;
-input bool   AllowCancelExternalPending = false;
-input bool   AllowMinLotWhenExceedBudget = false;
+input long   MagicNumber                  = 20240915;
+input int    SlippagePoints               = 20;
+input string OrderComment                 = "TRADE-V9";
+input bool   SyncRealHistory              = true;
+input bool   AllowCancelExternalPending   = false;
+input bool   AllowModifyExternalPending   = true;
+input bool   AllowMinLotWhenExceedBudget  = false;
 
 // Nếu server báo commission dạng round-turn (vào+ra) nhưng MT5 tính per-side -> bật true
-input bool   CommissionIsRoundTurn = false;
+input bool   CommissionIsRoundTurn        = false;
 
 //--- Globals --------------------------------------------------------
 CTrade        trade;
@@ -292,7 +293,7 @@ void ExtractTopLevelObjects(string arrJson, string &outObjects[])
    for(int i = 0; i < StringLen(arrJson); i++)
    {
       ushort c = StringGetCharacter(arrJson, i);
-      if(c == '"' && (i == 0 || StringGetCharacter(arrJson,i-1) != '\\')) quoted = !quoted;
+      if(c == '"' && (i == 0 || StringGetCharacter(json_safe_idx(arrJson, i-1)) != '\\')) quoted = !quoted;
       if(quoted) continue;
       if(c == '{')
       {
@@ -311,6 +312,12 @@ void ExtractTopLevelObjects(string arrJson, string &outObjects[])
          }
       }
    }
+}
+
+ushort json_safe_idx(string s, int idx)
+{
+   if(idx < 0 || idx >= StringLen(s)) return 0;
+   return StringGetCharacter(s, idx);
 }
 
 //--- HTTP -----------------------------------------------------------
@@ -1263,7 +1270,7 @@ void PollSltpRequests()
       ExecuteSltpCommand(items[i]);
 }
 
-//--- Pending modify -------------------------------------------------
+//--- Pending modify (LIMIT orders) ----------------------------------
 void AckPendingModify(string requestId, string ticket, bool ok, string detail)
 {
    string body = StringFormat(
@@ -1281,34 +1288,118 @@ void ExecutePendingModify(string cmdJson)
    if(HasProcessedPendingModify(reqId)) return;
 
    double newEntry = StringToDouble(JsonValue(cmdJson, "new_entry"));
-   double newSl = StringToDouble(JsonValue(cmdJson, "new_sl"));
-   double newTp = StringToDouble(JsonValue(cmdJson, "new_tp"));
+   double newSl    = StringToDouble(JsonValue(cmdJson, "new_sl"));
+   double newTp    = StringToDouble(JsonValue(cmdJson, "new_tp"));
    ulong tk = (ulong)StringToInteger(ticket);
    bool ok = false;
    string detail = "";
 
-   if(!OrderSelect(tk))
+   if(tk == 0 || !OrderSelect(tk))
+   {
       detail = "Pending order not found";
+   }
    else
    {
-      string sym = OrderGetString(ORDER_SYMBOL);
-      int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
-      double curPrice = OrderGetDouble(ORDER_PRICE_OPEN);
-      double curSl = OrderGetDouble(ORDER_SL);
-      double curTp = OrderGetDouble(ORDER_TP);
-      double price = NormalizeDouble(newEntry > 0 ? newEntry : curPrice, digits);
-      double sl = NormalizeDouble(newSl > 0 ? newSl : curSl, digits);
-      double tp = NormalizeDouble(newTp > 0 ? newTp : curTp, digits);
-      datetime expiration = (datetime)OrderGetInteger(ORDER_TIME_EXPIRATION);
-
-      trade.SetExpertMagicNumber(MagicNumber);
-      trade.SetDeviationInPoints(SlippagePoints);
-      trade.SetTypeFilling(PickFilling(sym));
-      trade.SetAsyncMode(false);
-      if(trade.OrderModify(tk, price, sl, tp, ORDER_TIME_GTC, expiration, 0.0))
-      { ok = true; detail = "Pending modified"; }
+      long ordMagic = OrderGetInteger(ORDER_MAGIC);
+      if(ordMagic != MagicNumber && !AllowModifyExternalPending)
+      {
+         detail = "External pending order not allowed";
+      }
       else
-         detail = StringFormat("OrderModify failed retcode=%d", trade.ResultRetcode());
+      {
+         ENUM_ORDER_TYPE ot = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+         if(ot != ORDER_TYPE_BUY_LIMIT && ot != ORDER_TYPE_SELL_LIMIT)
+         {
+            detail = "Only BUY_LIMIT / SELL_LIMIT modify supported";
+         }
+         else
+         {
+            string sym = OrderGetString(ORDER_SYMBOL);
+            SymbolSelect(sym, true);
+            int digits     = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+            double point   = SymbolInfoDouble(sym, SYMBOL_POINT);
+            int stopLevel  = (int)SymbolInfoInteger(sym, SYMBOL_TRADE_STOPS_LEVEL);
+            double minDist = stopLevel * point;
+            double bid     = SymbolInfoDouble(sym, SYMBOL_BID);
+            double ask     = SymbolInfoDouble(sym, SYMBOL_ASK);
+
+            double curPrice = OrderGetDouble(ORDER_PRICE_OPEN);
+            double curSl    = OrderGetDouble(ORDER_SL);
+            double curTp    = OrderGetDouble(ORDER_TP);
+
+            double price = NormalizeDouble(newEntry > 0.0 ? newEntry : curPrice, digits);
+            double sl    = NormalizeDouble(newSl > 0.0 ? newSl : curSl, digits);
+            double tp    = NormalizeDouble(newTp > 0.0 ? newTp : curTp, digits);
+
+            bool priceValid = true;
+            if(bid <= 0.0 || ask <= 0.0)
+            {
+               detail = "No live quote";
+               priceValid = false;
+            }
+            else if(ot == ORDER_TYPE_BUY_LIMIT)
+            {
+               if(price >= ask - minDist)
+               {
+                  detail = StringFormat("BUY_LIMIT price %.5f must be < Ask %.5f (minDist %.5f)", price, ask, minDist);
+                  priceValid = false;
+               }
+               if(priceValid && sl > 0.0 && sl >= price)
+               {
+                  detail = "BUY_LIMIT SL must be < Entry";
+                  priceValid = false;
+               }
+               if(priceValid && tp > 0.0 && tp <= price)
+               {
+                  detail = "BUY_LIMIT TP must be > Entry";
+                  priceValid = false;
+               }
+            }
+            else if(ot == ORDER_TYPE_SELL_LIMIT)
+            {
+               if(price <= bid + minDist)
+               {
+                  detail = StringFormat("SELL_LIMIT price %.5f must be > Bid %.5f (minDist %.5f)", price, bid, minDist);
+                  priceValid = false;
+               }
+               if(priceValid && sl > 0.0 && sl <= price)
+               {
+                  detail = "SELL_LIMIT SL must be > Entry";
+                  priceValid = false;
+               }
+               if(priceValid && tp > 0.0 && tp >= price)
+               {
+                  detail = "SELL_LIMIT TP must be < Entry";
+                  priceValid = false;
+               }
+            }
+
+            if(priceValid)
+            {
+               datetime expiration = (datetime)OrderGetInteger(ORDER_TIME_EXPIRATION);
+               ENUM_ORDER_TYPE_TIME expType = (ENUM_ORDER_TYPE_TIME)OrderGetInteger(ORDER_TYPE_TIME);
+
+               trade.SetExpertMagicNumber(MagicNumber);
+               trade.SetDeviationInPoints(SlippagePoints);
+               trade.SetTypeFilling(PickFilling(sym));
+               trade.SetAsyncMode(false);
+
+               if(trade.OrderModify(tk, price, sl, tp, expType, expiration))
+               {
+                  ok = true;
+                  detail = StringFormat("Pending #%I64u updated @ %.*f (SL %.*f, TP %.*f)",
+                                        tk, digits, price, digits, sl, digits, tp);
+                  Print("[V9 PENDING MODIFY] ", sym, " ", detail);
+               }
+               else
+               {
+                  detail = StringFormat("OrderModify failed retcode=%d (%s)",
+                                        trade.ResultRetcode(), trade.ResultRetcodeDescription());
+                  Print("[V9 PENDING MODIFY ERR] ", sym, " #", tk, " ", detail);
+               }
+            }
+         }
+      }
    }
 
    MarkProcessedPendingModify(reqId);
@@ -1543,7 +1634,7 @@ int OnInit()
    PollCommissions();
 
    EventSetTimer(1);
-   Print("[V9] Started v3.12 REAL HUB. magic=", MagicNumber,
+   Print("[V9] Started v3.13 REAL HUB. magic=", MagicNumber,
          " | AutoTrade=", g_settings.auto_trade_enabled ? "ON" : "OFF",
          " | Trailing=", g_settings.trailing_enabled ? "ON" : "OFF",
          " | Risk=$", DoubleToString(g_settings.risk_money, 2),
