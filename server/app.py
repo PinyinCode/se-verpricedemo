@@ -2,6 +2,7 @@
 """Forex AI bridge API. MT5 real-order only; no paper simulation."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 import os
@@ -12,6 +13,7 @@ import time
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone, timedelta
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError
 from pathlib import Path
 from typing import Literal
 
@@ -469,12 +471,184 @@ def init_db() -> None:
         _init_settings_table(conn)
 
 
+# Daily, read-only MongoDB -> GitHub historical snapshot for Paper.
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
+GITHUB_REPOSITORY = os.getenv("GITHUB_REPOSITORY", "PinyinCode/se-verpricedemo").strip()
+GITHUB_BRANCH = os.getenv("GITHUB_BRANCH", "main").strip() or "main"
+HISTORY_EXPORT_PATH = "docs/data/history.json"
+HISTORY_EXPORT_HOUR = int(os.getenv("HISTORY_EXPORT_HOUR", "23"))
+HISTORY_EXPORT_MINUTE = int(os.getenv("HISTORY_EXPORT_MINUTE", "55"))
+_history_export_stop = threading.Event()
+_history_export_thread: threading.Thread | None = None
+_last_history_export_day: str | None = None
+
+
+def _github_json_request(url: str, method: str = "GET", payload: dict | None = None) -> dict | list:
+    if not GITHUB_TOKEN:
+        raise RuntimeError("GITHUB_TOKEN chưa được cấu hình")
+    body = json.dumps(payload).encode("utf-8") if payload is not None else None
+    request = Request(
+        url,
+        data=body,
+        method=method,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "Authorization": f"Bearer {GITHUB_TOKEN}",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "ForexPaperHistoryExporter",
+            **({"Content-Type": "application/json"} if body is not None else {}),
+        },
+    )
+    with urlopen(request, timeout=30) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
+def _mongo_history_snapshot(export_day: str) -> dict:
+    collection = _paper_candles_collection()
+    if collection is None:
+        raise RuntimeError("MongoDB Paper feed chưa sẵn sàng")
+    groups = list(collection.aggregate([
+        {"$group": {"_id": {"symbol": "$symbol", "timeframe": "$timeframe"}}}
+    ]))
+    symbols: dict[str, dict] = {}
+    total = 0
+    for group in groups:
+        key = group.get("_id") or {}
+        symbol = str(key.get("symbol") or "").strip().upper()
+        timeframe = str(key.get("timeframe") or "").strip().upper()
+        if not symbol or not timeframe:
+            continue
+        docs = list(collection.find(
+            {"symbol": symbol, "timeframe": timeframe},
+            {"_id": 0, "time": 1, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1},
+        ).sort("time", -1).limit(2000))
+        docs.reverse()
+        if len(docs) < 20:
+            print(f"[GITHUB_HISTORY] Skip {symbol} {timeframe}: only {len(docs)} candles")
+            continue
+        rows = []
+        for doc in docs:
+            row = {
+                "time": int(doc["time"]),
+                "open": float(doc["open"]),
+                "high": float(doc["high"]),
+                "low": float(doc["low"]),
+                "close": float(doc["close"]),
+            }
+            if doc.get("volume") is not None:
+                row["volume"] = float(doc["volume"])
+            rows.append(row)
+        symbols.setdefault(symbol, {})[timeframe] = rows
+        total += len(rows)
+    if not total:
+        raise RuntimeError("MongoDB chưa có đủ dữ liệu nến để tạo snapshot")
+    return {
+        "schemaVersion": 1,
+        "generatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "exportDateGMT7": export_day,
+        "source": "MT5 -> Server -> MongoDB",
+        "timezone": "UTC",
+        "symbols": symbols,
+    }
+
+
+def _export_mongo_history_to_github(export_day: str) -> bool:
+    if not GITHUB_TOKEN:
+        print("[GITHUB_HISTORY] Bỏ qua: chưa cấu hình GITHUB_TOKEN")
+        return False
+    api_root = f"https://api.github.com/repos/{GITHUB_REPOSITORY}"
+    encoded_path = HISTORY_EXPORT_PATH.replace("/", "%2F")
+
+    # A successful commit for this GMT+7 date is the daily lock, including after restarts.
+    commits = _github_json_request(
+        f"{api_root}/commits?path={encoded_path}&per_page=1&sha={GITHUB_BRANCH}"
+    )
+    if commits:
+        committed_at = (commits[0].get("commit", {}).get("committer", {}).get("date")
+                        or commits[0].get("commit", {}).get("author", {}).get("date"))
+        if committed_at:
+            committed_day = datetime.fromisoformat(
+                committed_at.replace("Z", "+00:00")
+            ).astimezone(_GMT7).date().isoformat()
+            if committed_day == export_day:
+                print(f"[GITHUB_HISTORY] Đã commit snapshot hôm nay ({export_day}); không tạo commit mới")
+                return True
+
+    snapshot = _mongo_history_snapshot(export_day)
+    content_url = f"{api_root}/contents/{HISTORY_EXPORT_PATH}?ref={GITHUB_BRANCH}"
+    existing_sha = None
+    try:
+        existing = _github_json_request(content_url)
+        existing_sha = existing.get("sha")
+    except HTTPError as exc:
+        if exc.code != 404:
+            raise
+
+    body = {
+        "message": f"data: daily MongoDB candle snapshot {export_day}",
+        "content": base64.b64encode(
+            (json.dumps(snapshot, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
+        ).decode("ascii"),
+        "branch": GITHUB_BRANCH,
+    }
+    if existing_sha:
+        body["sha"] = existing_sha
+    result = _github_json_request(
+        f"{api_root}/contents/{HISTORY_EXPORT_PATH}", method="PUT", payload=body
+    )
+    commit_sha = result.get("commit", {}).get("sha", "")
+    print(f"[GITHUB_HISTORY] Snapshot committed: {export_day}; candles={sum(len(v) for x in snapshot['symbols'].values() for v in x.values())}; sha={commit_sha[:12]}")
+    return True
+
+
+def _daily_history_export_loop() -> None:
+    global _last_history_export_day
+    target_hour = min(23, max(0, HISTORY_EXPORT_HOUR))
+    target_minute = min(59, max(0, HISTORY_EXPORT_MINUTE))
+    while not _history_export_stop.is_set():
+        now = datetime.now(_GMT7)
+        target = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
+        if now >= target and _last_history_export_day != now.date().isoformat():
+            export_day = now.date().isoformat()
+            try:
+                if _export_mongo_history_to_github(export_day):
+                    _last_history_export_day = export_day
+                    continue
+            except Exception as exc:
+                print(f"[GITHUB_HISTORY] Export failed: {type(exc).__name__}: {exc}")
+            _history_export_stop.wait(900)
+        else:
+            wait_seconds = max(5, min(60, (target - now).total_seconds()))
+            _history_export_stop.wait(wait_seconds)
+
+
+def _start_daily_history_exporter() -> None:
+    global _history_export_thread
+    if not GITHUB_TOKEN:
+        print("[GITHUB_HISTORY] Daily exporter disabled: GITHUB_TOKEN chưa được cấu hình")
+        return
+    if _history_export_thread and _history_export_thread.is_alive():
+        return
+    _history_export_stop.clear()
+    _history_export_thread = threading.Thread(
+        target=_daily_history_export_loop,
+        name="daily-mongo-github-history",
+        daemon=True,
+    )
+    _history_export_thread.start()
+    print(f"[GITHUB_HISTORY] Daily snapshot scheduled at {HISTORY_EXPORT_HOUR:02d}:{HISTORY_EXPORT_MINUTE:02d} GMT+7")
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
+    _start_daily_history_exporter()
     try:
         yield
     finally:
+        _history_export_stop.set()
+        if _history_export_thread and _history_export_thread.is_alive():
+            _history_export_thread.join(timeout=2)
         global _conn, _mongo_client, _mongo_indexes_ready
         with _db_lock:
             if _conn is not None:
