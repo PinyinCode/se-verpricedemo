@@ -3679,17 +3679,12 @@ async function checkServerStatus() {
 
 ensureApiAuthWarnings();
 refreshApiKeyBox();
-const forceLiveMode = new URLSearchParams(location.search).get('mode') === 'live';
-if (!chartApiKey && !forceLiveMode) {
-  // Public visitors without a saved key land on the isolated browser-only demo.
-  // The explicit ?mode=live route remains available for authorized users to enter their key.
-  location.replace('./paper.html');
-}
 if (!chartApiKey) {
-  setApiAuthWarning('error', 'Chưa nhập API Key. Mở Cài đặt để nhập khóa được cấp.');
-  $('feedState').textContent = 'Nhập API key để kết nối dữ liệu';
+  location.replace('./paper.html');
 } else {
-  void validateApiAccess();
+  void validateApiAccess().then(valid => {
+    if (!valid) location.replace('./paper.html');
+  });
 }
 syncRealLayerToggles();
 bindRealLayerToggles();
