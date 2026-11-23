@@ -1173,6 +1173,15 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
   </div>
 </dialog>
 
+<dialog id="paperActionDialog" class="confirm-dialog">
+ <div class="cd-head"><strong id="paperActionTitle">XÁC NHẬN PAPER DEMO</strong></div>
+ <div class="cd-body" id="paperActionMessage">Xác nhận thao tác mô phỏng?</div>
+ <div class="cd-foot">
+  <button type="button" id="paperActionCancel">Hủy</button>
+  <button type="button" id="paperActionConfirm">Xác nhận</button>
+ </div>
+</dialog>
+
 <script>
 'use strict';
 const $=id=>document.getElementById(id), STORE='forexPaperUI.v2';
@@ -1301,7 +1310,22 @@ function bind(){
  $('symbol').addEventListener('change',()=>{symbol=$('symbol').value;seed();});
  $('tf').addEventListener('change',()=>{tf=$('tf').value==='H1'?60:15;seed();});
  $('refresh').addEventListener('click',()=>seed());$('fitChart').addEventListener('click',()=>{chart.timeScale().fitContent();rsiChart.timeScale().fitContent();placeLines();});
- $('sendBuy').addEventListener('click',()=>demo('BUY'));$('sendSell').addEventListener('click',()=>demo('SELL'));
+ let pendingDemoSide='';
+ function askDemo(side){
+  pendingDemoSide=side;
+  text('paperActionTitle','XÁC NHẬN PAPER DEMO · '+side);
+  const mode=demoMode==='MARKET'?'MARKET':'PENDING / LIMIT';
+  text('paperActionMessage','Bạn đang tạo một vị thế mô phỏng '+side+' cho '+symbol+' ('+mode+'). Thao tác chỉ lưu cục bộ trên trình duyệt, không gửi lệnh ra thị trường.');
+  dialog('paperActionDialog');
+ }
+ $('sendBuy').addEventListener('click',()=>askDemo('BUY'));
+ $('sendSell').addEventListener('click',()=>askDemo('SELL'));
+ $('paperActionCancel').addEventListener('click',()=>{pendingDemoSide='';close('paperActionDialog');});
+ $('paperActionConfirm').addEventListener('click',()=>{
+  if(!pendingDemoSide)return;
+  const side=pendingDemoSide;pendingDemoSide='';
+  close('paperActionDialog');demo(side);
+ });
  $('tradePanelToggle').addEventListener('click',()=>{const b=$('tradePanelToggle'),open=b.getAttribute('aria-expanded')!=='true';b.setAttribute('aria-expanded',String(open));document.body.classList.toggle('trade-panel-open',open);});
  $('settingsButton').addEventListener('click',()=>dialog('tradeSettingsDialog'));$('positionsButton').addEventListener('click',()=>{renderPositions();dialog('positionsDialog');});$('statsButton').addEventListener('click',()=>{renderHistory();dialog('statsDialog');});
  $('lockButton').addEventListener('click',e=>{const locked=e.currentTarget.classList.toggle('locked');e.currentTarget.textContent=locked?'🔒':'🔓';$('priceChart').querySelectorAll('.paper-drag-layer [data-level]').forEach(x=>x.style.pointerEvents=locked?'none':'auto');});
@@ -1311,6 +1335,9 @@ function bind(){
  $('presetSellLimit').addEventListener('click',()=>{demoMode='PENDING';$('orderMode').value='PENDING';$('entryPrice').value=fmt(price+cfg[symbol][1]*4);text('requestState','SELL LIMIT Demo · kéo Entry/SL/TP để thay đổi mức giá.');createLines();});
  $('positionsDialog').addEventListener('click',e=>{const b=e.target.closest('[data-demo-close]');if(b)closeDemo(Number(b.dataset.demoClose));});
  ['closeTradeSettings','closePositionsDialog','closeStatsDialog'].forEach((id,i)=>$(id).addEventListener('click',()=>close(['tradeSettingsDialog','positionsDialog','statsDialog'][i])));
+ $('closeTradeEmergency').addEventListener('click',()=>close('tradeEmergencyDialog'));
+ $('rtDialogClose').addEventListener('click',()=>close('rtSignalDialog'));
+ $('rtDialogOk').addEventListener('click',()=>close('rtSignalDialog'));
  $('entryPopupClose').addEventListener('click',()=>$('entryPopup').classList.add('hidden'));$('realPopupClose').addEventListener('click',()=>$('realPopup').classList.add('hidden'));
  $('apiKeyInput').disabled=true;$('apiKeySave').disabled=true;$('apiKeyToggle').disabled=true;text('apiKeyStatus','API key chỉ dùng xác thực để mở Index.');
  document.querySelectorAll('.commission-panel').forEach(x=>x.innerHTML='<strong>CHẾ ĐỘ PAPER DEMO</strong><div class="small">Chỉ đọc dữ liệu thị trường; không gửi lệnh.</div>');
