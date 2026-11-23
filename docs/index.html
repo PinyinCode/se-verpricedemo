@@ -210,7 +210,6 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
 #lotResizeHandle:active:after{background:var(--green)}
 
 .drag-overlay{position:absolute;inset:0;pointer-events:none;z-index:5}
-/* Tăng vùng bắt chuột ảo xung quanh line 2px để kéo dễ và không trượt */
 .drag-line{position:absolute;left:0;right:0;height:2px;cursor:ns-resize;pointer-events:auto;touch-action:none}
 .drag-line::before{
   content:'';
@@ -1174,12 +1173,10 @@ let API_BASE = String(window.FOREX_API_BASE || '');
 while (API_BASE.endsWith('/')) API_BASE = API_BASE.slice(0, -1);
 const $ = id => document.getElementById(id);
 
-/* Đổi thành true nếu EA bật input bool CommissionIsRoundTurn = true */
 const COMMISSION_IS_ROUND_TURN = false;
 
 let mt5Digits = 5, mt5TickSize = 0.00001, mt5TickValue = 0, mt5VolumeMin = 0, mt5VolumeMax = 0, mt5VolumeStep = 0, latestMarketPrice = 0;
 
-/* Đồng bộ theo SSettings & SCommission của TRADE_V9_PAPER.mq5 */
 const eaState = {
   settings: {
     auto_trade_enabled: true,
@@ -1204,7 +1201,6 @@ const eaState = {
   lastCalc: null,
 };
 
-/* ================= API KEY ================= */
 const API_KEY_STORAGE = 'chartApiKey';
 let chartApiKey = (() => {
   try { return localStorage.getItem(API_KEY_STORAGE) || ''; } catch { return ''; }
@@ -1269,7 +1265,6 @@ function commissionNumber(value) {
   return Number.isFinite(n) ? n.toLocaleString('en-US', { maximumFractionDigits: 8 }) : '—';
 }
 
-/* Poll settings giống PollSettings() của EA */
 async function syncEaSettings() {
   try {
     const r = await fetch(API_BASE + '/api/settings', { cache: 'no-store' });
@@ -1306,7 +1301,6 @@ async function syncEaSettings() {
   } catch (_) {}
 }
 
-/* Poll commission cache giống PollCommissions() & GetCommissionPerLot() của EA */
 async function syncSymbolCommission(symbol) {
   const sym = String(symbol || $('symbol').value || '').trim().toUpperCase();
   eaState.commission.symbol = sym;
@@ -1412,7 +1406,6 @@ async function refreshCommissionInfo() {
 const fmt = n => Number(n).toLocaleString('en-US', { minimumFractionDigits: mt5Digits, maximumFractionDigits: mt5Digits });
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-/* ================= LOCK STATE ================= */
 const LOCK_STORAGE = 'chartRealSltpLocked';
 let realSltpLocked = (() => {
   try { return localStorage.getItem(LOCK_STORAGE) === '1'; } catch { return false; }
@@ -1433,7 +1426,6 @@ function toggleLock() {
   applyLockState();
 }
 
-/* ================= CHARTS ================= */
 const priceChart = LightweightCharts.createChart($('priceChart'), {
   layout: { background: { color: '#111c2e' }, textColor: '#a9b8ca' },
   grid: { vertLines: { color: '#1c2a3e' }, horzLines: { color: '#1c2a3e' } },
@@ -1447,7 +1439,7 @@ const candleSeries = priceChart.addCandlestickSeries({
   upColor: '#22c58b', downColor: '#f06478',
   borderUpColor: '#22c58b', borderDownColor: '#f06478',
   wickUpColor: '#22c58b', wickDownColor: '#f06478',
-  priceFormat: { type: 'price', precision: 5, minMove: 0.00001 },
+  priceFormat: { type: 'price', precision: mt5Digits, minMove: 0.00001 },
 });
 const volumeSeries = priceChart.addHistogramSeries({
   priceScaleId: 'volume',
@@ -1534,9 +1526,8 @@ let lastBarsSignature = '';
 let syncing = false, firstLoad = true, autoDirection = 'BUY', pendingOrderType = 'BUY_LIMIT', lastLoadedSymbol = '';
 let activePreset = null;
 
-/* ================= TRẠNG THÁI KÉO THẢ CHUNG ================= */
-let activeFormDragKey = null; // 'entry' | 'sl' | 'tp' | null
-let activeRealDragItem = null; // { el, payload, key, labelTemplate, startPrice, startY, moved }
+let activeFormDragKey = null;
+let activeRealDragItem = null;
 
 function isAnyLineDragging() {
   return Boolean(activeFormDragKey || activeRealDragItem);
@@ -1551,7 +1542,6 @@ function formatFormLineLabel(key, price) {
   return key.toUpperCase() + ' ' + Number(price).toFixed(mt5Digits);
 }
 
-/* ================= FORM MỚI — DRAG OVERLAY ================= */
 const dragOverlay = document.createElement('div');
 dragOverlay.className = 'drag-overlay';
 $('priceChart').appendChild(dragOverlay);
@@ -1627,16 +1617,10 @@ for (const key of ['entry', 'sl', 'tp']) {
 priceChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
   if (syncing || !range) return;
   syncing = true; rsiChart.timeScale().setVisibleLogicalRange(range); syncing = false;
-  if (!isAnyLineDragging()) {
-    setLevelLines();
-    renderRealLines();
-  }
+  syncChartPriceOverlays();
 });
 priceChart.subscribeCrosshairMove(param => {
-  if (!isAnyLineDragging()) {
-    setLevelLines();
-    renderRealLines();
-  }
+  syncChartPriceOverlays();
   const bar = param && param.seriesData ? param.seriesData.get(candleSeries) : null;
   const el = $('ohlcLegend');
   if (!bar) { el.innerHTML = '<b>O —</b><span>H —</span><span>L —</span><span>C —</span><span class="ohlc-change">—</span>'; return; }
@@ -1650,7 +1634,6 @@ rsiChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
   syncing = true; priceChart.timeScale().setVisibleLogicalRange(range); syncing = false;
 });
 
-/* ================= FORM MỚI — SLTP PROPOSE ================= */
 let pendingSltpChange = null;
 
 function findOpenPositionForSymbol() {
@@ -1727,7 +1710,6 @@ $('cdOk').addEventListener('click', async () => {
   }
 });
 
-/* ================= LỆNH THẬT — LỚP KÉO THẢ ================= */
 const realOverlay = document.createElement('div');
 realOverlay.className = 'drag-overlay';
 realOverlay.style.zIndex = '6';
@@ -1975,7 +1957,6 @@ function proposeRealLevelChange(payload, key, oldPrice, newPrice) {
   }
 }
 
-/* ================= BỘ XỬ LÝ KÉO MƯỢT TRÊN WINDOW ================= */
 function updateFormDragAtClientY(clientY) {
   if (!activeFormDragKey) return;
   const key = activeFormDragKey;
@@ -1991,7 +1972,6 @@ function updateFormDragAtClientY(clientY) {
   $(id).value = price.toFixed(mt5Digits);
   line.firstChild.textContent = formatFormLineLabel(key, price);
 
-  // Chỉ tính lại lot khi kéo SL hoặc Entry; không tự nhảy giá/đổi hướng làm giật đường đang kéo
   if (key === 'sl' || key === 'entry') {
     calcLot();
   }
@@ -2113,7 +2093,6 @@ $('cpOk').addEventListener('click', async () => {
   renderRealLines();
 });
 
-/* ================= POPUP THÔNG TIN LỆNH THẬT ================= */
 function openRealPopup(payload, clientX, clientY, readOnly = false) {
   const popup = $('realPopup');
   const rect = $('priceChart').getBoundingClientRect();
@@ -2182,7 +2161,6 @@ document.addEventListener('click', e => {
   closeRealPopup();
 });
 
-/* ================= RSI, SIGNALS ================= */
 function rsi(values, period = 14) {
   const out = [];
   let avgGain = 0, avgLoss = 0;
@@ -2864,18 +2842,55 @@ function syncChartPriceOverlays() {
   }
 }
 
-let chartOverlaySyncRaf = 0;
-function requestChartPriceOverlaySync() {
-  if (chartOverlaySyncRaf) return;
-  chartOverlaySyncRaf = requestAnimationFrame(() => {
-    chartOverlaySyncRaf = 0;
+let isChartPointerDown = false;
+let scaleSyncRaf = 0;
+
+function startScaleSyncLoop() {
+  if (scaleSyncRaf) return;
+  const tick = () => {
     syncChartPriceOverlays();
-  });
+    if (isChartPointerDown || isAnyLineDragging()) {
+      scaleSyncRaf = requestAnimationFrame(tick);
+    } else {
+      scaleSyncRaf = 0;
+    }
+  };
+  scaleSyncRaf = requestAnimationFrame(tick);
 }
 
 const priceChartElement = $('priceChart');
-priceChartElement.addEventListener('wheel', requestChartPriceOverlaySync, { capture: true, passive: true });
-window.addEventListener('resize', requestChartPriceOverlaySync, { passive: true });
+priceChartElement.addEventListener('pointerdown', () => {
+  isChartPointerDown = true;
+  syncChartPriceOverlays();
+  startScaleSyncLoop();
+}, { capture: true, passive: true });
+
+priceChartElement.addEventListener('pointermove', () => {
+  if (isChartPointerDown || isAnyLineDragging()) {
+    syncChartPriceOverlays();
+  }
+}, { capture: true, passive: true });
+
+priceChartElement.addEventListener('wheel', () => {
+  syncChartPriceOverlays();
+  requestAnimationFrame(syncChartPriceOverlays);
+}, { capture: true, passive: true });
+
+window.addEventListener('pointerup', () => {
+  isChartPointerDown = false;
+  syncChartPriceOverlays();
+  requestAnimationFrame(syncChartPriceOverlays);
+}, { passive: true });
+
+window.addEventListener('pointercancel', () => {
+  isChartPointerDown = false;
+  syncChartPriceOverlays();
+}, { passive: true });
+
+window.addEventListener('resize', () => {
+  syncChartPriceOverlays();
+  requestAnimationFrame(syncChartPriceOverlays);
+}, { passive: true });
 
 function updateDirectionFromSL() {
   const mode = $('orderMode').value;
@@ -2922,7 +2937,6 @@ function getCommissionPerLotForChart(symbol) {
   return COMMISSION_IS_ROUND_TURN ? safeBase / 2.0 : safeBase;
 }
 
-/* Tương đương SRiskBreakdown ComputeRiskBreakdown(symbol, slDistance, volume) của EA */
 function computeEaRiskBreakdown(symbol, slDistance, volume) {
   const tickSize = Number(mt5TickSize);
   const tickValue = Number(mt5TickValue);
@@ -2952,7 +2966,6 @@ function computeEaRiskBreakdown(symbol, slDistance, volume) {
   return { valid: true, slRisk, commission, spreadCost, total, riskPerLot };
 }
 
-/* Tương đương CalculateLotWithCommission + logic giảm lot khi vượt budget trong OpenTrade() của EA */
 function calculateEaLot(symbol, slDistance, targetRiskMoney) {
   const baseProbe = computeEaRiskBreakdown(symbol, slDistance, 1.0);
   if (!baseProbe.valid) {
@@ -3140,6 +3153,7 @@ $('priceChart').addEventListener('dblclick', event => {
   event.preventDefault();
   event.stopPropagation();
   priceChart.priceScale('right').applyOptions({ autoScale: true });
+  requestAnimationFrame(syncChartPriceOverlays);
 }, true);
 
 $('fitChart').addEventListener('click', () => {
@@ -3392,7 +3406,6 @@ async function checkServerStatus() {
   }
 }
 
-/* ================= INIT ================= */
 ensureApiAuthWarnings();
 if (!chartApiKey) setApiAuthWarning('error', 'Chưa nhập API Key. Mở Cài đặt để nhập khóa được cấp.');
 refreshApiKeyBox();
