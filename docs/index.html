@@ -319,7 +319,7 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
 
 .real-popup{
   position:absolute;
-  z-index:70;
+  z-index:85;
   min-width:270px;
   max-width:340px;
   padding:10px 12px;
@@ -336,6 +336,7 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
   font-weight:750;
   font-size:12px;
   margin-bottom:6px;
+  padding-right:24px;
   display:flex;
   justify-content:space-between;
   gap:8px;
@@ -359,7 +360,7 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
   gap:6px;
   justify-content:flex-end;
 }
-.real-popup .rp-actions button{padding:4px 10px;font-size:11px}
+.real-popup .rp-actions button{padding:6px 12px;font-size:11px;touch-action:manipulation}
 .real-popup .rp-close{
   position:absolute;
   top:6px;
@@ -2166,6 +2167,8 @@ $('cpOk').addEventListener('click', async () => {
   }
 });
 
+let activeRealPopupTicket = null;
+
 function openRealPopup(payload, clientX, clientY, readOnly = false) {
   const popup = $('realPopup');
   const rect = $('priceChart').getBoundingClientRect();
@@ -2173,6 +2176,7 @@ function openRealPopup(payload, clientX, clientY, readOnly = false) {
   const d = payload.data;
   const dir = String(d.direction || '').toUpperCase();
   const ticket = String(d.ticket ?? d.id ?? '');
+  activeRealPopupTicket = ticket || null;
   const orderType = isPending ? (d.order_type || (dir === 'BUY' ? 'BUY_LIMIT' : 'SELL_LIMIT')) : 'MARKET';
   const entry = Number(d.entry ?? d.price ?? d.open_price) || 0;
   const sl = Number(d.sl) || 0;
@@ -2199,14 +2203,24 @@ function openRealPopup(payload, clientX, clientY, readOnly = false) {
       btn.type = 'button';
       btn.className = 'btn-close-pos';
       btn.textContent = 'Hủy lệnh chờ';
-      btn.addEventListener('click', () => { closeRealPopup(); cancelPendingOrder(ticket, btn); });
+      btn.addEventListener('pointerdown', ev => ev.stopPropagation());
+      btn.addEventListener('click', ev => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        cancelPendingOrder(ticket, btn);
+      });
       actions.appendChild(btn);
     } else {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'btn-close-pos';
       btn.textContent = 'Đóng vị thế';
-      btn.addEventListener('click', () => { closeRealPopup(); closePosition(ticket, btn); });
+      btn.addEventListener('pointerdown', ev => ev.stopPropagation());
+      btn.addEventListener('click', ev => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        closePosition(ticket, btn);
+      });
       actions.appendChild(btn);
     }
   }
@@ -2224,8 +2238,18 @@ function openRealPopup(payload, clientX, clientY, readOnly = false) {
   popup.style.left = x + 'px';
   popup.style.top = y + 'px';
 }
-function closeRealPopup() { $('realPopup').classList.add('hidden'); }
-$('realPopupClose').addEventListener('click', closeRealPopup);
+function closeRealPopup() {
+  activeRealPopupTicket = null;
+  $('realPopup').classList.add('hidden');
+}
+$('realPopupClose').addEventListener('pointerdown', ev => ev.stopPropagation());
+$('realPopupClose').addEventListener('click', ev => {
+  ev.preventDefault();
+  ev.stopPropagation();
+  closeRealPopup();
+});
+$('realPopup').addEventListener('pointerdown', ev => ev.stopPropagation());
+$('realPopup').addEventListener('click', ev => ev.stopPropagation());
 document.addEventListener('click', e => {
   const p = $('realPopup');
   if (p.classList.contains('hidden')) return;
@@ -2590,8 +2614,8 @@ async function load(forceNetwork = false) {
 }
 
 let chartOpenPositions = [], chartPendingOrders = [], closingIds = new Set(), cancelingIds = new Set();
-const getPositionId = p => p && (p.id ?? p.ticket ?? p.position_id ?? p.order_id ?? p.deal_id ?? '');
-const getPendingId = o => o && (o.id ?? o.position_id ?? o.ticket ?? o.order_id ?? '');
+const getPositionId = p => p && (p.ticket ?? p.id ?? p.position_id ?? p.order_id ?? p.deal_id ?? '');
+const getPendingId = o => o && (o.ticket ?? o.id ?? o.position_id ?? o.order_id ?? '');
 
 function formatOrderKind(o) {
   const raw = String(o?.order_type ?? o?.type ?? o?.direction ?? '').toUpperCase().replace(/\s+/g, '_');
@@ -2604,55 +2628,153 @@ function formatOrderKind(o) {
   return { label: raw || 'LIMIT', cls: 'pending-badge' };
 }
 
+function setCloseFeedback(msg, isError = false) {
+  if ($('rpState')) {
+    $('rpState').textContent = msg;
+    $('rpState').style.color = isError ? 'var(--red)' : 'var(--amber)';
+  }
+  if ($('requestState')) {
+    $('requestState').textContent = msg;
+    $('requestState').style.color = isError ? 'var(--red)' : '';
+  }
+  if ($('positionsUpdated')) {
+    $('positionsUpdated').textContent = msg;
+  }
+}
+
 async function closePosition(posId, btn) {
   const idStr = String(posId ?? '').trim();
-  if (!idStr) { $('positionsUpdated').textContent = 'Không tìm thấy ID/Ticket của vị thế để đóng.'; return; }
-  if (!chartApiKey) { $('positionsUpdated').textContent = 'Chưa nhập API key — mở Cài đặt để nhập.'; return; }
-  const pos = chartOpenPositions.find(x => String(getPositionId(x)) === idStr);
-  const label = pos ? (pos.symbol + ' ' + pos.direction + ' ' + pos.volume + ' lot') : ('#' + idStr);
-  if (!window.confirm('Xác nhận đóng vị thế ' + label + '?')) return;
+  if (!idStr) {
+    setCloseFeedback('Không tìm thấy ID/Ticket của vị thế để đóng.', true);
+    return;
+  }
+  const pos = chartOpenPositions.find(x =>
+    String(x.ticket ?? '') === idStr ||
+    String(x.id ?? '') === idStr ||
+    String(getPositionId(x)) === idStr
+  );
+  const label = pos
+    ? `${pos.symbol} ${pos.direction} ${pos.volume ?? pos.lots ?? pos.lot ?? ''} lot (#${pos.ticket ?? idStr})`.trim()
+    : `#${idStr}`;
+
+  let confirmed = true;
+  try {
+    confirmed = window.confirm('Xác nhận đóng vị thế ' + label + '?');
+  } catch (_) {
+    confirmed = true;
+  }
+  if (!confirmed) {
+    setCloseFeedback('Đã huỷ xác nhận đóng vị thế ' + label + '.');
+    return;
+  }
+
   closingIds.add(idStr);
   if (btn) btn.disabled = true;
-  $('positionsUpdated').textContent = 'Đang gửi lệnh đóng vị thế ' + label + '...';
-  const payload = { id: pos?.id ?? idStr, ticket: pos?.ticket ?? idStr, position_id: pos?.position_id ?? idStr, symbol: pos?.symbol || '', direction: pos?.direction || '', source: 'web-chart', is_pending: !!pos?.is_pending };
+  setCloseFeedback('Đang gửi lệnh đóng vị thế ' + label + '...');
+
+  const ticketRaw = pos?.ticket ?? pos?.id ?? idStr;
+  const ticketNum = Number(ticketRaw);
+  const volNum = Number(pos?.volume ?? pos?.lots ?? pos?.lot ?? 0);
+  const payload = {
+    id: pos?.id ?? ticketRaw,
+    ticket: Number.isFinite(ticketNum) && ticketNum > 0 ? ticketNum : ticketRaw,
+    position_id: pos?.position_id ?? ticketRaw,
+    symbol: pos?.symbol || $('symbol').value || '',
+    direction: String(pos?.direction || '').toUpperCase(),
+    volume: Number.isFinite(volNum) && volNum > 0 ? volNum : undefined,
+    source: 'web-chart',
+    is_pending: Boolean(pos?.is_pending),
+  };
+
   try {
-    const r = await apiFetch(API_BASE + '/api/chart/close', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const r = await apiFetch(API_BASE + '/api/chart/close', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(d.detail || d.message || ('HTTP ' + r.status));
-    $('positionsUpdated').textContent = 'Đã gửi yêu cầu đóng vị thế ' + label + (d.status ? ' · ' + d.status : '');
+    const okMsg = 'Đã gửi yêu cầu đóng ' + label + (d.status ? ' · ' + d.status : '');
+    setCloseFeedback(okMsg, false);
+    setTimeout(() => {
+      if (activeRealPopupTicket === idStr) closeRealPopup();
+    }, 700);
   } catch (e) {
-    $('positionsUpdated').textContent = 'Không đóng được vị thế ' + label + ': ' + e.message;
+    const errMsg = 'Không đóng được ' + label + ': ' + e.message;
+    setCloseFeedback(errMsg, true);
   } finally {
     closingIds.delete(idStr);
     if (btn) btn.disabled = false;
   }
+
   await refreshChartPositions();
 }
 
 async function cancelPendingOrder(orderId, btn) {
   const idStr = String(orderId ?? '').trim();
-  if (!idStr) { $('positionsUpdated').textContent = 'Không tìm thấy ID của lệnh chờ.'; return; }
-  if (!chartApiKey) { $('positionsUpdated').textContent = 'Chưa nhập API key — mở Cài đặt để nhập.'; return; }
-  const ord = chartPendingOrders.find(x => String(getPendingId(x)) === idStr);
-  if (!ord) { $('positionsUpdated').textContent = 'Không tìm thấy lệnh chờ trong danh sách đã đồng bộ.'; return; }
+  if (!idStr) {
+    setCloseFeedback('Không tìm thấy ID của lệnh chờ.', true);
+    return;
+  }
+  const ord = chartPendingOrders.find(x =>
+    String(x.ticket ?? '') === idStr ||
+    String(x.id ?? '') === idStr ||
+    String(getPendingId(x)) === idStr
+  );
+  if (!ord) {
+    setCloseFeedback('Không tìm thấy lệnh chờ trong danh sách đã đồng bộ.', true);
+    return;
+  }
   const kind = formatOrderKind(ord).label;
   const label = ((ord.symbol || '') + ' ' + kind + ' ' + (ord.volume ?? ord.lots ?? ord.lot ?? '') + ' lot').trim();
-  if (!window.confirm('Xác nhận hủy lệnh chờ ' + label + '?')) return;
+
+  let confirmed = true;
+  try {
+    confirmed = window.confirm('Xác nhận hủy lệnh chờ ' + label + '?');
+  } catch (_) {
+    confirmed = true;
+  }
+  if (!confirmed) {
+    setCloseFeedback('Đã huỷ xác nhận hủy lệnh chờ ' + label + '.');
+    return;
+  }
+
   cancelingIds.add(idStr);
   if (btn) btn.disabled = true;
-  $('positionsUpdated').textContent = 'Đang gửi yêu cầu hủy lệnh chờ ' + label + '...';
-  const payload = { id: ord.id ?? idStr, position_id: ord.id ?? ord.position_id ?? idStr, ticket: ord.ticket ?? ord.id ?? idStr, symbol: ord.symbol || '', direction: ord.direction || '', source: 'web-chart', is_pending: true, kind: 'cancel' };
+  setCloseFeedback('Đang gửi yêu cầu hủy lệnh chờ ' + label + '...');
+
+  const ticketRaw = ord.ticket ?? ord.id ?? idStr;
+  const payload = {
+    id: ord.id ?? ticketRaw,
+    position_id: ord.position_id ?? ticketRaw,
+    ticket: ticketRaw,
+    symbol: ord.symbol || $('symbol').value || '',
+    direction: String(ord.direction || '').toUpperCase(),
+    source: 'web-chart',
+    is_pending: true,
+    kind: 'cancel',
+  };
+
   try {
-    const r = await apiFetch(API_BASE + '/api/chart/cancel', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const r = await apiFetch(API_BASE + '/api/chart/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
     const d = await r.json().catch(() => ({}));
-    if (!r.ok || d.ok !== true || !d.request_id) throw new Error(d.detail || d.message || ('Server không tạo yêu cầu hủy (HTTP ' + r.status + ')'));
+    if (!r.ok || d.ok !== true || !d.request_id) {
+      throw new Error(d.detail || d.message || ('Server không tạo yêu cầu hủy (HTTP ' + r.status + ')'));
+    }
     cancelingIds.delete(idStr);
     await refreshChartPositions();
-    $('positionsUpdated').textContent = 'Đã đưa yêu cầu hủy ' + label + ' vào hàng đợi · đang chờ EA xác nhận';
+    setCloseFeedback('Đã đưa yêu cầu hủy ' + label + ' vào hàng đợi · đang chờ EA xác nhận', false);
+    setTimeout(() => {
+      if (activeRealPopupTicket === idStr) closeRealPopup();
+    }, 700);
   } catch (e) {
     cancelingIds.delete(idStr);
     if (btn) btn.disabled = false;
-    $('positionsUpdated').textContent = 'Không gửi được yêu cầu hủy ' + label + ': ' + e.message;
+    setCloseFeedback('Không gửi được yêu cầu hủy ' + label + ': ' + e.message, true);
   }
 }
 
