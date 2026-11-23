@@ -380,7 +380,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Forex AI Server",
-    version="0.5.1",
+    version="0.5.2",
     description="Signal analysis and MT5 real-order bridge with runtime control panel.",
     lifespan=lifespan,
 )
@@ -881,7 +881,7 @@ def get_commission_for_symbol(
     }
 
 
-# ---- Signal endpoints (2-path: GV direct trade + Dashboard display) ----
+# ---- Signal endpoints (2-path: GV direct trade + Manual web-chart queue) ----
 
 def _get_latest_market_price(
     conn: sqlite3.Connection,
@@ -1034,8 +1034,79 @@ def chart_order(payload: SignalIn):
 
 @app.get("/api/mt5/next", dependencies=[Depends(require_key)])
 def next_signal(consumer: str = Query(default="mt5", min_length=2, max_length=40)):
-    """EA nhận tín hiệu trực tiếp qua MT5 Global Variables để tránh vào lệnh trùng 2 đường."""
-    return {"ok": True, "signal": None, "mode": "direct_gv", "consumer": consumer}
+    """Chỉ cấp lệnh đặt tay (source='web-chart') cho EA; tín hiệu indicator đi qua GV."""
+    now_dt = datetime.now(timezone.utc).astimezone(_GMT7)
+    now_ts = now_dt.timestamp()
+    stale_cutoff = (datetime.now(timezone.utc) - timedelta(seconds=STALE_SECONDS)).isoformat()
+
+    with db() as conn:
+        settings_row = conn.execute("SELECT * FROM settings WHERE id=1").fetchone()
+        s = _settings_row_to_dict(settings_row) if settings_row else {}
+
+        if s.get("emergency_stop"):
+            return {"ok": True, "signal": None, "reason": "emergency_stop", "consumer": consumer}
+
+        news_status = evaluate_news_filter(s, now_ts=now_ts)
+        if news_status["blocked"]:
+            return {
+                "ok": True,
+                "signal": None,
+                "reason": news_status.get("reason") or "news_window_3m",
+                "news": news_status,
+                "consumer": consumer,
+            }
+
+        if s.get("time_filter_enabled", True):
+            start_h = int(s.get("trading_start_hour", 7))
+            end_h = int(s.get("trading_end_hour", 23))
+            cur_h = now_dt.hour
+            in_hours = (cur_h >= start_h and cur_h < end_h) if start_h <= end_h else (cur_h >= start_h or cur_h < end_h)
+            if not in_hours:
+                return {"ok": True, "signal": None, "reason": "outside_trading_hours", "consumer": consumer}
+
+        conn.execute(
+            "UPDATE signals SET status='expired', ack_status='ERROR', ack_message='Hết hạn chờ MT5' "
+            "WHERE status='pending' AND source='web-chart' AND created_at < ?",
+            (stale_cutoff,),
+        )
+
+        row = conn.execute(
+            "SELECT * FROM signals WHERE status='pending' AND source='web-chart' "
+            "ORDER BY created_at ASC LIMIT 1"
+        ).fetchone()
+
+        if row is None:
+            return {"ok": True, "signal": None, "reason": "no_manual_order", "consumer": consumer}
+
+        claimed_at = utc_now()
+        conn.execute(
+            "UPDATE signals SET status='claimed', claimed_by=?, claimed_at=? WHERE id=? AND status='pending'",
+            (consumer, claimed_at, row["id"]),
+        )
+        conn.execute(
+            "INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
+            ("manual_signal_claimed", f"{row['symbol']} {row['order_type']} {row['id']} by {consumer}", claimed_at),
+        )
+
+        return {
+            "ok": True,
+            "consumer": consumer,
+            "signal": {
+                "id": row["id"],
+                "symbol": row["symbol"],
+                "timeframe": row["timeframe"],
+                "direction": row["direction"],
+                "order_type": row["order_type"],
+                "entry": float(row["entry"]),
+                "sl": float(row["sl"]),
+                "tp": float(row["tp"]),
+                "score": float(row["score"]),
+                "risk_money": float(row["risk_money"]),
+                "requested_lot": float(row["requested_lot"]),
+                "source": row["source"],
+                "created_at": row["created_at"],
+            },
+        }
 
 
 @app.post("/api/mt5/ack", dependencies=[Depends(require_key)])
