@@ -877,6 +877,7 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
   <div><span class="brand">Forex AI · Chart</span> <span class="muted">/ MT5 real feed</span></div>
   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
     <span class="tag">MT5 REAL</span>
+    <a href="./paper.html" style="display:inline-flex;align-items:center;padding:4px 10px;border:1px solid #47708f;border-radius:20px;color:#b8dcff;text-decoration:none;font-size:11px">PAPER DEMO</a>
   </div>
 </header>
 
@@ -3678,6 +3679,12 @@ async function checkServerStatus() {
 
 ensureApiAuthWarnings();
 refreshApiKeyBox();
+const forceLiveMode = new URLSearchParams(location.search).get('mode') === 'live';
+if (!chartApiKey && !forceLiveMode) {
+  // Public visitors without a saved key land on the isolated browser-only demo.
+  // The explicit ?mode=live route remains available for authorized users to enter their key.
+  location.replace('./paper.html');
+}
 if (!chartApiKey) {
   setApiAuthWarning('error', 'Chưa nhập API Key. Mở Cài đặt để nhập khóa được cấp.');
   $('feedState').textContent = 'Nhập API key để kết nối dữ liệu';
