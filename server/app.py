@@ -475,11 +475,16 @@ async def lifespan(_app: FastAPI):
     try:
         yield
     finally:
-        global _conn
+        global _conn, _mongo_client, _mongo_indexes_ready
         with _db_lock:
             if _conn is not None:
                 _conn.close()
                 _conn = None
+        with _mongo_lock:
+            if _mongo_client is not None:
+                _mongo_client.close()
+                _mongo_client = None
+            _mongo_indexes_ready = False
 
 
 app = FastAPI(
