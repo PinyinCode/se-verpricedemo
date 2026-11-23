@@ -744,7 +744,7 @@ async function validateChartApiKey() {
     return false;
   }
   try {
-    const r = await fetch('/api/dashboard', {
+    const r = await fetch('/api/auth/check', {
       cache: 'no-store',
       headers: { 'X-API-Key': chartApiKey }
     });
