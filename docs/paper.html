@@ -1190,26 +1190,35 @@ function init(){
  bindCrosshair();
  new ResizeObserver(()=>{chart.applyOptions({width:$('priceChart').clientWidth,height:$('priceChart').clientHeight});rsiChart.applyOptions({width:$('rsiChart').clientWidth,height:$('rsiChart').clientHeight});placeLines();}).observe($('priceChart'));
 }
-async function seed(){
+async function seed(resetLevels=true){
  const selectedSymbol=symbol,selectedTf=$('tf').value;
- text('feedState','ĐANG TẢI SNAPSHOT DỮ LIỆU...');
+ const base=String(window.FOREX_API_BASE||'').replace(/\\/+$/,'');
+ if(!base){text('feedState','CHƯA CẤU HÌNH API');return;}
+ text('feedState','ĐANG ĐỒNG BỘ...');
  try{
-  const response=await fetch('./data/paper-snapshot.json?v='+encodeURIComponent(window.PAPER_SNAPSHOT_VERSION||''),{cache:'no-store'});
-  if(!response.ok)throw new Error('Không tải được snapshot ('+response.status+').');
-  const snapshot=await response.json();
-  const item=snapshot?.data?.[selectedSymbol]?.[selectedTf];
-  if(!item||!Array.isArray(item.candles)||!item.candles.length)throw new Error('Chưa có snapshot cho '+selectedSymbol+' '+selectedTf+'.');
+  const query=new URLSearchParams({symbol:selectedSymbol,timeframe:selectedTf,limit:'500'});
+  const response=await fetch(base+'/api/paper/chart?'+query.toString(),{cache:'no-store'});
+  if(!response.ok){let message='HTTP '+response.status;try{const data=await response.json();if(data.detail)message=data.detail;}catch(_){}throw new Error(message);}
+  const data=await response.json();
   if(symbol!==selectedSymbol||$('tf').value!==selectedTf)return;
-  bars=item.candles.map(c=>({time:Number(c.time),open:Number(c.open),high:Number(c.high),low:Number(c.low),close:Number(c.close)}));
-  rsiPoints=(item.rsi||[]).map(p=>({time:Number(p.time),value:Number(p.value)})).filter(p=>Number.isFinite(p.time)&&Number.isFinite(p.value));
+  if(!Array.isArray(data.candles)||!data.candles.length)throw new Error('Không có dữ liệu nến.');
+  bars=data.candles.map(c=>({time:Number(c.time),open:Number(c.open),high:Number(c.high),low:Number(c.low),close:Number(c.close)}));
+  rsiPoints=(data.rsi||[]).map(p=>({time:Number(p.time),value:Number(p.value)})).filter(p=>Number.isFinite(p.time)&&Number.isFinite(p.value));
   price=bars[bars.length-1].close;
-  $('entryPrice').value=fmt(price);$('slPrice').value=fmt(price-cfg[symbol][1]*12);$('tpPrice').value=fmt(price+cfg[symbol][1]*20);
-  candles.setData(bars);rsi.setData(rsiPoints);chart.timeScale().fitContent();rsiChart.timeScale().fitContent();header();createLines();
-  text('feedState','SNAPSHOT · '+item.trading_day+' · '+snapshot.timezone);
-  const ss=$('serverState');if(ss){ss.classList.remove('offline');ss.classList.add('online');ss.title='Dữ liệu nến thực tế được snapshot tự động';ss.innerHTML='<i></i><span>DATA</span>';}
-  text('requestState','DỮ LIỆU THỰC TẾ · NGÀY '+item.trading_day+' · PAPER LOCAL');
+  if(resetLevels||!Number($('entryPrice').value)){
+   $('entryPrice').value=fmt(price);$('slPrice').value=fmt(price-cfg[symbol][1]*12);$('tpPrice').value=fmt(price+cfg[symbol][1]*20);
+  }
+  candles.setData(bars);rsi.setData(rsiPoints);
+  if(resetLevels){chart.timeScale().fitContent();rsiChart.timeScale().fitContent();}
+  header();createLines();
+  const latest=new Date(data.latest_time*1000).toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh'});
+  text('feedState','LIVE DATA · '+data.count+' NẾN · '+latest);
+  const ss=$('serverState');if(ss){ss.classList.remove('offline');ss.classList.add('online');ss.title='Dữ liệu nến đồng bộ trực tiếp qua MongoDB';ss.innerHTML='<i></i><span>LIVE</span>';}
+  text('requestState','MONGO LIVE FEED · '+selectedSymbol+' '+selectedTf+' · PAPER LOCAL');
  }catch(error){
-  bars=[];rsiPoints=[];candles.setData([]);rsi.setData([]);text('feedState','KHÔNG CÓ SNAPSHOT');text('requestState',error.message+' Hãy thử tải lại sau khi hệ thống cập nhật dữ liệu.');
+  if(!bars.length){candles.setData([]);rsi.setData([]);}
+  text('feedState','MẤT KẾT NỐI DỮ LIỆU');
+  if(!bars.length)text('requestState',error.message+' · Kiểm tra MongoDB và MT5 Connector.');
   const ss=$('serverState');if(ss){ss.classList.remove('online');ss.classList.add('offline');ss.title=error.message;ss.innerHTML='<i></i><span>OFFLINE</span>';}
  }
 }
@@ -1309,7 +1318,7 @@ async function enterIndex(){
 authButton.addEventListener('click',enterIndex);
 authInput.addEventListener('keydown',e=>{if(e.key==='Enter')enterIndex();});
 
-restore();init();bind();renderPositions();renderHistory();clock();seed();setInterval(clock,1000);
+restore();init();bind();renderPositions();renderHistory();clock();seed(true);setInterval(clock,1000);setInterval(()=>seed(false),15000);
 document.querySelectorAll('dialog').forEach(d=>d.addEventListener('click',e=>{if(e.target===d)d.close();}));
 
 </script>
