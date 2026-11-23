@@ -4,7 +4,7 @@
 //| Chart feed only (no trade execution). Complements TRADE_V9.      |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.14"
+#property version "1.15"
 
 #include <Trade\Trade.mqh>
 
@@ -131,6 +131,7 @@ bool HttpRequest(string method,string path,string body,string &response,int &sta
 {
    char data[], result[];
    string headers = "X-API-Key: " + ApiKey + "\r\nContent-Type: application/json\r\n";
+   string url = ServerBaseURL + path;
    if(body != "")
    {
       StringToCharArray(body,data,0,WHOLE_ARRAY,CP_UTF8);
@@ -140,10 +141,11 @@ bool HttpRequest(string method,string path,string body,string &response,int &sta
    else ArrayResize(data,0);
    string responseHeaders;
    ResetLastError();
-   status = WebRequest(method,ServerBaseURL+path,headers,5000,data,result,responseHeaders);
+   status = WebRequest(method,url,headers,5000,data,result,responseHeaders);
    if(status == -1)
    {
-      Print("[SERVER] WebRequest failed: ",GetLastError(),
+      int err = GetLastError();
+      Print("[SERVER] WebRequest failed: err=",err," url=",url,
             ". Add server URL to MT5 Tools > Options > Expert Advisors > Allow WebRequest.");
       response="";
       return false;
@@ -594,8 +596,12 @@ bool PublishCandleBatch(string symbol, string tfText, ENUM_TIMEFRAMES period)
    string response; int status;
    if(!HttpRequest("POST","/api/mt5/candles",body,response,status))
    {
-      Print("[CHART FEED] Upload failed for ",symbol," ",tfText,". HTTP=",status," response=",response);
-      return false;
+      Sleep(100);
+      if(!HttpRequest("POST","/api/mt5/candles",body,response,status))
+      {
+         Print("[CHART FEED] Upload failed for ",symbol," ",tfText,". HTTP=",status," response=",response);
+         return false;
+      }
    }
    return true;
 }
@@ -749,7 +755,7 @@ int OnInit()
       return INIT_PARAMETERS_INCORRECT;
    }
    EventSetTimer(1);
-   Print("ServerConnector v1.14 initialized. Chart feed + AI OOP V8 sync only. ",
+   Print("ServerConnector v1.15 initialized. Chart feed + AI OOP V8 sync only. ",
          "Add ",ServerBaseURL," to MT5 WebRequest allowlist.");
    return INIT_SUCCEEDED;
 }
