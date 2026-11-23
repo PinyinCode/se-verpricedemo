@@ -1193,7 +1193,7 @@ function init(){
 function seed(){
  const step=cfg[symbol][1],now=Math.floor(Date.now()/(tf*60000))*(tf*60);let p=cfg[symbol][0];bars=[];
  for(let i=180;i>=0;i--){const o=p;p=Math.max(step,p+(Math.random()-.5)*step*4);bars.push({time:now-i*tf*60,open:o,high:Math.max(o,p)+Math.random()*step,low:Math.min(o,p)-Math.random()*step,close:p});}
- price=p;candles.setData(bars);rsiPoints=bars.map((b,i)=>({time:b.time,value:50+Math.sin(i/8)*17+(Math.random()-.5)*6}));rsi.setData(rsiPoints);chart.timeScale().fitContent();rsiChart.timeScale().fitContent();header();createLines();
+ price=p;$('entryPrice').value=fmt(price);$('slPrice').value=fmt(price-cfg[symbol][1]*12);$('tpPrice').value=fmt(price+cfg[symbol][1]*20);candles.setData(bars);rsiPoints=bars.map((b,i)=>({time:b.time,value:50+Math.sin(i/8)*17+(Math.random()-.5)*6}));rsi.setData(rsiPoints);chart.timeScale().fitContent();rsiChart.timeScale().fitContent();header();createLines();
 }
 function header(){
  text('chartTitle',symbol+' · '+$('tf').value+' · PAPER');text('feedState','PAPER SIMULATION');text('positionCount',positions.length);
@@ -1229,7 +1229,7 @@ document.addEventListener('pointermove',e=>{if(!drag)return;const y=e.clientY-$(
 document.addEventListener('pointerup',()=>{if(drag){try{drag.line.releasePointerCapture(drag.pointerId);}catch(_){}drag=null;}});
 function renderPositions(){
  const open=positions.filter(p=>p.kind!=='PENDING'),pending=positions.filter(p=>p.kind==='PENDING');
- const row=(p)=>'<tr><td>'+p.symbol+'</td><td>DEMO</td><td>'+p.side+'</td><td>'+p.entry+'</td><td>'+p.sl+'</td><td>'+p.tp+'</td><td>—</td><td>LOCAL</td><td><button data-demo-close="'+positions.indexOf(p)+'">HỦY / ĐÓNG</button></td></tr>';
+ const row=(p)=>'<tr><td>'+p.symbol+'</td><td>DEMO</td><td>'+(p.kind==='PENDING'?p.side+' LIMIT':p.side)+'</td><td>'+p.entry+'</td><td>'+p.sl+'</td><td>'+p.tp+'</td><td>—</td><td>LOCAL</td><td><button data-demo-close="'+positions.indexOf(p)+'">HỦY / ĐÓNG</button></td></tr>';
  $('chartPositions').innerHTML=open.map(row).join('')||'<tr><td colspan="9" class="empty">Chưa có vị thế Demo</td></tr>';
  $('chartPendingOrders').innerHTML=pending.map(row).join('')||'<tr><td colspan="9" class="empty">Không có lệnh chờ Demo</td></tr>';
  text('openPositionsMeta',open.length+' vị thế');text('pendingOrdersMeta',pending.length+' lệnh chờ');text('positionsUpdated','Dữ liệu mô phỏng cục bộ');text('positionCount',positions.length);
