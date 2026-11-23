@@ -1212,10 +1212,9 @@ function demoRsi(data, period=14){
  }
  return out;
 }
-let historyPayload=null,historyCacheKey='',historyLoading=false;
+let historyPayload=null,historyLoading=false;
 async function seed(resetLevels=true,force=false){
  const selectedSymbol=symbol,selectedTf=$('tf').value;
- const cacheKey=selectedSymbol+'|'+selectedTf;
  if(historyLoading)return;
  historyLoading=true;
  try{
@@ -1254,7 +1253,10 @@ async function seed(resetLevels=true,force=false){
   const ss=$('serverState');
   if(ss){ss.classList.remove('online');ss.classList.add('offline');ss.title=String(err.message||err);ss.innerHTML='<i></i><span>NO DATA</span>';}
   text('requestState','LỖI TẢI DỮ LIỆU: '+String(err.message||err));
- }finally{historyLoading=false;}
+ }finally{
+  historyLoading=false;
+  if(symbol!==selectedSymbol||$('tf').value!==selectedTf)seed(true,false);
+ }
 }
 function header(){
  text('chartTitle',symbol+' · '+$('tf').value+' · PAPER');text('feedState','PAPER SIMULATION');text('positionCount',positions.length);
