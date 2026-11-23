@@ -380,7 +380,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Forex AI Server",
-    version="0.5.0",
+    version="0.5.1",
     description="Signal analysis and MT5 real-order bridge with runtime control panel.",
     lifespan=lifespan,
 )
@@ -785,7 +785,7 @@ def _settings_row_to_dict(row: sqlite3.Row) -> dict:
 
 @app.get("/api/settings")
 def get_settings():
-    """Public read: dashboard cần đọc trước khi hiển thị toggle."""
+    """Public read: dashboard và EA cần đọc cấu hình đồng bộ."""
     with db() as conn:
         row = conn.execute("SELECT * FROM settings WHERE id=1").fetchone()
         if row is None:
@@ -881,7 +881,7 @@ def get_commission_for_symbol(
     }
 
 
-# ---- Original signal endpoints ----
+# ---- Signal endpoints (2-path: GV direct trade + Dashboard display) ----
 
 def _get_latest_market_price(
     conn: sqlite3.Connection,
@@ -914,7 +914,12 @@ def _validate_limit_against_market(conn: sqlite3.Connection, payload: SignalIn) 
         raise HTTPException(status_code=422, detail="SELL_LIMIT yêu cầu Entry cao hơn giá hiện tại")
 
 
-def _insert_signal(conn: sqlite3.Connection, payload: SignalIn, source: str) -> dict:
+def _insert_signal(
+    conn: sqlite3.Connection,
+    payload: SignalIn,
+    source: str,
+    status: str = "logged",
+) -> dict:
     created = utc_now()
     signal_id = secrets.token_hex(12)
     conn.execute(
@@ -922,7 +927,7 @@ def _insert_signal(conn: sqlite3.Connection, payload: SignalIn, source: str) -> 
         "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (signal_id, payload.symbol, payload.timeframe, payload.direction, payload.order_type,
          payload.entry, payload.sl, payload.tp, payload.score, payload.risk_money, payload.requested_lot,
-         source, "pending", created),
+         source, status, created),
     )
     conn.execute(
         "INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
@@ -932,7 +937,7 @@ def _insert_signal(conn: sqlite3.Connection, payload: SignalIn, source: str) -> 
         "ok": True,
         "signal_id": signal_id,
         "order_type": payload.order_type,
-        "status": "pending",
+        "status": status,
         "created_at": created,
     }
 
@@ -949,11 +954,12 @@ def create_signal(payload: SignalIn):
             if existing:
                 return {"ok": True, "duplicate": True, "signal_id": existing["id"],
                         "status": existing["status"], "created_at": existing["created_at"]}
-        return _insert_signal(conn, payload, payload.source)
+        return _insert_signal(conn, payload, payload.source, status="logged")
 
 
 @app.post("/api/signals/realtime", dependencies=[Depends(require_key)])
 def create_realtime_signal(payload: SignalIn):
+    """Nhận tín hiệu realtime để hiển thị lên Dashboard; việc vào lệnh do EA đọc trực tiếp từ GV."""
     now_dt = datetime.now(timezone.utc).astimezone(_GMT7)
     now_ts = now_dt.timestamp()
     with db() as conn:
@@ -961,44 +967,7 @@ def create_realtime_signal(payload: SignalIn):
         s = _settings_row_to_dict(settings_row) if settings_row else {}
 
         if s.get("emergency_stop"):
-            return {"ok": True, "queued": False, "reason": "emergency_stop"}
-        if not s.get("auto_trade_enabled", True):
-            return {"ok": True, "queued": False, "reason": "auto_trade_disabled"}
-
-        news_status = evaluate_news_filter(s, now_ts=now_ts)
-        if news_status["blocked"]:
-            conn.execute(
-                "INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
-                ("signal_news_blocked",
-                 f"{payload.symbol} {payload.timeframe} {payload.direction} ({payload.source}) - {news_status.get('detail')}",
-                 utc_now()),
-            )
-            return {
-                "ok": True,
-                "queued": False,
-                "blocked_by_news": True,
-                "reason": news_status["reason"],
-                "detail": news_status.get("detail"),
-                "active_event": news_status.get("active_event"),
-            }
-
-        if s.get("time_filter_enabled", True):
-            start_h = int(s.get("trading_start_hour", 7))
-            end_h = int(s.get("trading_end_hour", 23))
-            cur_h = now_dt.hour
-            in_hours = (cur_h >= start_h and cur_h < end_h) if start_h <= end_h else (cur_h >= start_h or cur_h < end_h)
-            if not in_hours:
-                return {"ok": True, "queued": False, "reason": "outside_trading_hours"}
-
-        open_exposure = conn.execute("SELECT COUNT(*) FROM mt5_account_items").fetchone()[0]
-        pending_signals = conn.execute(
-            "SELECT COUNT(*) FROM signals WHERE status IN ('pending', 'claimed')"
-        ).fetchone()[0]
-        max_pos = int(s.get("max_positions", 3))
-        if open_exposure + pending_signals >= max_pos:
-            return {"ok": True, "queued": False, "reason": "max_positions_reached"}
-
-        _validate_limit_against_market(conn, payload)
+            return {"ok": True, "displayed": False, "reason": "emergency_stop"}
 
         if payload.source.startswith("div-"):
             existing = conn.execute(
@@ -1008,11 +977,31 @@ def create_realtime_signal(payload: SignalIn):
             if existing:
                 return {
                     "ok": True,
-                    "queued": False,
+                    "displayed": True,
                     "duplicate": True,
                     "signal_id": existing["id"],
                     "status": existing["status"],
                 }
+
+        news_status = evaluate_news_filter(s, now_ts=now_ts)
+        notes: list[str] = []
+        if not s.get("auto_trade_enabled", True):
+            notes.append("auto_trade_disabled")
+        if news_status["blocked"]:
+            notes.append(news_status.get("reason") or "news_blocked")
+            conn.execute(
+                "INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
+                ("signal_news_window",
+                 f"{payload.symbol} {payload.timeframe} {payload.direction} ({payload.source}) - {news_status.get('detail')}",
+                 utc_now()),
+            )
+        if s.get("time_filter_enabled", True):
+            start_h = int(s.get("trading_start_hour", 7))
+            end_h = int(s.get("trading_end_hour", 23))
+            cur_h = now_dt.hour
+            in_hours = (cur_h >= start_h and cur_h < end_h) if start_h <= end_h else (cur_h >= start_h or cur_h < end_h)
+            if not in_hours:
+                notes.append("outside_trading_hours")
 
         risk_money = float(s.get("risk_money", payload.risk_money))
         rr = float(s.get("reward_risk_ratio", 2.0))
@@ -1025,8 +1014,13 @@ def create_realtime_signal(payload: SignalIn):
             "risk_money": risk_money,
             "tp": tp_val,
         })
-        created = _insert_signal(conn, adjusted_payload, payload.source)
-        return {**created, "queued": True}
+        created = _insert_signal(conn, adjusted_payload, payload.source, status="displayed")
+        return {
+            **created,
+            "displayed": True,
+            "execution_mode": "direct_gv",
+            "filter_notes": notes,
+        }
 
 
 @app.post("/api/chart/order", dependencies=[Depends(require_key)])
@@ -1035,34 +1029,13 @@ def chart_order(payload: SignalIn):
         raise HTTPException(status_code=422, detail="Thiếu lot đã tính từ Risk và khoảng Entry-SL")
     with db() as conn:
         _validate_limit_against_market(conn, payload)
-        return _insert_signal(conn, payload, "web-chart")
+        return _insert_signal(conn, payload, "web-chart", status="pending")
 
 
 @app.get("/api/mt5/next", dependencies=[Depends(require_key)])
 def next_signal(consumer: str = Query(default="mt5", min_length=2, max_length=40)):
-    now = time.time()
-    with db() as conn:
-        conn.execute(
-            "UPDATE signals SET status='pending',claimed_by=NULL,claimed_at=NULL "
-            "WHERE status='claimed' AND claimed_at < ?",
-            (datetime.fromtimestamp(now - 45, timezone.utc).isoformat(),),
-        )
-        row = conn.execute(
-            "SELECT * FROM signals WHERE status='pending' ORDER BY created_at LIMIT 1"
-        ).fetchone()
-        if row is None:
-            return {"ok": True, "signal": None}
-        age = (datetime.now(timezone.utc) - datetime.fromisoformat(row["created_at"])).total_seconds()
-        if age > STALE_SECONDS:
-            conn.execute("UPDATE signals SET status='expired' WHERE id=?", (row["id"],))
-            return {"ok": True, "signal": None}
-        conn.execute(
-            "UPDATE signals SET status='claimed',claimed_by=?,claimed_at=? WHERE id=? AND status='pending'",
-            (consumer, utc_now(), row["id"]),
-        )
-        result = dict(row)
-        result.update(status="claimed", claimed_by=consumer)
-        return {"ok": True, "signal": result}
+    """EA nhận tín hiệu trực tiếp qua MT5 Global Variables để tránh vào lệnh trùng 2 đường."""
+    return {"ok": True, "signal": None, "mode": "direct_gv", "consumer": consumer}
 
 
 @app.post("/api/mt5/ack", dependencies=[Depends(require_key)])
@@ -1071,11 +1044,11 @@ def acknowledge(payload: AckIn):
     with db() as conn:
         cur = conn.execute(
             "UPDATE signals SET status='completed',ack_at=?,ack_status=?,ack_message=? "
-            "WHERE id=? AND status='claimed'",
+            "WHERE id=? AND status IN ('claimed','pending','displayed','logged')",
             (now, payload.status, payload.message, payload.signal_id),
         )
         if cur.rowcount != 1:
-            raise HTTPException(status_code=404, detail="Không tìm thấy tín hiệu đang được nhận")
+            raise HTTPException(status_code=404, detail="Không tìm thấy tín hiệu cần xác nhận")
         conn.execute("INSERT INTO events(event_type,message,created_at) VALUES(?,?,?)",
                      ("mt5_ack", f"{payload.signal_id}: {payload.status} {payload.message}", now))
     return {"ok": True}
