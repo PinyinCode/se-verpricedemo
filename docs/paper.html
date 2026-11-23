@@ -1190,38 +1190,64 @@ function init(){
  bindCrosshair();
  new ResizeObserver(()=>{chart.applyOptions({width:$('priceChart').clientWidth,height:$('priceChart').clientHeight});rsiChart.applyOptions({width:$('rsiChart').clientWidth,height:$('rsiChart').clientHeight});placeLines();}).observe($('priceChart'));
 }
-async function seed(resetLevels=true){
+function demoRsi(data, period=14){
+ const out=[];let gains=0,losses=0;
+ for(let i=1;i<data.length;i++){
+  const d=data[i].close-data[i-1].close;
+  gains+=Math.max(d,0);losses+=Math.max(-d,0);
+  if(i>=period){
+   if(i>period){const old=data[i-period].close-data[i-period-1].close;gains-=Math.max(old,0);losses-=Math.max(-old,0);}
+   const rs=losses===0?100:gains/Math.max(losses,1e-12);
+   out.push({time:data[i].time,value:100-(100/(1+rs))});
+  }
+ }
+ return out;
+}
+function buildDemoBars(selectedSymbol, selectedTf){
+ const spec=cfg[selectedSymbol]||cfg.EURUSD;
+ const base=spec[0],step=spec[1],digits=spec[2];
+ const seconds=(selectedTf==='H1'?3600:900);
+ const now=Math.floor(Date.now()/1000),lastTime=Math.floor(now/seconds)*seconds;
+ const seedCode=[...selectedSymbol].reduce((n,ch)=>n+ch.charCodeAt(0),0);
+ const result=[];
+ for(let i=499;i>=0;i--){
+  const index=Math.floor(lastTime/seconds)-i;
+  const wave=Math.sin(index*.071+seedCode)*.9+Math.sin(index*.019+seedCode*.3)*.55+Math.sin(index*.31+seedCode*.7)*.18;
+  const prevWave=Math.sin((index-1)*.071+seedCode)*.9+Math.sin((index-1)*.019+seedCode*.3)*.55+Math.sin((index-1)*.31+seedCode*.7)*.18;
+  const open=base+prevWave*step*10;
+  let close=base+wave*step*10;
+  if(i===0){
+   const pulse=Math.sin(Date.now()/17000+seedCode)*step*1.1;
+   close+=pulse;
+  }
+  const wick=step*(.7+Math.abs(Math.sin(index*.43+seedCode))*.9);
+  const high=Math.max(open,close)+wick;
+  const low=Math.min(open,close)-wick*.83;
+  result.push({time:lastTime-i*seconds,open:Number(open.toFixed(digits)),high:Number(high.toFixed(digits)),low:Number(low.toFixed(digits)),close:Number(close.toFixed(digits))});
+ }
+ return result;
+}
+function seed(resetLevels=true){
  const selectedSymbol=symbol,selectedTf=$('tf').value;
  if(resetLevels){bars=[];rsiPoints=[];candles.setData([]);rsi.setData([]);}
- let base=String(window.FOREX_API_BASE||'');while(base.endsWith('/'))base=base.slice(0,-1);
- if(!base){text('feedState','CHƯA CẤU HÌNH API');return;}
- text('feedState','ĐANG ĐỒNG BỘ...');
- try{
-  const query=new URLSearchParams({symbol:selectedSymbol,timeframe:selectedTf,limit:'500'});
-  const response=await fetch(base+'/api/paper/chart?'+query.toString(),{cache:'no-store'});
-  if(!response.ok){let message='HTTP '+response.status;try{const data=await response.json();if(data.detail)message=data.detail;}catch(_){}throw new Error(message);}
-  const data=await response.json();
-  if(symbol!==selectedSymbol||$('tf').value!==selectedTf)return;
-  if(!Array.isArray(data.candles)||!data.candles.length)throw new Error('Không có dữ liệu nến.');
-  bars=data.candles.map(c=>({time:Number(c.time),open:Number(c.open),high:Number(c.high),low:Number(c.low),close:Number(c.close)}));
-  rsiPoints=(data.rsi||[]).map(p=>({time:Number(p.time),value:Number(p.value)})).filter(p=>Number.isFinite(p.time)&&Number.isFinite(p.value));
-  price=bars[bars.length-1].close;
-  if(resetLevels||!Number($('entryPrice').value)){
-   $('entryPrice').value=fmt(price);$('slPrice').value=fmt(price-cfg[symbol][1]*12);$('tpPrice').value=fmt(price+cfg[symbol][1]*20);
-  }
-  candles.setData(bars);rsi.setData(rsiPoints);
-  if(resetLevels){chart.timeScale().fitContent();rsiChart.timeScale().fitContent();}
-  header();createLines();
-  const latest=new Date(data.latest_time*1000).toLocaleString('vi-VN',{timeZone:'Asia/Ho_Chi_Minh'});
-  text('feedState','LIVE DATA · '+data.count+' NẾN · '+latest);
-  const ss=$('serverState');if(ss){ss.classList.remove('offline');ss.classList.add('online');ss.title='Dữ liệu nến đồng bộ trực tiếp qua MongoDB';ss.innerHTML='<i></i><span>LIVE</span>';}
-  text('requestState','MONGO LIVE FEED · '+selectedSymbol+' '+selectedTf+' · PAPER LOCAL');
- }catch(error){
-  if(!bars.length){candles.setData([]);rsi.setData([]);}
-  text('feedState','MẤT KẾT NỐI DỮ LIỆU');
-  if(!bars.length)text('requestState',error.message+' · Kiểm tra MongoDB và MT5 Connector.');
-  const ss=$('serverState');if(ss){ss.classList.remove('online');ss.classList.add('offline');ss.title=error.message;ss.innerHTML='<i></i><span>OFFLINE</span>';}
+ text('feedState','ĐANG TẠO DỮ LIỆU PAPER...');
+ const nextBars=buildDemoBars(selectedSymbol,selectedTf);
+ if(symbol!==selectedSymbol||$('tf').value!==selectedTf)return;
+ bars=nextBars;
+ rsiPoints=demoRsi(bars);
+ price=bars[bars.length-1].close;
+ if(resetLevels||!Number($('entryPrice').value)){
+  $('entryPrice').value=fmt(price);
+  $('slPrice').value=fmt(price-cfg[symbol][1]*12);
+  $('tpPrice').value=fmt(price+cfg[symbol][1]*20);
  }
+ candles.setData(bars);rsi.setData(rsiPoints);
+ if(resetLevels){chart.timeScale().fitContent();rsiChart.timeScale().fitContent();}
+ header();createLines();
+ text('feedState','PAPER SIMULATION · 500 NẾN');
+ const ss=$('serverState');
+ if(ss){ss.classList.remove('offline');ss.classList.add('online');ss.title='Dữ liệu mô phỏng cục bộ, không phải giá thị trường';ss.innerHTML='<i></i><span>DEMO</span>';}
+ text('requestState','DỮ LIỆU GIẢ LẬP · '+selectedSymbol+' '+selectedTf+' · KHÔNG KẾT NỐI API');
 }
 function header(){
  text('chartTitle',symbol+' · '+$('tf').value+' · PAPER');text('feedState','PAPER SIMULATION');text('positionCount',positions.length);
@@ -1300,22 +1326,12 @@ function bind(){
 function clock(){text('clockGMT7',new Intl.DateTimeFormat('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date()));}
 
 const authInput=$('liveApiKey'),authButton=$('enterLive'),authStatus=$('liveAuthStatus');
-try{authInput.value=localStorage.getItem('chartApiKey')||'';}catch(_){}
-async function enterIndex(){
- const key=authInput.value.trim();
- if(!key){authStatus.textContent='Vui lòng nhập API key.';authStatus.style.color='var(--red)';return;}
- const base=String(window.FOREX_API_BASE||'').replace(/\/+$/,'');
- if(!base){authStatus.textContent='Chưa cấu hình máy chủ xác thực.';authStatus.style.color='var(--red)';return;}
- authButton.disabled=true;authStatus.textContent='Đang xác thực...';authStatus.style.color='var(--muted)';
- try{
-  const response=await fetch(base+'/api/auth/check',{cache:'no-store',headers:{'X-API-Key':key}});
-  if(!response.ok){let msg='API key không hợp lệ.';try{const data=await response.json();if(data.detail)msg=data.detail;}catch(_){}authStatus.textContent=msg;authStatus.style.color='var(--red)';return;}
-  try{localStorage.setItem('chartApiKey',key);}catch(_){}
-  authStatus.textContent='Hợp lệ · đang mở Index...';authStatus.style.color='var(--green)';
-  location.replace('./index.html');
- }catch(_){authStatus.textContent='Không thể kết nối máy chủ xác thực.';authStatus.style.color='var(--red)';}
- finally{authButton.disabled=false;}
+authInput.value='';
+function enterIndex(){
+ authStatus.textContent='Paper Demo không mở giao dịch thật. API key không được gửi hoặc lưu tại trình duyệt.';
+ authStatus.style.color='var(--amber)';
 }
+authInput.placeholder='API key không khả dụng trong Paper Demo';
 authButton.addEventListener('click',enterIndex);
 authInput.addEventListener('keydown',e=>{if(e.key==='Enter')enterIndex();});
 
