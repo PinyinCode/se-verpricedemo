@@ -128,7 +128,7 @@ bool IsInTradeTime(datetime signalTime);
 
 bool GetGvBool(string name, bool defVal);
 int GetGvInt(string name, int defVal);
-SHudConfig GetHudConfig();
+
 
 int GetSymbolTFIndex(string s, ENUM_TIMEFRAMES tf);
 int InitSymTF(string sym, ENUM_TIMEFRAMES tf, string tfStr);
