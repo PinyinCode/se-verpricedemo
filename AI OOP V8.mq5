@@ -4,14 +4,14 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026"
 #property link      "https://www.mql5.com"
-#property version   "1.04"
+#property version   "1.05"
 #property indicator_chart_window
 #property indicator_buffers 1
 #property indicator_plots   1
 #property indicator_type1   DRAW_NONE
 
 //+------------------------------------------------------------------+
-//| INPUT PARAMETERS (GIỮ THỜI GIAN QUÉT TRONG INPUT)                |
+//| INPUT PARAMETERS                                                 |
 //+------------------------------------------------------------------+
 string ExpiryDate = "2099.12.30";
 datetime expiry = StringToTime(ExpiryDate);
@@ -41,6 +41,14 @@ input int SignalExpirySeconds = 300;
 input int RTPrintCooldownSeconds = 60;
 input double RT_RetrackATRMultiplier = 0.3;
 input string ExcludeSymbols = "";
+
+// GỬI TÍN HIỆU REALTIME LÊN SERVER
+input group "=== Server Realtime Signal ==="
+input bool   EnableServerSend      = true;
+input string ServerSignalUrl       = "https://your-server.example.com/api/signals/realtime";
+input string ServerApiKey          = "";
+input int    ServerTimeoutMs       = 3000;
+input int    ServerResendSeconds   = 30;
 
 // TIMEZONE
 int g_serverToGMTOffset = 0;
@@ -111,6 +119,9 @@ int g_lastRTCount = 0;
 bool g_isNewsBlocked = false;
 datetime g_lastNewsCheckTime = 0;
 
+string g_lastSentSignalKey = "";
+datetime g_lastSentSignalTime = 0;
+
 // FORWARD DECLARATIONS
 void CalculateServerGMTOffset();
 datetime ServerTimeToGMT7(datetime serverTime);
@@ -128,7 +139,6 @@ bool IsInTradeTime(datetime signalTime);
 
 bool GetGvBool(string name, bool defVal);
 int GetGvInt(string name, int defVal);
-
 
 int GetSymbolTFIndex(string s, ENUM_TIMEFRAMES tf);
 int InitSymTF(string sym, ENUM_TIMEFRAMES tf, string tfStr);
@@ -162,6 +172,80 @@ void WriteStrongSignalToGV(string sym, string tfStr, string type, double entryPr
 void PublishScanSymbols(string symbols);
 void PublishTodaySignals();
 void CleanupInvalidRTTodaySignals();
+
+string EscapeJson(string s)
+{
+   StringReplace(s, "\\", "\\\\");
+   StringReplace(s, "\"", "\\\"");
+   StringReplace(s, "\r", "\\r");
+   StringReplace(s, "\n", "\\n");
+   return s;
+}
+
+void SendRealtimeSignalToServer(string sym, string tfStr, string side, string divType, bool isStrong, double entryPrice, double slPrice, double refPrice1, double refPrice2, double volRatio, datetime signalTime, string signalKey)
+{
+   if(!EnableServerSend || ServerSignalUrl == "") return;
+
+   datetime now = TimeCurrent();
+   if(signalKey == g_lastSentSignalKey && (now - g_lastSentSignalTime) < MathMax(1, ServerResendSeconds))
+      return;
+
+   int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
+   if(digits <= 0) digits = 5;
+
+   double bid = SymbolInfoDouble(sym, SYMBOL_BID);
+   double ask = SymbolInfoDouble(sym, SYMBOL_ASK);
+   double point = SymbolInfoDouble(sym, SYMBOL_POINT);
+   double spreadPoints = (point > 0 && ask >= bid) ? ((ask - bid) / point) : 0.0;
+
+   string payload = StringFormat(
+      "{\"source\":\"RSI_Divergence_Realtime\",\"mode\":\"realtime\",\"symbol\":\"%s\",\"timeframe\":\"%s\",\"side\":\"%s\",\"div_type\":\"%s\",\"is_strong\":%s,\"entry_price\":%s,\"sl_price\":%s,\"ref_price_1\":%s,\"ref_price_2\":%s,\"volume_ratio\":%.4f,\"spread_points\":%.1f,\"signal_time_server\":%d,\"signal_time_gmt7\":%d,\"sent_at\":%d,\"signal_key\":\"%s\",\"account_login\":%d,\"account_server\":\"%s\"}",
+      EscapeJson(sym),
+      EscapeJson(tfStr),
+      EscapeJson(side),
+      EscapeJson(divType),
+      isStrong ? "true" : "false",
+      DoubleToString(entryPrice, digits),
+      DoubleToString(slPrice, digits),
+      DoubleToString(refPrice1, digits),
+      DoubleToString(refPrice2, digits),
+      volRatio,
+      spreadPoints,
+      (int)signalTime,
+      (int)ServerTimeToGMT7(signalTime),
+      (int)now,
+      EscapeJson(signalKey),
+      (int)AccountInfoInteger(ACCOUNT_LOGIN),
+      EscapeJson(AccountInfoString(ACCOUNT_SERVER))
+   );
+
+   char postData[];
+   int bodyLen = StringToCharArray(payload, postData, 0, WHOLE_ARRAY, CP_UTF8);
+   if(bodyLen > 0)
+      ArrayResize(postData, bodyLen - 1);
+
+   string headers = "Content-Type: application/json\r\n";
+   if(ServerApiKey != "")
+      headers += "X-API-Key: " + ServerApiKey + "\r\n";
+
+   char result[];
+   string resultHeaders = "";
+   ResetLastError();
+   int httpCode = WebRequest("POST", ServerSignalUrl, headers, ServerTimeoutMs, postData, result, resultHeaders);
+
+   if(httpCode >= 200 && httpCode < 300)
+   {
+      g_lastSentSignalKey = signalKey;
+      g_lastSentSignalTime = now;
+      Print("SERVER RT SIGNAL SENT [HTTP ", httpCode, "]: ", signalKey);
+   }
+   else
+   {
+      int err = GetLastError();
+      string respStr = (ArraySize(result) > 0) ? CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8) : "";
+      Print("SERVER RT SIGNAL FAILED [HTTP ", httpCode, ", err=", err, "]: ", signalKey, " | ", respStr);
+   }
+}
 
 //+------------------------------------------------------------------+
 //| DASHBOARD HUD CONFIG (READ FROM GLOBAL VARIABLES)                |
@@ -198,7 +282,7 @@ SHudConfig GetHudConfig()
 }
 
 //+------------------------------------------------------------------+
-//| TIMEZONE & NEWS (THỜI GIAN QUÉT DÙNG INPUT CỦA INDICATOR)       |
+//| TIMEZONE & NEWS                                                  |
 //+------------------------------------------------------------------+
 void CalculateServerGMTOffset()
 {
@@ -1031,6 +1115,8 @@ int OnInit()
    g_lastRTPrintTime = g_lastRTCount = 0;
    g_isNewsBlocked = false;
    g_lastNewsCheckTime = 0;
+   g_lastSentSignalKey = "";
+   g_lastSentSignalTime = 0;
    ArrayResize(g_todaySignals, 0);
    g_todaySignalCount = 0;
    CleanupOldSignals();
@@ -1041,7 +1127,7 @@ int OnInit()
    if(tfList == "") tfList = "NONE!";
 
    Print("═══════════════════════════════════════════");
-   Print("RSI Divergence Realtime v1.04");
+   Print("RSI Divergence Realtime v1.05");
    Print("   Timeframes: ", tfList);
    Print("═══════════════════════════════════════════");
 
@@ -1548,6 +1634,12 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   if(gmt7Time >= todayStartGMT7)
                      AddTodaySignal(sym, tfStr, "BEAR", "Reg", "RT", lastHighTime, timeAtMaxHigh, lastHighPrice, rtMaxHigh, lastHighRSI, rsiAtMaxHigh);
 
+                  if(timeAtMaxHigh >= g_initTime && IsNewsSafe())
+                  {
+                     string sigKey = sym + "|" + tfStr + "|SELL|Reg|" + IntegerToString(timeAtMaxHigh);
+                     SendRealtimeSignalToServer(sym, tfStr, "SELL", "REG", isStrong, currentPrice, rtMaxHigh, lastHighPrice, rtMaxHigh, peakVolRatio, timeAtMaxHigh, sigKey);
+                  }
+
                   if(isStrong && timeAtMaxHigh >= g_initTime && IsNewsSafe() && shouldTrack && IsValidSLForDirection("SELL", currentPrice, rtMaxHigh))
                   {
                      WriteStrongSignalToGV(sym, tfStr, "SELL", currentPrice, rtMaxHigh, rtMaxHigh, lastHighPrice, true, "REG", timeAtMaxHigh);
@@ -1608,14 +1700,20 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   if(gmt7Time >= todayStartGMT7)
                      AddTodaySignal(sym, tfStr, "BEAR", "Hid", "RT", lastHighTime, timeAtMaxRSI, lastHighPrice, priceAtMaxRSI, lastHighRSI, rtMaxRSI);
 
+                  double slHidBear = MathMax(lastHighPrice, priceAtMaxRSI);
+                  if(timeAtMaxRSI >= g_initTime && IsNewsSafe())
+                  {
+                     string sigKey = sym + "|" + tfStr + "|SELL|Hid|" + IntegerToString(timeAtMaxRSI);
+                     SendRealtimeSignalToServer(sym, tfStr, "SELL", "HID", isStrong, currentPrice, slHidBear, lastHighPrice, priceAtMaxRSI, peakVolRatio, timeAtMaxRSI, sigKey);
+                  }
+
                   if(isStrong && timeAtMaxRSI >= g_initTime && IsNewsSafe() && shouldTrack)
                   {
-                     double sl = MathMax(lastHighPrice, priceAtMaxRSI);
-                     if(IsValidSLForDirection("SELL", currentPrice, sl))
+                     if(IsValidSLForDirection("SELL", currentPrice, slHidBear))
                      {
-                        WriteStrongSignalToGV(sym, tfStr, "SELL", currentPrice, sl, lastHighPrice, lastHighPrice, true, "HID", timeAtMaxRSI);
+                        WriteStrongSignalToGV(sym, tfStr, "SELL", currentPrice, slHidBear, lastHighPrice, lastHighPrice, true, "HID", timeAtMaxRSI);
                         string sigKey = sym + "|" + tfStr + "|SELL|Hid|" + IntegerToString(timeAtMaxRSI);
-                        PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "SELL", "Hid", currentPrice, sl, timeAtMaxRSI, sigKey);
+                        PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "SELL", "Hid", currentPrice, slHidBear, timeAtMaxRSI, sigKey);
                      }
                   }
 
@@ -1696,6 +1794,12 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   if(gmt7Time >= todayStartGMT7)
                      AddTodaySignal(sym, tfStr, "BULL", "Reg", "RT", lastLowTime, timeAtMinLow, lastLowPrice, rtMinLow, lastLowRSI, rsiAtMinLow);
 
+                  if(timeAtMinLow >= g_initTime && IsNewsSafe())
+                  {
+                     string sigKey = sym + "|" + tfStr + "|BUY|Reg|" + IntegerToString(timeAtMinLow);
+                     SendRealtimeSignalToServer(sym, tfStr, "BUY", "REG", isStrong, currentPrice, rtMinLow, lastLowPrice, rtMinLow, troughVolRatio, timeAtMinLow, sigKey);
+                  }
+
                   if(isStrong && timeAtMinLow >= g_initTime && IsNewsSafe() && shouldTrack && IsValidSLForDirection("BUY", currentPrice, rtMinLow))
                   {
                      WriteStrongSignalToGV(sym, tfStr, "BUY", currentPrice, rtMinLow, lastHighPrice, rtMinLow, true, "REG", timeAtMinLow);
@@ -1756,14 +1860,20 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   if(gmt7Time >= todayStartGMT7)
                      AddTodaySignal(sym, tfStr, "BULL", "Hid", "RT", lastLowTime, timeAtMinRSI, lastLowPrice, priceAtMinRSI, lastLowRSI, rtMinRSI);
 
+                  double slHidBull = MathMin(lastLowPrice, priceAtMinRSI);
+                  if(timeAtMinRSI >= g_initTime && IsNewsSafe())
+                  {
+                     string sigKey = sym + "|" + tfStr + "|BUY|Hid|" + IntegerToString(timeAtMinRSI);
+                     SendRealtimeSignalToServer(sym, tfStr, "BUY", "HID", isStrong, currentPrice, slHidBull, lastLowPrice, priceAtMinRSI, troughVolRatio, timeAtMinRSI, sigKey);
+                  }
+
                   if(isStrong && timeAtMinRSI >= g_initTime && IsNewsSafe() && shouldTrack)
                   {
-                     double sl = MathMin(lastLowPrice, priceAtMinRSI);
-                     if(IsValidSLForDirection("BUY", currentPrice, sl))
+                     if(IsValidSLForDirection("BUY", currentPrice, slHidBull))
                      {
-                        WriteStrongSignalToGV(sym, tfStr, "BUY", currentPrice, sl, lastHighPrice, lastLowPrice, true, "HID", timeAtMinRSI);
+                        WriteStrongSignalToGV(sym, tfStr, "BUY", currentPrice, slHidBull, lastHighPrice, lastLowPrice, true, "HID", timeAtMinRSI);
                         string sigKey = sym + "|" + tfStr + "|BUY|Hid|" + IntegerToString(timeAtMinRSI);
-                        PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "BUY", "Hid", currentPrice, sl, timeAtMinRSI, sigKey);
+                        PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "BUY", "Hid", currentPrice, slHidBull, timeAtMinRSI, sigKey);
                      }
                   }
 
