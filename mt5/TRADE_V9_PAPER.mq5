@@ -5,7 +5,7 @@
 //| Tự tính SL/TP/Lot, chặn tin ±N phút, tự trailing/BE, cache local.|
 //+------------------------------------------------------------------+
 #property strict
-#property version "3.19"
+#property version "3.20"
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
@@ -2027,7 +2027,7 @@ int OnInit()
    PollCommissions();
 
    EventSetTimer(1);
-   Print("[V9] Started v3.19 DIRECT-INDICATOR + MANUAL HUB. magic=", MagicNumber,
+   Print("[V9] Started v3.20 DIRECT-INDICATOR + MANUAL HUB. magic=", MagicNumber,
          " | AutoTrade=", g_settings.auto_trade_enabled ? "ON" : "OFF",
          " | Trailing=", g_settings.trailing_enabled ? "ON" : "OFF",
          " | NewsWindow=-", g_settings.news_block_before_min, "m/+", g_settings.news_block_after_min, "m",
