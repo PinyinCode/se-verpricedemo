@@ -1636,6 +1636,25 @@ rsiChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
 
 let pendingSltpChange = null;
 
+function applyOptimisticPositionUpdate(ticket, newSl, newTp) {
+  const tStr = String(ticket);
+  chartOpenPositions = (chartOpenPositions || []).map(p => {
+    if (String(p.ticket ?? p.id ?? '') !== tStr) return p;
+    return { ...p, sl: Number(newSl) || 0, tp: Number(newTp) || 0 };
+  });
+  renderRealLines();
+}
+
+function applyOptimisticPendingUpdate(ticket, newEntry, newSl, newTp) {
+  const tStr = String(ticket);
+  chartPendingOrders = (chartPendingOrders || []).map(o => {
+    if (String(o.ticket ?? o.id ?? '') !== tStr) return o;
+    const val = Number(newEntry) || 0;
+    return { ...o, entry: val, price: val, open_price: val, sl: Number(newSl) || 0, tp: Number(newTp) || 0 };
+  });
+  renderRealLines();
+}
+
 function findOpenPositionForSymbol() {
   const sym = String($('symbol').value || '').toUpperCase();
   return (chartOpenPositions || []).find(p => String(p.symbol || '').toUpperCase() === sym);
@@ -1672,8 +1691,11 @@ function proposeSltpChange(key, oldValue, newValue) {
 
 function rollbackPendingSltp() {
   if (!pendingSltpChange) return;
-  const id = pendingSltpChange.rollbackKey === 'sl' ? 'slPrice' : 'tpPrice';
-  $(id).value = Number(pendingSltpChange.rollbackValue).toFixed(mt5Digits);
+  if (pendingSltpChange.rollbackKey) {
+    const id = pendingSltpChange.rollbackKey === 'sl' ? 'slPrice' : 'tpPrice';
+    $(id).value = Number(pendingSltpChange.rollbackValue).toFixed(mt5Digits);
+  }
+  applyOptimisticPositionUpdate(pendingSltpChange.ticket, pendingSltpChange.oldSl, pendingSltpChange.oldTp);
   pendingSltpChange = null;
   setLevelLines();
 }
@@ -1689,12 +1711,14 @@ $('cdOk').addEventListener('click', async () => {
     $('tradeSettingsDialog').showModal();
     return;
   }
+  const changeRef = { ...pendingSltpChange };
   const payload = {
-    ticket: pendingSltpChange.ticket, symbol: pendingSltpChange.symbol,
-    old_sl: pendingSltpChange.oldSl, old_tp: pendingSltpChange.oldTp,
-    new_sl: pendingSltpChange.newSl, new_tp: pendingSltpChange.newTp,
+    ticket: changeRef.ticket, symbol: changeRef.symbol,
+    old_sl: changeRef.oldSl, old_tp: changeRef.oldTp,
+    new_sl: changeRef.newSl, new_tp: changeRef.newTp,
   };
   $('confirmSltpDialog').close();
+  applyOptimisticPositionUpdate(changeRef.ticket, changeRef.newSl, changeRef.newTp);
   $('requestState').textContent = 'Đang gửi yêu cầu sửa SL/TP...';
   try {
     const r = await apiFetch(API_BASE + '/api/mt5/modify-sltp', {
@@ -1702,11 +1726,12 @@ $('cdOk').addEventListener('click', async () => {
     });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
-    $('requestState').textContent = 'Đã gửi yêu cầu sửa SL/TP · chờ MT5 xác nhận';
+    $('requestState').textContent = 'Đã cập nhật SL/TP mới · chờ MT5 xác nhận';
     pendingSltpChange = null;
   } catch (e) {
     $('requestState').textContent = 'Không gửi được yêu cầu sửa SL/TP: ' + e.message;
-    rollbackPendingSltp();
+    applyOptimisticPositionUpdate(changeRef.ticket, changeRef.oldSl, changeRef.oldTp);
+    pendingSltpChange = null;
   }
 });
 
@@ -1768,6 +1793,7 @@ let pendingPendingChange = null;
 function clearRealLines() {
   realLineEls.forEach(x => { try { x.el.remove(); } catch (_) {} });
   realLineEls = [];
+  realOverlay.replaceChildren();
 }
 
 function renderRealLines() {
@@ -1786,6 +1812,7 @@ function renderRealLines() {
     const el = document.createElement('div');
     el.className = 'real-line ' + type;
     const isPendingOrder = Boolean(payload && payload.kind === 'pending');
+    const ticketId = String((payload && payload.data && (payload.data.ticket ?? payload.data.id)) || '');
     const canDragReal = !realSltpLocked && (key === 'sl' || key === 'tp' || (key === 'entry' && isPendingOrder));
     if (realSltpLocked && (key === 'sl' || key === 'tp' || isPendingOrder)) {
       el.classList.add('locked');
@@ -1793,6 +1820,7 @@ function renderRealLines() {
     el.style.top = y + 'px';
     el.dataset.type = type;
     el.dataset.key = key || '';
+    el.dataset.ticket = ticketId;
     el.dataset.price = String(price);
     el.dataset.side = side || '';
     const span = document.createElement('span');
@@ -1801,18 +1829,24 @@ function renderRealLines() {
 
     if (canDragReal) {
       const prefix = key === 'entry'
-        ? `#${String(payload.data.ticket ?? payload.data.id ?? '')} ${side} LIMIT `
-        : `#${String(payload.data.ticket ?? payload.data.id ?? '')} ${isPendingOrder ? 'P-' : ''}${key.toUpperCase()} `;
+        ? `#${ticketId} ${side} LIMIT `
+        : `#${ticketId} ${isPendingOrder ? 'P-' : ''}${key.toUpperCase()} `;
 
       el.addEventListener('pointerdown', ev => {
         if (realSltpLocked) return;
         ev.preventDefault();
         ev.stopPropagation();
+        realLineEls.forEach(item => {
+          if (item.el !== el && item.key === key && item.el.dataset.ticket === ticketId) {
+            item.el.style.display = 'none';
+          }
+        });
         activeRealDragItem = {
           el,
           span,
           payload,
           key,
+          ticketId,
           prefix,
           startPrice: Number(price),
           currentPrice: Number(price),
@@ -1841,6 +1875,7 @@ function renderRealLines() {
     marker.type = 'button';
     marker.className = 'real-entry-marker ' + (direction === 'BUY' ? 'buy' : 'sell') + (kind === 'pending' ? ' pending' : '');
     marker.dataset.price = String(entry);
+    marker.dataset.ticket = String(data.ticket ?? data.id ?? '');
     marker.textContent = direction === 'BUY' ? '▲ BUY' : '▼ SELL';
     marker.title = 'Xem chi tiết lệnh #' + String(data.ticket ?? data.id ?? '');
     marker.style.cssText = 'position:absolute;left:' + (10 + (index % 4) * 62) + 'px;top:' + Math.max(2, y - 11) + 'px;z-index:12;padding:3px 6px;border-radius:5px;border:1px solid ' + (direction === 'BUY' ? '#218765' : '#a44758') + ';background:' + (direction === 'BUY' ? 'rgba(18,92,68,.96)' : 'rgba(111,39,54,.96)') + ';color:#fff;font-size:10px;font-weight:800;line-height:14px;cursor:pointer;white-space:nowrap;pointer-events:auto;';
@@ -1983,11 +2018,13 @@ function updateRealDragAtClientY(clientY) {
   const rect = $('priceChart').getBoundingClientRect();
   const clampedY = Math.max(0, Math.min(rect.height, clientY - rect.top));
   item.el.style.top = clampedY + 'px';
+  item.el.dataset.price = String(item.currentPrice);
 
   const rawPrice = candleSeries.coordinateToPrice(clampedY);
   if (rawPrice == null || !Number.isFinite(rawPrice)) return;
   const price = Math.max(0, Number(rawPrice));
   item.currentPrice = price;
+  item.el.dataset.price = String(price);
   item.span.textContent = item.prefix + price.toFixed(mt5Digits);
 }
 
@@ -2070,13 +2107,15 @@ $('cpOk').addEventListener('click', async () => {
     $('tradeSettingsDialog').showModal();
     return;
   }
+  const changeRef = { ...pendingPendingChange };
   const payload = {
-    ticket: pendingPendingChange.ticket, symbol: pendingPendingChange.symbol,
-    order_type: pendingPendingChange.order_type,
-    old_entry: pendingPendingChange.oldEntry, old_sl: pendingPendingChange.oldSl, old_tp: pendingPendingChange.oldTp,
-    new_entry: pendingPendingChange.newEntry, new_sl: pendingPendingChange.newSl, new_tp: pendingPendingChange.newTp,
+    ticket: changeRef.ticket, symbol: changeRef.symbol,
+    order_type: changeRef.order_type,
+    old_entry: changeRef.oldEntry, old_sl: changeRef.oldSl, old_tp: changeRef.oldTp,
+    new_entry: changeRef.newEntry, new_sl: changeRef.newSl, new_tp: changeRef.newTp,
   };
   $('confirmPendingDialog').close();
+  applyOptimisticPendingUpdate(changeRef.ticket, changeRef.newEntry, changeRef.newSl, changeRef.newTp);
   $('requestState').textContent = 'Đang gửi yêu cầu sửa lệnh chờ...';
   try {
     const r = await apiFetch(API_BASE + '/api/mt5/modify-pending', {
@@ -2084,13 +2123,13 @@ $('cpOk').addEventListener('click', async () => {
     });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
-    $('requestState').textContent = 'Đã gửi yêu cầu sửa lệnh chờ · chờ MT5 xác nhận';
+    $('requestState').textContent = 'Đã cập nhật lệnh chờ mới · chờ MT5 xác nhận';
     pendingPendingChange = null;
   } catch (e) {
     $('requestState').textContent = 'Không gửi được yêu cầu sửa lệnh chờ: ' + e.message;
+    applyOptimisticPendingUpdate(changeRef.ticket, changeRef.oldEntry, changeRef.oldSl, changeRef.oldTp);
     pendingPendingChange = null;
   }
-  renderRealLines();
 });
 
 function openRealPopup(payload, clientX, clientY, readOnly = false) {
@@ -2618,6 +2657,7 @@ function renderChartPositions(positions, pendingOrders = []) {
 }
 
 async function refreshChartPositions() {
+  if (activeRealDragItem || pendingSltpChange || pendingPendingChange) return;
   try {
     const r = await apiFetch(API_BASE + '/api/dashboard', { cache: 'no-store' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
