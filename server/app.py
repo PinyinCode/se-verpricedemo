@@ -746,6 +746,11 @@ def chart_page():
     return FileResponse(BASE_DIR / "dashboard" / "chart.html")
 
 
+@app.get("/api/auth/check", dependencies=[Depends(require_key)])
+def auth_check():
+    return {"ok": True}
+
+
 @app.get("/api/health")
 def health():
     t0 = time.perf_counter()
