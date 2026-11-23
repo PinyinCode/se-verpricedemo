@@ -65,7 +65,8 @@ main{max-width:1500px;margin:auto;padding:12px;display:grid;gap:10px}.stats{disp
 'use strict';
 const $=id=>document.getElementById(id);
 const API_KEY_STORAGE='chartApiKey';
-const API_BASE=String(window.FOREX_API_BASE||'').replace(/\\/+$/,'');
+let API_BASE=String(window.FOREX_API_BASE||'');
+while(API_BASE.endsWith('/')) API_BASE=API_BASE.slice(0,-1);
 const savedApiKey=(()=>{try{return localStorage.getItem(API_KEY_STORAGE)||'';}catch(_){return '';}})();
 $('liveApiKey').value=savedApiKey;
 async function authenticateAndEnterLive(){
