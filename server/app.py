@@ -823,6 +823,65 @@ def create_signal(payload: SignalIn):
         return _insert_signal(conn, payload, payload.source)
 
 
+@app.post("/api/signals/realtime", dependencies=[Depends(require_key)])
+def create_realtime_signal(payload: SignalIn):
+    now_dt = datetime.now(timezone.utc).astimezone(timezone(timedelta(hours=7)))
+    with db() as conn:
+        settings_row = conn.execute("SELECT * FROM settings WHERE id=1").fetchone()
+        s = _settings_row_to_dict(settings_row) if settings_row else {}
+
+        if s.get("emergency_stop"):
+            return {"ok": True, "queued": False, "reason": "emergency_stop"}
+        if not s.get("auto_trade_enabled", True):
+            return {"ok": True, "queued": False, "reason": "auto_trade_disabled"}
+
+        if s.get("time_filter_enabled", True):
+            start_h = int(s.get("trading_start_hour", 7))
+            end_h = int(s.get("trading_end_hour", 23))
+            cur_h = now_dt.hour
+            in_hours = (cur_h >= start_h and cur_h < end_h) if start_h <= end_h else (cur_h >= start_h or cur_h < end_h)
+            if not in_hours:
+                return {"ok": True, "queued": False, "reason": "outside_trading_hours"}
+
+        open_exposure = conn.execute("SELECT COUNT(*) FROM mt5_account_items").fetchone()[0]
+        pending_signals = conn.execute(
+            "SELECT COUNT(*) FROM signals WHERE status IN ('pending', 'claimed')"
+        ).fetchone()[0]
+        max_pos = int(s.get("max_positions", 3))
+        if open_exposure + pending_signals >= max_pos:
+            return {"ok": True, "queued": False, "reason": "max_positions_reached"}
+
+        _validate_limit_against_market(conn, payload)
+
+        if payload.source.startswith("div-"):
+            existing = conn.execute(
+                "SELECT id, status, created_at FROM signals WHERE source=?",
+                (payload.source,),
+            ).fetchone()
+            if existing:
+                return {
+                    "ok": True,
+                    "queued": False,
+                    "duplicate": True,
+                    "signal_id": existing["id"],
+                    "status": existing["status"],
+                }
+
+        risk_money = float(s.get("risk_money", payload.risk_money))
+        rr = float(s.get("reward_risk_ratio", 2.0))
+        tp_val = payload.tp
+        if tp_val <= 0 and rr > 0:
+            sl_dist = abs(payload.entry - payload.sl)
+            tp_val = (payload.entry + sl_dist * rr) if payload.direction == "BUY" else (payload.entry - sl_dist * rr)
+
+        adjusted_payload = payload.model_copy(update={
+            "risk_money": risk_money,
+            "tp": tp_val,
+        })
+        created = _insert_signal(conn, adjusted_payload, payload.source)
+        return {**created, "queued": True}
+
+
 @app.post("/api/chart/order", dependencies=[Depends(require_key)])
 def chart_order(payload: SignalIn):
     if payload.requested_lot <= 0:
