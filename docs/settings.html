@@ -346,7 +346,16 @@ let newsEventsDraft = [];
 let hasNewsDraftEdit = false;
 let isSaving = false;
 let toastTimer = null;
+let settingsAccessGranted = false;
+let settingsPollingTimer = null;
 
+function stopSettingsPolling(message) {
+  settingsAccessGranted = false;
+  if (settingsPollingTimer) clearInterval(settingsPollingTimer);
+  settingsPollingTimer = null;
+  document.getElementById("statusDot").className = "status-dot offline";
+  document.getElementById("statusText").textContent = message || "Cần API key hợp lệ";
+}
 function getApiKey() {
   let key = (localStorage.getItem(API_KEY_STORAGE) || "").trim();
   if (!key) {
@@ -554,9 +563,18 @@ function renderSettings(settings, { preserveDraft = false } = {}) {
 }
 
 async function loadSettings() {
-  if (isSaving) return;
+  if (isSaving || !settingsAccessGranted) return;
   try {
-    const r = await fetch(`${API_BASE}/api/settings`, { cache: "no-store" });
+    const key = (localStorage.getItem(API_KEY_STORAGE) || "").trim();
+    const r = await fetch(`${API_BASE}/api/settings`, {
+      cache: "no-store",
+      headers: { "X-API-Key": key }
+    });
+    if (r.status === 401 || r.status === 503) {
+      localStorage.removeItem(API_KEY_STORAGE);
+      stopSettingsPolling("API key không hợp lệ hoặc đã bị thu hồi");
+      return;
+    }
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const data = await r.json();
     const hasDraft = Object.keys(pendingChanges).length > 0 || hasNewsDraftEdit;
@@ -719,9 +737,33 @@ document.getElementById("emergencyBtn").addEventListener("click", async () => {
   }
 });
 
+async function initializeSettingsAccess() {
+  const key = getApiKey();
+  if (!key) {
+    stopSettingsPolling("Chưa nhập API key — không gọi API nền");
+    return;
+  }
+  document.getElementById("statusText").textContent = "Đang xác thực API key...";
+  try {
+    const r = await fetch(`${API_BASE}/api/dashboard`, {
+      cache: "no-store",
+      headers: { "X-API-Key": key }
+    });
+    if (!r.ok) {
+      localStorage.removeItem(API_KEY_STORAGE);
+      stopSettingsPolling(r.status === 401 ? "API key không hợp lệ" : `Không xác thực được (HTTP ${r.status})`);
+      return;
+    }
+    settingsAccessGranted = true;
+    await loadSettings();
+    settingsPollingTimer = setInterval(loadSettings, 15000);
+  } catch (_) {
+    stopSettingsPolling("Không thể kết nối máy chủ");
+  }
+}
+
 document.getElementById("newsTimeInput").value = toDatetimeLocalGmt7(new Date());
-loadSettings();
-setInterval(loadSettings, 5000);
+void initializeSettingsAccess();
 </script>
 </body>
 </html>
