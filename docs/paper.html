@@ -881,7 +881,7 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.2/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body class="trade-fullscreen">
-<header><div><span class="brand">Forex AI · Chart</span> <span class="muted">/ PAPER SIMULATION</span></div><span class="tag">PAPER DEMO · OFFLINE</span></header>
+<header><div><span class="brand">Forex AI · Chart</span> <span class="muted">/ PAPER SIMULATION</span></div><span class="tag">PAPER DEMO · LIVE DATA</span></header>
 
 <main>
   <div class="layout">
@@ -1192,6 +1192,7 @@ function init(){
 }
 async function seed(resetLevels=true){
  const selectedSymbol=symbol,selectedTf=$('tf').value;
+ if(resetLevels){bars=[];rsiPoints=[];candles.setData([]);rsi.setData([]);}
  const base=String(window.FOREX_API_BASE||'').replace(/\\/+$/,'');
  if(!base){text('feedState','CHƯA CẤU HÌNH API');return;}
  text('feedState','ĐANG ĐỒNG BỘ...');
@@ -1286,7 +1287,7 @@ function bind(){
  ['closeTradeSettings','closePositionsDialog','closeStatsDialog'].forEach((id,i)=>$(id).addEventListener('click',()=>close(['tradeSettingsDialog','positionsDialog','statsDialog'][i])));
  $('entryPopupClose').addEventListener('click',()=>$('entryPopup').classList.add('hidden'));$('realPopupClose').addEventListener('click',()=>$('realPopup').classList.add('hidden'));
  $('apiKeyInput').disabled=true;$('apiKeySave').disabled=true;$('apiKeyToggle').disabled=true;text('apiKeyStatus','API key chỉ dùng xác thực để mở Index.');
- document.querySelectorAll('.commission-panel').forEach(x=>x.innerHTML='<strong>CHẾ ĐỘ PAPER DEMO</strong><div class="small">Không kết nối MT5 hoặc API.</div>');
+ document.querySelectorAll('.commission-panel').forEach(x=>x.innerHTML='<strong>CHẾ ĐỘ PAPER DEMO</strong><div class="small">Chỉ đọc dữ liệu thị trường; không gửi lệnh.</div>');
  document.querySelectorAll('.settings-fields > label:first-child').forEach(x=>x.style.display='none');
  ['commissionRefresh','apiKeySave','cdOk','cpOk'].forEach(id=>{if($(id))$(id).disabled=true;});
  text('lotResult','PAPER DEMO · đặt lệnh giả lập và kéo Entry / SL / TP trực tiếp trên chart.');
