@@ -2,46 +2,42 @@
 //| TRADE_V9_PAPER.mq5                                               |
 //| Forex AI Server consumer - REAL orders only, hub executor.       |
 //| Pending orders: LIMIT ONLY (BUY_LIMIT / SELL_LIMIT).             |
-//| Tự tính SL/TP/Lot, tự trailing/BE, đọc settings từ server.       |
+//| Tự tính SL/TP/Lot, tự trailing/BE, cache settings & vào lệnh nhanh|
 //+------------------------------------------------------------------+
 #property strict
-#property version "3.14"
+#property version "3.16"
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 
-//--- Inputs ---------------------------------------------------------
+#define SETTINGS_CACHE_FILE "trade_v9_settings_cache.json"
+
+//--- Connection & Identity Inputs -----------------------------------
 input string ServerBaseURL                = "https://investforex.onrender.com";
 input string ApiKey                       = "SET_A_LONG_RANDOM_API_KEY";
 input string ConsumerId                   = "trade-v9";
-input int    PollSeconds                  = 3;
-input int    SettingsPollSeconds          = 5;
-input int    CommissionPollSeconds        = 60;
-input int    HeartbeatSeconds             = 15;
-input int    TrailingCheckSeconds         = 2;
-
 input long   MagicNumber                  = 20240915;
-input int    SlippagePoints               = 20;
 input string OrderComment                 = "TRADE-V9";
-input bool   SyncRealHistory              = true;
-input bool   AllowCancelExternalPending   = false;
-input bool   AllowModifyExternalPending   = true;
-input bool   AllowMinLotWhenExceedBudget  = false;
-input bool   RejectWhenSpreadExceedsBuf   = false;
-
-// Nếu server báo commission dạng round-turn (vào+ra) nhưng MT5 tính per-side -> bật true
-input bool   CommissionIsRoundTurn        = false;
 
 //--- Globals --------------------------------------------------------
 CTrade        trade;
 CPositionInfo posInfo;
 
-// ===== Settings cache (khớp Control Panel /api/settings) =====
+struct SNewsEventItem {
+   string title;
+   string currency;
+   long   event_ts;
+};
+
+// ===== Settings cache (khớp Control Panel /api/settings + runtime) =====
 struct SSettings {
    bool   auto_trade_enabled;
    bool   trailing_enabled;
    bool   breakeven_enabled;
    bool   news_filter_enabled;
+   int    news_block_before_min;
+   int    news_block_after_min;
+   string news_events_json;
    bool   time_filter_enabled;
    bool   telegram_notifications_enabled;
    bool   emergency_stop;
@@ -58,9 +54,25 @@ struct SSettings {
    string trailing_mode;
    int    trading_start_hour;
    int    trading_end_hour;
+
+   int    poll_seconds;
+   int    settings_poll_seconds;
+   int    commission_poll_seconds;
+   int    heartbeat_seconds;
+   int    trailing_check_seconds;
+   int    slippage_points;
+   bool   sync_real_history;
+   bool   allow_cancel_external_pending;
+   bool   allow_modify_external_pending;
+   bool   allow_min_lot_when_exceed_budget;
+   bool   reject_when_spread_exceeds_buf;
+   bool   commission_is_round_turn;
+
    datetime last_synced;
 };
 SSettings g_settings;
+SNewsEventItem g_newsEvents[];
+string g_lastSavedSettingsJson = "";
 
 // ===== Commission cache =====
 struct SCommission {
@@ -134,8 +146,16 @@ void PollCommissions();
 void ManageTrailing();
 void CheckEmergencyStop();
 SRiskBreakdown ComputeRiskBreakdown(string symbol, double slDistance, double volume);
+ushort json_safe_idx(string s, int idx);
+string JsonValue(string json, string key);
+string JsonObjectValue(string json, string key);
+string JsonArrayValue(string json, string key);
+bool JsonBoolValue(string json, string key, bool defaultValue);
+int JsonIntValue(string json, string key, int defaultValue);
+double JsonDoubleValue(string json, string key, double defaultValue);
+void ExtractTopLevelObjects(string arrJson, string &outObjects[]);
 
-//--- Time helpers ---------------------------------------------------
+//--- Time & News helpers --------------------------------------------
 void CalculateServerGMTOffset()
 {
    datetime st = TimeTradeServer(), gt = TimeGMT();
@@ -144,6 +164,15 @@ void CalculateServerGMTOffset()
    int h = (int)MathRound((double)g_serverToGMTOffset / 3600.0);
    g_serverToGMTOffset = h * 3600;
    g_lastOffsetCalcTime = TimeCurrent();
+}
+
+datetime GetCurrentUtcTimestamp()
+{
+   datetime gt = TimeGMT();
+   if(gt > 0) return gt;
+   datetime st = TimeTradeServer();
+   if(st <= 0) st = TimeCurrent();
+   return st - g_serverToGMTOffset;
 }
 
 datetime ServerTimeToGMT7(datetime st)
@@ -171,11 +200,118 @@ bool IsInTradingHours()
    return (h >= start || h < end);
 }
 
+int ParseTzOffsetSeconds(string s, int startPos)
+{
+   int sign = 1;
+   int p = startPos;
+   if(p < StringLen(s) && StringGetCharacter(s, p) == '+') { sign = 1; p++; }
+   else if(p < StringLen(s) && StringGetCharacter(s, p) == '-') { sign = -1; p++; }
+   string rem = StringSubstr(s, p);
+   StringReplace(rem, ":", "");
+   int hh = 0, mm = 0;
+   if(StringLen(rem) >= 2) hh = (int)StringToInteger(StringSubstr(rem, 0, 2));
+   if(StringLen(rem) >= 4) mm = (int)StringToInteger(StringSubstr(rem, 2, 2));
+   return sign * (hh * 3600 + mm * 60);
+}
+
+long ParseIsoOrEpochToUtc(string rawTime)
+{
+   string s = rawTime;
+   StringTrimLeft(s);
+   StringTrimRight(s);
+   if(s == "") return 0;
+
+   bool allDigits = true;
+   for(int i = 0; i < StringLen(s); i++)
+   {
+      ushort ch = StringGetCharacter(s, i);
+      if(ch < '0' || ch > '9') { allDigits = false; break; }
+   }
+   if(allDigits)
+   {
+      long val = StringToInteger(s);
+      if(val > 100000000000LL) val /= 1000;
+      return val;
+   }
+
+   int tzOffsetSec = 7 * 3600;
+   string dtPart = s;
+   int len = StringLen(s);
+   if(StringGetCharacter(s, len - 1) == 'Z' || StringGetCharacter(s, len - 1) == 'z')
+   {
+      tzOffsetSec = 0;
+      dtPart = StringSubstr(s, 0, len - 1);
+   }
+   else if(len >= 6)
+   {
+      int plusPos = StringFind(s, "+", 10);
+      int minusPos = StringFind(s, "-", 10);
+      int tzPos = (plusPos >= 0) ? plusPos : minusPos;
+      if(tzPos >= 10)
+      {
+         tzOffsetSec = ParseTzOffsetSeconds(s, tzPos);
+         dtPart = StringSubstr(s, 0, tzPos);
+      }
+   }
+
+   StringReplace(dtPart, "T", " ");
+   datetime localDt = StringToTime(dtPart);
+   if(localDt <= 0) return 0;
+   return (long)localDt - tzOffsetSec;
+}
+
+void RebuildNewsScheduleCache()
+{
+   ArrayResize(g_newsEvents, 0);
+   string trimmed = g_settings.news_events_json;
+   StringTrimLeft(trimmed);
+   StringTrimRight(trimmed);
+   if(trimmed == "" || trimmed == "[]") return;
+
+   string objs[];
+   ExtractTopLevelObjects(trimmed, objs);
+   for(int i = 0; i < ArraySize(objs); i++)
+   {
+      string tStr = JsonValue(objs[i], "time");
+      if(tStr == "") tStr = JsonValue(objs[i], "timestamp");
+      long evTs = ParseIsoOrEpochToUtc(tStr);
+      if(evTs <= 0) continue;
+
+      SNewsEventItem item;
+      item.title    = JsonValue(objs[i], "title");
+      if(item.title == "") item.title = JsonValue(objs[i], "name");
+      if(item.title == "") item.title = "News Event";
+      item.currency = JsonValue(objs[i], "currency");
+      item.event_ts = evTs;
+
+      int n = ArraySize(g_newsEvents);
+      ArrayResize(g_newsEvents, n + 1);
+      g_newsEvents[n] = item;
+   }
+}
+
+bool IsWithinConfiguredNewsWindow()
+{
+   long nowUtc = (long)GetCurrentUtcTimestamp();
+   long beforeSec = (long)MathMax(0, g_settings.news_block_before_min) * 60;
+   long afterSec  = (long)MathMax(0, g_settings.news_block_after_min) * 60;
+
+   for(int i = 0; i < ArraySize(g_newsEvents); i++)
+   {
+      long evTs = g_newsEvents[i].event_ts;
+      if(nowUtc >= (evTs - beforeSec) && nowUtc <= (evTs + afterSec))
+         return true;
+   }
+   return false;
+}
+
 bool IsNewsBlocked()
 {
    if(!g_settings.news_filter_enabled) return false;
-   if(!GlobalVariableCheck("GV_NewsFilter_Blocked")) return false;
-   return (GlobalVariableGet("GV_NewsFilter_Blocked") >= 0.5);
+   if(IsWithinConfiguredNewsWindow()) return true;
+   if(GlobalVariableCheck("GV_NewsFilter_Blocked") && GlobalVariableGet("GV_NewsFilter_Blocked") >= 0.5)
+      return true;
+   return false;
 }
 
 //--- JSON helpers ---------------------------------------------------
@@ -293,6 +429,20 @@ bool JsonBoolValue(string json, string key, bool defaultValue)
    return defaultValue;
 }
 
+int JsonIntValue(string json, string key, int defaultValue)
+{
+   string v = JsonValue(json, key);
+   if(v == "") return defaultValue;
+   return (int)StringToInteger(v);
+}
+
+double JsonDoubleValue(string json, string key, double defaultValue)
+{
+   string v = JsonValue(json, key);
+   if(v == "") return defaultValue;
+   return StringToDouble(v);
+}
+
 void ExtractTopLevelObjects(string arrJson, string &outObjects[])
 {
    ArrayResize(outObjects, 0);
@@ -380,13 +530,16 @@ bool HasProcessedPendingModify(string id)
 }
 void MarkProcessedPendingModify(string id) { PushDedupId(processedPendingModifyIds, id); }
 
-//--- Settings polling & GV sync -----------------------------------
+//--- Settings cache & polling -------------------------------------
 void InitDefaultSettings()
 {
    g_settings.auto_trade_enabled             = true;
    g_settings.trailing_enabled               = true;
    g_settings.breakeven_enabled              = true;
    g_settings.news_filter_enabled            = true;
+   g_settings.news_block_before_min          = 3;
+   g_settings.news_block_after_min           = 3;
+   g_settings.news_events_json               = "[]";
    g_settings.time_filter_enabled            = true;
    g_settings.telegram_notifications_enabled = true;
    g_settings.emergency_stop                 = false;
@@ -403,7 +556,22 @@ void InitDefaultSettings()
    g_settings.trailing_mode                  = "static";
    g_settings.trading_start_hour             = 7;
    g_settings.trading_end_hour               = 23;
+
+   g_settings.poll_seconds                   = 3;
+   g_settings.settings_poll_seconds          = 5;
+   g_settings.commission_poll_seconds        = 60;
+   g_settings.heartbeat_seconds              = 15;
+   g_settings.trailing_check_seconds         = 2;
+   g_settings.slippage_points                = 20;
+   g_settings.sync_real_history              = true;
+   g_settings.allow_cancel_external_pending  = false;
+   g_settings.allow_modify_external_pending  = true;
+   g_settings.allow_min_lot_when_exceed_budget = false;
+   g_settings.reject_when_spread_exceeds_buf = false;
+   g_settings.commission_is_round_turn       = false;
+
    g_settings.last_synced                    = 0;
+   ArrayResize(g_newsEvents, 0);
 }
 
 void SyncDashboardGlobalVariables()
@@ -414,6 +582,108 @@ void SyncDashboardGlobalVariables()
    GlobalVariableSet("GV_Dash_TradingEndHour",    (double)g_settings.trading_end_hour);
    GlobalVariableSet("GV_Dash_TelegramEnabled",   g_settings.telegram_notifications_enabled ? 1.0 : 0.0);
    GlobalVariableSet("GV_Dash_EmergencyStop",     g_settings.emergency_stop ? 1.0 : 0.0);
+   GlobalVariableSet("GV_NewsFilter_Blocked",     IsWithinConfiguredNewsWindow() ? 1.0 : 0.0);
+}
+
+void SaveSettingsCacheToDisk(string settingsObjJson)
+{
+   if(settingsObjJson == "" || settingsObjJson == g_lastSavedSettingsJson) return;
+   int h = FileOpen(SETTINGS_CACHE_FILE, FILE_WRITE | FILE_TXT | FILE_ANSI);
+   if(h == INVALID_HANDLE)
+   {
+      Print("[V9 CACHE] Cannot write ", SETTINGS_CACHE_FILE, " err=", GetLastError());
+      return;
+   }
+   FileWriteString(h, settingsObjJson);
+   FileClose(h);
+   g_lastSavedSettingsJson = settingsObjJson;
+   Print("[V9 CACHE] Saved settings snapshot to ", SETTINGS_CACHE_FILE);
+}
+
+bool ApplySettingsJson(string obj, bool saveDisk)
+{
+   if(obj == "") return false;
+
+   g_settings.auto_trade_enabled             = JsonBoolValue(obj, "auto_trade_enabled", g_settings.auto_trade_enabled);
+   g_settings.trailing_enabled               = JsonBoolValue(obj, "trailing_enabled", g_settings.trailing_enabled);
+   g_settings.breakeven_enabled              = JsonBoolValue(obj, "breakeven_enabled", g_settings.breakeven_enabled);
+   g_settings.news_filter_enabled            = JsonBoolValue(obj, "news_filter_enabled", g_settings.news_filter_enabled);
+   g_settings.news_block_before_min          = JsonIntValue(obj, "news_block_before_min", g_settings.news_block_before_min);
+   g_settings.news_block_after_min           = JsonIntValue(obj, "news_block_after_min", g_settings.news_block_after_min);
+
+   string rawNewsJson                        = JsonValue(obj, "news_events_json");
+   if(rawNewsJson != "") g_settings.news_events_json = rawNewsJson;
+
+   g_settings.time_filter_enabled            = JsonBoolValue(obj, "time_filter_enabled", g_settings.time_filter_enabled);
+   g_settings.telegram_notifications_enabled = JsonBoolValue(obj, "telegram_notifications_enabled", g_settings.telegram_notifications_enabled);
+   g_settings.emergency_stop                 = JsonBoolValue(obj, "emergency_stop", g_settings.emergency_stop);
+   g_settings.emergency_close_all            = JsonBoolValue(obj, "emergency_close_all", g_settings.emergency_close_all);
+   g_settings.risk_money                     = JsonDoubleValue(obj, "risk_money", g_settings.risk_money);
+   g_settings.max_positions                  = JsonIntValue(obj, "max_positions", g_settings.max_positions);
+   g_settings.reward_risk_ratio              = JsonDoubleValue(obj, "reward_risk_ratio", g_settings.reward_risk_ratio);
+   g_settings.risk_tolerance_pct             = JsonDoubleValue(obj, "risk_tolerance_pct", g_settings.risk_tolerance_pct);
+   g_settings.commission_fallback            = JsonDoubleValue(obj, "commission_fallback", g_settings.commission_fallback);
+   g_settings.spread_buffer_points           = JsonIntValue(obj, "spread_buffer_points", g_settings.spread_buffer_points);
+   g_settings.trailing_trigger_rr            = JsonDoubleValue(obj, "trailing_trigger_rr", g_settings.trailing_trigger_rr);
+   g_settings.trailing_lock_rr               = JsonDoubleValue(obj, "trailing_lock_rr", g_settings.trailing_lock_rr);
+   g_settings.breakeven_trigger_rr           = JsonDoubleValue(obj, "breakeven_trigger_rr", g_settings.breakeven_trigger_rr);
+
+   string tm                                 = JsonValue(obj, "trailing_mode");
+   if(tm != "") g_settings.trailing_mode     = tm;
+
+   g_settings.trading_start_hour             = JsonIntValue(obj, "trading_start_hour", g_settings.trading_start_hour);
+   g_settings.trading_end_hour               = JsonIntValue(obj, "trading_end_hour", g_settings.trading_end_hour);
+
+   g_settings.poll_seconds                   = MathMax(1, JsonIntValue(obj, "poll_seconds", g_settings.poll_seconds));
+   g_settings.settings_poll_seconds          = MathMax(1, JsonIntValue(obj, "settings_poll_seconds", g_settings.settings_poll_seconds));
+   g_settings.commission_poll_seconds        = MathMax(5, JsonIntValue(obj, "commission_poll_seconds", g_settings.commission_poll_seconds));
+   g_settings.heartbeat_seconds              = MathMax(5, JsonIntValue(obj, "heartbeat_seconds", g_settings.heartbeat_seconds));
+   g_settings.trailing_check_seconds         = MathMax(1, JsonIntValue(obj, "trailing_check_seconds", g_settings.trailing_check_seconds));
+   g_settings.slippage_points                = MathMax(0, JsonIntValue(obj, "slippage_points", g_settings.slippage_points));
+   g_settings.sync_real_history              = JsonBoolValue(obj, "sync_real_history", g_settings.sync_real_history);
+   g_settings.allow_cancel_external_pending  = JsonBoolValue(obj, "allow_cancel_external_pending", g_settings.allow_cancel_external_pending);
+   g_settings.allow_modify_external_pending  = JsonBoolValue(obj, "allow_modify_external_pending", g_settings.allow_modify_external_pending);
+   g_settings.allow_min_lot_when_exceed_budget = JsonBoolValue(obj, "allow_min_lot_when_exceed_budget", g_settings.allow_min_lot_when_exceed_budget);
+   g_settings.reject_when_spread_exceeds_buf = JsonBoolValue(obj, "reject_when_spread_exceeds_buf", g_settings.reject_when_spread_exceeds_buf);
+   g_settings.commission_is_round_turn       = JsonBoolValue(obj, "commission_is_round_turn", g_settings.commission_is_round_turn);
+
+   if(g_settings.risk_money <= 0) g_settings.risk_money = 25;
+   if(g_settings.max_positions < 0) g_settings.max_positions = 0;
+   if(g_settings.reward_risk_ratio <= 0) g_settings.reward_risk_ratio = 2.0;
+   if(g_settings.spread_buffer_points < 0) g_settings.spread_buffer_points = 0;
+   if(g_settings.news_block_before_min < 0) g_settings.news_block_before_min = 3;
+   if(g_settings.news_block_after_min < 0) g_settings.news_block_after_min = 3;
+   if(g_settings.trading_start_hour < 0 || g_settings.trading_start_hour > 23) g_settings.trading_start_hour = 7;
+   if(g_settings.trading_end_hour < 0 || g_settings.trading_end_hour > 23) g_settings.trading_end_hour = 23;
+
+   g_settings.last_synced = TimeCurrent();
+   RebuildNewsScheduleCache();
+   SyncDashboardGlobalVariables();
+
+   if(saveDisk)
+      SaveSettingsCacheToDisk(obj);
+   return true;
+}
+
+void LoadCachedSettingsFromDisk()
+{
+   if(!FileIsExist(SETTINGS_CACHE_FILE)) return;
+   int h = FileOpen(SETTINGS_CACHE_FILE, FILE_READ | FILE_TXT | FILE_ANSI);
+   if(h == INVALID_HANDLE) return;
+
+   string content = "";
+   while(!FileIsEnding(h))
+      content += FileReadString(h);
+   FileClose(h);
+
+   StringTrimLeft(content);
+   StringTrimRight(content);
+   if(content != "")
+   {
+      g_lastSavedSettingsJson = content;
+      ApplySettingsJson(content, false);
+      Print("[V9 CACHE] Loaded cached settings from disk");
+   }
 }
 
 void PollSettings()
@@ -421,43 +691,12 @@ void PollSettings()
    string response; int status;
    if(!Request("GET", "/api/settings", "", response, status))
    {
-      Print("[V9 SETTINGS] Poll failed HTTP=", status);
+      Print("[V9 SETTINGS] Poll failed HTTP=", status, " (using cached settings)");
       return;
    }
    string obj = JsonObjectValue(response, "settings");
    if(obj == "") return;
-
-   g_settings.auto_trade_enabled             = JsonBoolValue(obj, "auto_trade_enabled", true);
-   g_settings.trailing_enabled               = JsonBoolValue(obj, "trailing_enabled", true);
-   g_settings.breakeven_enabled              = JsonBoolValue(obj, "breakeven_enabled", true);
-   g_settings.news_filter_enabled            = JsonBoolValue(obj, "news_filter_enabled", true);
-   g_settings.time_filter_enabled            = JsonBoolValue(obj, "time_filter_enabled", true);
-   g_settings.telegram_notifications_enabled = JsonBoolValue(obj, "telegram_notifications_enabled", true);
-   g_settings.emergency_stop                 = JsonBoolValue(obj, "emergency_stop", false);
-   g_settings.emergency_close_all            = JsonBoolValue(obj, "emergency_close_all", true);
-   g_settings.risk_money                     = StringToDouble(JsonValue(obj, "risk_money"));
-   g_settings.max_positions                  = (int)StringToInteger(JsonValue(obj, "max_positions"));
-   g_settings.reward_risk_ratio              = StringToDouble(JsonValue(obj, "reward_risk_ratio"));
-   g_settings.risk_tolerance_pct             = StringToDouble(JsonValue(obj, "risk_tolerance_pct"));
-   g_settings.commission_fallback            = StringToDouble(JsonValue(obj, "commission_fallback"));
-   g_settings.spread_buffer_points           = (int)StringToInteger(JsonValue(obj, "spread_buffer_points"));
-   g_settings.trailing_trigger_rr            = StringToDouble(JsonValue(obj, "trailing_trigger_rr"));
-   g_settings.trailing_lock_rr               = StringToDouble(JsonValue(obj, "trailing_lock_rr"));
-   g_settings.breakeven_trigger_rr           = StringToDouble(JsonValue(obj, "breakeven_trigger_rr"));
-   g_settings.trailing_mode                  = JsonValue(obj, "trailing_mode");
-   if(g_settings.trailing_mode == "") g_settings.trailing_mode = "static";
-   g_settings.trading_start_hour             = (int)StringToInteger(JsonValue(obj, "trading_start_hour"));
-   g_settings.trading_end_hour               = (int)StringToInteger(JsonValue(obj, "trading_end_hour"));
-   g_settings.last_synced                    = TimeCurrent();
-
-   if(g_settings.risk_money <= 0) g_settings.risk_money = 25;
-   if(g_settings.max_positions < 0) g_settings.max_positions = 0;
-   if(g_settings.reward_risk_ratio <= 0) g_settings.reward_risk_ratio = 2.0;
-   if(g_settings.spread_buffer_points < 0) g_settings.spread_buffer_points = 0;
-   if(g_settings.trading_start_hour < 0 || g_settings.trading_start_hour > 23) g_settings.trading_start_hour = 7;
-   if(g_settings.trading_end_hour < 0 || g_settings.trading_end_hour > 23) g_settings.trading_end_hour = 23;
-
-   SyncDashboardGlobalVariables();
+   ApplySettingsJson(obj, true);
 }
 
 //--- Commission cache -----------------------------------------------
@@ -509,7 +748,7 @@ double GetCommissionPerLot(string symbol)
    for(int i = 0; i < ArraySize(g_commissionCache); i++)
       if(g_commissionCache[i].symbol == symUp)
       { c = g_commissionCache[i].commission_per_lot; break; }
-   if(CommissionIsRoundTurn) c /= 2.0;
+   if(g_settings.commission_is_round_turn) c /= 2.0;
    return c;
 }
 
@@ -593,7 +832,7 @@ double CalculateLotWithCommission(string symbol, double slDistance, double riskM
 
    if(lot < vmin)
    {
-      if(AllowMinLotWhenExceedBudget && vmin > 0 && vmin <= vmax)
+      if(g_settings.allow_min_lot_when_exceed_budget && vmin > 0 && vmin <= vmax)
          return NormalizeDouble(vmin, stepDigits);
       return 0;
    }
@@ -779,7 +1018,7 @@ void ManageTrailing()
          if(valid && MathAbs(newSL - currentSL) > point)
          {
             trade.SetExpertMagicNumber(MagicNumber);
-            trade.SetDeviationInPoints(SlippagePoints);
+            trade.SetDeviationInPoints(g_settings.slippage_points);
             trade.SetTypeFilling(PickFilling(sym));
             trade.SetAsyncMode(false);
             if(trade.PositionModify(ticket, newSL, currentTP))
@@ -810,7 +1049,7 @@ void CloseAllMagicPositions()
 
       string sym = PositionGetString(POSITION_SYMBOL);
       trade.SetExpertMagicNumber(MagicNumber);
-      trade.SetDeviationInPoints(SlippagePoints);
+      trade.SetDeviationInPoints(g_settings.slippage_points);
       trade.SetTypeFilling(PickFilling(sym));
       trade.SetAsyncMode(false);
       if(trade.PositionClose(ticket))
@@ -860,8 +1099,8 @@ void SendHeartbeat()
 {
    int openCount = CountRealExposure();
    string body = StringFormat(
-      "{\"component\":\"TRADE-V9-REAL\",\"status\":\"online\",\"details\":\"REAL consumer active; positions=%d; emergency=%s\"}",
-      openCount, g_settings.emergency_stop ? "ON" : "OFF");
+      "{\"component\":\"TRADE-V9-REAL\",\"status\":\"online\",\"details\":\"REAL consumer active; positions=%d; emergency=%s; news_block=%s\"}",
+      openCount, g_settings.emergency_stop ? "ON" : "OFF", IsNewsBlocked() ? "ON" : "OFF");
    string response; int status;
    if(Request("POST", "/api/heartbeat", body, response, status))
       lastHeartbeatMs = GetTickCount();
@@ -905,7 +1144,7 @@ bool OpenTrade(string id, string symbol, string tf, string direction, string raw
    double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
    if(bid <= 0 || ask <= 0 || point <= 0) { Ack(id, "REJECTED", "No live quote"); return false; }
 
-   if(RejectWhenSpreadExceedsBuf && g_settings.spread_buffer_points > 0)
+   if(g_settings.reject_when_spread_exceeds_buf && g_settings.spread_buffer_points > 0)
    {
       double curSpread = (ask - bid) / point;
       if(curSpread > (double)g_settings.spread_buffer_points)
@@ -972,7 +1211,7 @@ bool OpenTrade(string id, string symbol, string tf, string direction, string raw
 
       if(reducedLot < vmin)
       {
-         if(AllowMinLotWhenExceedBudget && vmin > 0 && vmin <= vmax)
+         if(g_settings.allow_min_lot_when_exceed_budget && vmin > 0 && vmin <= vmax)
          {
             reducedLot = NormalizeDouble(vmin, stepDigits);
          }
@@ -1003,7 +1242,7 @@ bool OpenTrade(string id, string symbol, string tf, string direction, string raw
       }
    }
 
-   if(rb.total > budget + 1e-9 && !AllowMinLotWhenExceedBudget)
+   if(rb.total > budget + 1e-9 && !g_settings.allow_min_lot_when_exceed_budget)
    {
       Ack(id, "REJECTED", StringFormat(
          "Total risk $%.2f > budget $%.2f (lot=%.4f)",
@@ -1028,7 +1267,7 @@ bool OpenTrade(string id, string symbol, string tf, string direction, string raw
    tp = NormalizeDouble(tp, digits);
 
    trade.SetExpertMagicNumber(MagicNumber);
-   trade.SetDeviationInPoints(SlippagePoints);
+   trade.SetDeviationInPoints(g_settings.slippage_points);
    trade.SetTypeFilling(PickFilling(symbol));
    trade.SetAsyncMode(false);
 
@@ -1105,7 +1344,7 @@ bool CloseRealPositionById(string targetId, string symbol, string &detailOut, bo
    }
 
    trade.SetExpertMagicNumber(MagicNumber);
-   trade.SetDeviationInPoints(SlippagePoints);
+   trade.SetDeviationInPoints(g_settings.slippage_points);
    trade.SetAsyncMode(false);
 
    if(targetTicket != 0)
@@ -1126,7 +1365,7 @@ bool CloseRealPositionById(string targetId, string symbol, string &detailOut, bo
       ulong ordTicket = OrderGetTicket(i);
       if(ordTicket == 0) continue;
       long ordMagic = OrderGetInteger(ORDER_MAGIC);
-      if(ordMagic != MagicNumber && !AllowCancelExternalPending) continue;
+      if(ordMagic != MagicNumber && !g_settings.allow_cancel_external_pending) continue;
 
       ENUM_ORDER_TYPE ot = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
       if(ot != ORDER_TYPE_BUY_LIMIT && ot != ORDER_TYPE_SELL_LIMIT &&
@@ -1175,7 +1414,7 @@ void ExecuteCloseCommand(string cmdJson)
    if(closed)
    {
       SendAccountSnapshot();
-      if(SyncRealHistory) PublishRealClosedDeals();
+      if(g_settings.sync_real_history) PublishRealClosedDeals();
    }
 }
 
@@ -1223,7 +1462,7 @@ void ExecuteSltpCommand(string cmdJson)
       double sl = NormalizeDouble(newSl, digits);
       double tp = NormalizeDouble(newTp, digits);
       trade.SetExpertMagicNumber(MagicNumber);
-      trade.SetDeviationInPoints(SlippagePoints);
+      trade.SetDeviationInPoints(g_settings.slippage_points);
       trade.SetTypeFilling(PickFilling(sym));
       trade.SetAsyncMode(false);
       if(trade.PositionModify(tk, sl, tp))
@@ -1280,7 +1519,7 @@ void ExecutePendingModify(string cmdJson)
    else
    {
       long ordMagic = OrderGetInteger(ORDER_MAGIC);
-      if(ordMagic != MagicNumber && !AllowModifyExternalPending)
+      if(ordMagic != MagicNumber && !g_settings.allow_modify_external_pending)
       {
          detail = "External pending order not allowed";
       }
@@ -1359,7 +1598,7 @@ void ExecutePendingModify(string cmdJson)
                ENUM_ORDER_TYPE_TIME expType = (ENUM_ORDER_TYPE_TIME)OrderGetInteger(ORDER_TYPE_TIME);
 
                trade.SetExpertMagicNumber(MagicNumber);
-               trade.SetDeviationInPoints(SlippagePoints);
+               trade.SetDeviationInPoints(g_settings.slippage_points);
                trade.SetTypeFilling(PickFilling(sym));
                trade.SetAsyncMode(false);
 
@@ -1398,7 +1637,7 @@ void PollPendingModifyRequests()
       ExecutePendingModify(items[i]);
 }
 
-//--- Poll signal ----------------------------------------------------
+//--- Poll signal & immediate execution from cached settings -------
 void PollServer()
 {
    string path = "/api/mt5/next?consumer=" + ConsumerId;
@@ -1430,6 +1669,7 @@ void PollServer()
       return;
    }
 
+   // Kiểm tra trực tiếp từ cached settings trên RAM/đĩa (không gọi thêm server)
    if(g_settings.emergency_stop)
    {
       MarkProcessedSignal(id);
@@ -1455,7 +1695,8 @@ void PollServer()
    if(IsNewsBlocked())
    {
       MarkProcessedSignal(id);
-      Ack(id, "REJECTED", "News block active");
+      Ack(id, "REJECTED", StringFormat("News block active (-%dm/+%dm)",
+         g_settings.news_block_before_min, g_settings.news_block_after_min));
       return;
    }
 
@@ -1551,7 +1792,7 @@ void SendAccountSnapshot()
 
 void PublishRealClosedDeals()
 {
-   if(!SyncRealHistory) return;
+   if(!g_settings.sync_real_history) return;
    datetime now = TimeCurrent();
    datetime fromTime = now - (datetime)(7 * 86400);
    if(!HistorySelect(fromTime, now)) return;
@@ -1606,6 +1847,7 @@ int OnInit()
 
    trade.SetExpertMagicNumber(MagicNumber);
    InitDefaultSettings();
+   LoadCachedSettingsFromDisk();
    SyncDashboardGlobalVariables();
    CalculateServerGMTOffset();
 
@@ -1613,11 +1855,12 @@ int OnInit()
    PollCommissions();
 
    EventSetTimer(1);
-   Print("[V9] Started v3.14 REAL HUB. magic=", MagicNumber,
+   Print("[V9] Started v3.16 REAL HUB. magic=", MagicNumber,
          " | AutoTrade=", g_settings.auto_trade_enabled ? "ON" : "OFF",
          " | Trailing=", g_settings.trailing_enabled ? "ON" : "OFF",
+         " | NewsWindow=-", g_settings.news_block_before_min, "m/+", g_settings.news_block_after_min, "m",
          " | Risk=$", DoubleToString(g_settings.risk_money, 2),
-         " | CommRoundTurn=", CommissionIsRoundTurn ? "Y" : "N");
+         " | CommRoundTurn=", g_settings.commission_is_round_turn ? "Y" : "N");
    return INIT_SUCCEEDED;
 }
 
@@ -1632,7 +1875,7 @@ void OnTimer()
       CalculateServerGMTOffset();
 
    if(lastSettingsPollMs == 0 ||
-      (uint)(nowMs - lastSettingsPollMs) >= (uint)(SettingsPollSeconds * 1000))
+      (uint)(nowMs - lastSettingsPollMs) >= (uint)(g_settings.settings_poll_seconds * 1000))
    {
       lastSettingsPollMs = nowMs;
       PollSettings();
@@ -1641,25 +1884,25 @@ void OnTimer()
    CheckEmergencyStop();
 
    if(lastCommissionPollMs == 0 ||
-      (uint)(nowMs - lastCommissionPollMs) >= (uint)(CommissionPollSeconds * 1000))
+      (uint)(nowMs - lastCommissionPollMs) >= (uint)(g_settings.commission_poll_seconds * 1000))
    {
       lastCommissionPollMs = nowMs;
       PollCommissions();
    }
 
    if(lastHeartbeatMs == 0 ||
-      (uint)(nowMs - lastHeartbeatMs) >= (uint)(HeartbeatSeconds * 1000))
+      (uint)(nowMs - lastHeartbeatMs) >= (uint)(g_settings.heartbeat_seconds * 1000))
       SendHeartbeat();
 
    if(lastTrailingCheckMs == 0 ||
-      (uint)(nowMs - lastTrailingCheckMs) >= (uint)(TrailingCheckSeconds * 1000))
+      (uint)(nowMs - lastTrailingCheckMs) >= (uint)(g_settings.trailing_check_seconds * 1000))
    {
       lastTrailingCheckMs = nowMs;
       ManageTrailing();
    }
 
    if(lastPollMs == 0 ||
-      (uint)(nowMs - lastPollMs) >= (uint)(PollSeconds * 1000))
+      (uint)(nowMs - lastPollMs) >= (uint)(g_settings.poll_seconds * 1000))
    {
       lastPollMs = nowMs;
       PollCloseCommands();
@@ -1667,14 +1910,14 @@ void OnTimer()
    }
 
    if(lastSltpPollMs == 0 ||
-      (uint)(nowMs - lastSltpPollMs) >= (uint)(PollSeconds * 1000))
+      (uint)(nowMs - lastSltpPollMs) >= (uint)(g_settings.poll_seconds * 1000))
    {
       lastSltpPollMs = nowMs;
       PollSltpRequests();
    }
 
    if(lastPendingModifyPollMs == 0 ||
-      (uint)(nowMs - lastPendingModifyPollMs) >= (uint)(PollSeconds * 1000))
+      (uint)(nowMs - lastPendingModifyPollMs) >= (uint)(g_settings.poll_seconds * 1000))
    {
       lastPendingModifyPollMs = nowMs;
       PollPendingModifyRequests();
@@ -1687,7 +1930,7 @@ void OnTimer()
       SendAccountSnapshot();
    }
 
-   if(SyncRealHistory &&
+   if(g_settings.sync_real_history &&
       (lastHistorySyncMs == 0 || (uint)(nowMs - lastHistorySyncMs) >= 15000))
    {
       lastHistorySyncMs = nowMs;
