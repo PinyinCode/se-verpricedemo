@@ -5,7 +5,7 @@
 //| Tự tính SL/TP/Lot, tự trailing/BE, đọc settings từ server.       |
 //+------------------------------------------------------------------+
 #property strict
-#property version "3.13"
+#property version "3.14"
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
@@ -27,6 +27,7 @@ input bool   SyncRealHistory              = true;
 input bool   AllowCancelExternalPending   = false;
 input bool   AllowModifyExternalPending   = true;
 input bool   AllowMinLotWhenExceedBudget  = false;
+input bool   RejectWhenSpreadExceedsBuf   = false;
 
 // Nếu server báo commission dạng round-turn (vào+ra) nhưng MT5 tính per-side -> bật true
 input bool   CommissionIsRoundTurn        = false;
@@ -195,6 +196,12 @@ string UpperTrim(string s)
    return s;
 }
 
+ushort json_safe_idx(string s, int idx)
+{
+   if(idx < 0 || idx >= StringLen(s)) return 0;
+   return StringGetCharacter(s, idx);
+}
+
 string JsonValue(string json, string key)
 {
    string token = "\"" + key + "\"";
@@ -314,12 +321,6 @@ void ExtractTopLevelObjects(string arrJson, string &outObjects[])
    }
 }
 
-ushort json_safe_idx(string s, int idx)
-{
-   if(idx < 0 || idx >= StringLen(s)) return 0;
-   return StringGetCharacter(s, idx);
-}
-
 //--- HTTP -----------------------------------------------------------
 bool Request(string method, string path, string body, string &response, int &status)
 {
@@ -339,26 +340,29 @@ bool Request(string method, string path, string body, string &response, int &sta
 }
 
 //--- Dedup tracking -------------------------------------------------
+void PushDedupId(string &arr[], string id, int maxItems = 500)
+{
+   if(id == "") return;
+   for(int i = 0; i < ArraySize(arr); i++)
+      if(arr[i] == id) return;
+   int n = ArraySize(arr);
+   if(n >= maxItems)
+   {
+      for(int i = 0; i < n-1; i++) arr[i] = arr[i+1];
+      arr[n-1] = id;
+      return;
+   }
+   ArrayResize(arr, n+1);
+   arr[n] = id;
+}
+
 bool HasProcessedSignal(string id)
 {
    for(int i = 0; i < ArraySize(processedSignalIds); i++)
       if(processedSignalIds[i] == id) return true;
    return false;
 }
-
-void MarkProcessedSignal(string id)
-{
-   if(id == "" || HasProcessedSignal(id)) return;
-   int n = ArraySize(processedSignalIds);
-   if(n >= 500)
-   {
-      for(int i = 0; i < n-1; i++) processedSignalIds[i] = processedSignalIds[i+1];
-      processedSignalIds[n-1] = id;
-      return;
-   }
-   ArrayResize(processedSignalIds, n+1);
-   processedSignalIds[n] = id;
-}
+void MarkProcessedSignal(string id) { PushDedupId(processedSignalIds, id); }
 
 bool HasProcessedSltp(string id)
 {
@@ -366,20 +370,7 @@ bool HasProcessedSltp(string id)
       if(processedSltpRequestIds[i] == id) return true;
    return false;
 }
-
-void MarkProcessedSltp(string id)
-{
-   if(id == "" || HasProcessedSltp(id)) return;
-   int n = ArraySize(processedSltpRequestIds);
-   if(n >= 500)
-   {
-      for(int i = 0; i < n-1; i++) processedSltpRequestIds[i] = processedSltpRequestIds[i+1];
-      processedSltpRequestIds[n-1] = id;
-      return;
-   }
-   ArrayResize(processedSltpRequestIds, n+1);
-   processedSltpRequestIds[n] = id;
-}
+void MarkProcessedSltp(string id) { PushDedupId(processedSltpRequestIds, id); }
 
 bool HasProcessedPendingModify(string id)
 {
@@ -387,20 +378,7 @@ bool HasProcessedPendingModify(string id)
       if(processedPendingModifyIds[i] == id) return true;
    return false;
 }
-
-void MarkProcessedPendingModify(string id)
-{
-   if(id == "" || HasProcessedPendingModify(id)) return;
-   int n = ArraySize(processedPendingModifyIds);
-   if(n >= 500)
-   {
-      for(int i = 0; i < n-1; i++) processedPendingModifyIds[i] = processedPendingModifyIds[i+1];
-      processedPendingModifyIds[n-1] = id;
-      return;
-   }
-   ArrayResize(processedPendingModifyIds, n+1);
-   processedPendingModifyIds[n] = id;
-}
+void MarkProcessedPendingModify(string id) { PushDedupId(processedPendingModifyIds, id); }
 
 //--- Settings polling & GV sync -----------------------------------
 void InitDefaultSettings()
@@ -536,18 +514,6 @@ double GetCommissionPerLot(string symbol)
 }
 
 //--- Volume normalization ------------------------------------------
-double NormalizeVolume(string symbol, double raw)
-{
-   double vmin = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
-   double vmax = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
-   double step = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
-   if(step <= 0) step = 0.01;
-   if(raw < vmin || raw > vmax) return 0;
-   double v = MathFloor((raw + 1e-9) / step) * step;
-   if(v < vmin) return 0;
-   return NormalizeDouble(v, 8);
-}
-
 int VolumeStepDigits(string symbol)
 {
    double step = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
@@ -806,6 +772,7 @@ void ManageTrailing()
 
       if(needModify)
       {
+         newSL = NormalizeDouble(newSL, digits);
          bool valid = isBuy
             ? (newSL < currentPrice - minDist)
             : (newSL > currentPrice + minDist);
@@ -885,7 +852,7 @@ void CheckEmergencyStop()
       CancelAllMagicPending();
       SendAccountSnapshot();
    }
-   Print("[V9 EMERGENCY] Stop complete");
+   Print("[V9 EMERGENCY] Stop active (close_all=", g_settings.emergency_close_all ? "true" : "false", ")");
 }
 
 //--- Heartbeat ------------------------------------------------------
@@ -935,7 +902,19 @@ bool OpenTrade(string id, string symbol, string tf, string direction, string raw
 
    double bid = SymbolInfoDouble(symbol, SYMBOL_BID);
    double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
-   if(bid <= 0 || ask <= 0) { Ack(id, "REJECTED", "No live quote"); return false; }
+   double point = SymbolInfoDouble(symbol, SYMBOL_POINT);
+   if(bid <= 0 || ask <= 0 || point <= 0) { Ack(id, "REJECTED", "No live quote"); return false; }
+
+   if(RejectWhenSpreadExceedsBuf && g_settings.spread_buffer_points > 0)
+   {
+      double curSpread = (ask - bid) / point;
+      if(curSpread > (double)g_settings.spread_buffer_points)
+      {
+         Ack(id, "REJECTED", StringFormat("Spread %.1f > buffer %d points",
+             curSpread, g_settings.spread_buffer_points));
+         return false;
+      }
+   }
 
    string normOrderType = "";
    string typeErr = "";
@@ -1634,7 +1613,7 @@ int OnInit()
    PollCommissions();
 
    EventSetTimer(1);
-   Print("[V9] Started v3.13 REAL HUB. magic=", MagicNumber,
+   Print("[V9] Started v3.14 REAL HUB. magic=", MagicNumber,
          " | AutoTrade=", g_settings.auto_trade_enabled ? "ON" : "OFF",
          " | Trailing=", g_settings.trailing_enabled ? "ON" : "OFF",
          " | Risk=$", DoubleToString(g_settings.risk_money, 2),
