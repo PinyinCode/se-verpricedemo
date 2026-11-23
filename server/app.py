@@ -164,6 +164,110 @@ def send_telegram_rt_signal(item: "TodaySignalItem") -> bool:
     return False
 
 
+# MongoDB mirror for the public, read-only Paper chart feed.
+MONGODB_URI = os.getenv("MONGODB_URI", "").strip()
+MONGODB_DB_NAME = os.getenv("MONGODB_DB", "forex_market").strip() or "forex_market"
+MONGODB_COLLECTION = os.getenv("MONGODB_CANDLES_COLLECTION", "paper_candles").strip() or "paper_candles"
+_mongo_client = None
+_mongo_lock = threading.Lock()
+_mongo_indexes_ready = False
+
+
+def _paper_candles_collection():
+    """Return the shared Mongo collection; the connection URI never leaves the server."""
+    global _mongo_client, _mongo_indexes_ready
+    if not MONGODB_URI:
+        return None
+    try:
+        from pymongo import MongoClient
+        with _mongo_lock:
+            if _mongo_client is None:
+                _mongo_client = MongoClient(
+                    MONGODB_URI,
+                    serverSelectionTimeoutMS=5000,
+                    connectTimeoutMS=5000,
+                    appname="ForexPaperFeed",
+                )
+            collection = _mongo_client[MONGODB_DB_NAME][MONGODB_COLLECTION]
+            if not _mongo_indexes_ready:
+                collection.create_index(
+                    [("symbol", 1), ("timeframe", 1), ("time", 1)],
+                    unique=True,
+                    name="uq_paper_symbol_tf_time",
+                )
+                collection.create_index(
+                    [("symbol", 1), ("timeframe", 1), ("time", -1)],
+                    name="ix_paper_latest",
+                )
+                _mongo_indexes_ready = True
+            return collection
+    except Exception as exc:
+        print(f"[MONGO] Paper feed unavailable: {type(exc).__name__}")
+        return None
+
+
+def _mirror_candles_to_mongo(payload: "CandleBatchIn", rows: list[tuple]) -> bool:
+    """Upsert each MT5 candle by its timestamp and keep newest 2000 per symbol/timeframe."""
+    collection = _paper_candles_collection()
+    if collection is None:
+        return False
+    try:
+        from pymongo import ReplaceOne
+        operations = []
+        for row in rows:
+            doc = {
+                "symbol": row[0], "timeframe": row[1], "time": row[2],
+                "open": row[3], "high": row[4], "low": row[5], "close": row[6],
+                "volume": row[7], "digits": row[8], "tick_size": row[9],
+                "tick_value": row[10], "volume_min": row[11],
+                "volume_max": row[12], "volume_step": row[13],
+                "updated_at": utc_now(),
+            }
+            operations.append(ReplaceOne(
+                {"symbol": doc["symbol"], "timeframe": doc["timeframe"], "time": doc["time"]},
+                doc,
+                upsert=True,
+            ))
+        if operations:
+            collection.bulk_write(operations, ordered=False)
+        cutoff_cursor = collection.find(
+            {"symbol": payload.symbol, "timeframe": payload.timeframe},
+            {"_id": 0, "time": 1},
+        ).sort("time", -1).skip(1999).limit(1)
+        cutoff_doc = next(iter(cutoff_cursor), None)
+        if cutoff_doc:
+            collection.delete_many({
+                "symbol": payload.symbol,
+                "timeframe": payload.timeframe,
+                "time": {"$lt": cutoff_doc["time"]},
+            })
+        return True
+    except Exception as exc:
+        print(f"[MONGO] Candle mirror failed: {type(exc).__name__}")
+        return False
+
+
+def _rsi_values(closes: list[float], period: int = 14) -> list[tuple[int, float]]:
+    if len(closes) <= period:
+        return []
+    gains = [max(closes[i] - closes[i - 1], 0.0) for i in range(1, len(closes))]
+    losses = [max(closes[i - 1] - closes[i], 0.0) for i in range(1, len(closes))]
+    avg_gain = sum(gains[:period]) / period
+    avg_loss = sum(losses[:period]) / period
+
+    def value(gain: float, loss: float) -> float:
+        if loss == 0:
+            return 100.0 if gain > 0 else 50.0
+        return 100.0 - 100.0 / (1.0 + gain / loss)
+
+    result = [(period, value(avg_gain, avg_loss))]
+    for i in range(period + 1, len(closes)):
+        avg_gain = (avg_gain * (period - 1) + gains[i - 1]) / period
+        avg_loss = (avg_loss * (period - 1) + losses[i - 1]) / period
+        result.append((i, value(avg_gain, avg_loss)))
+    return result
+
+
 def _get_conn() -> sqlite3.Connection:
     global _conn
     if _conn is None:
@@ -1739,8 +1843,44 @@ def update_candles(payload: CandleBatchIn):
             "(SELECT candle_time FROM candles WHERE symbol=? AND timeframe=? ORDER BY candle_time DESC LIMIT 2000)",
             (payload.symbol, payload.timeframe, payload.symbol, payload.timeframe),
         )
+    mongo_synced = _mirror_candles_to_mongo(payload, rows)
     return {"ok": True, "symbol": payload.symbol, "timeframe": payload.timeframe,
-            "received": len(rows), "updated_at": now}
+            "received": len(rows), "mongo_synced": mongo_synced, "updated_at": now}
+
+
+@app.get("/api/paper/chart")
+def paper_chart_data(
+    symbol: str = Query(min_length=3, max_length=32),
+    timeframe: Literal["M1", "M5", "M15", "M30", "H1", "H4", "D1"] = Query(default="M15"),
+    limit: int = Query(default=500, ge=50, le=2000),
+):
+    """Public read-only candles for Paper; no API key and no broker/order access."""
+    collection = _paper_candles_collection()
+    if collection is None:
+        raise HTTPException(status_code=503, detail="MongoDB Paper feed chưa sẵn sàng")
+    symbol = symbol.strip().upper()
+    docs = list(collection.find(
+        {"symbol": symbol, "timeframe": timeframe},
+        {"_id": 0, "time": 1, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1},
+    ).sort("time", -1).limit(limit))
+    docs.reverse()
+    if not docs:
+        raise HTTPException(status_code=404, detail=f"Chưa có dữ liệu {symbol} {timeframe}")
+    closes = [float(item["close"]) for item in docs]
+    rsi_data = [
+        {"time": docs[index]["time"], "value": round(value, 4)}
+        for index, value in _rsi_values(closes)
+    ]
+    return {
+        "mode": "PAPER_READ_ONLY",
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "candles": docs,
+        "rsi": rsi_data,
+        "count": len(docs),
+        "latest_time": docs[-1]["time"],
+        "server_time": utc_now(),
+    }
 
 
 @app.post("/api/mt5/commissions", dependencies=[Depends(require_key)])
