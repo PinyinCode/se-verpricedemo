@@ -37,7 +37,7 @@ def test_signal_lifecycle_is_paper_only(tmp_path, monkeypatch):
         }, headers=headers)
         assert ack.status_code == 200
 
-        dashboard = client.get("/api/dashboard").json()
+        dashboard = client.get("/api/dashboard", headers=headers).json()
         assert dashboard["counts"]["completed"] == 1
         assert dashboard["signals"][0]["ack_status"] == "SIMULATED"
 
@@ -65,7 +65,7 @@ def test_legacy_signal_source_is_deduplicated(tmp_path, monkeypatch):
         second = client.post("/api/signals", json=payload, headers=headers).json()
         assert first["signal_id"] == second["signal_id"]
         assert second["duplicate"] is True
-        assert len(client.get("/api/dashboard").json()["signals"]) == 1
+        assert len(client.get("/api/dashboard", headers=headers).json()["signals"]) == 1
 
 
 def test_chart_page_and_candle_feed(tmp_path, monkeypatch):
@@ -111,10 +111,15 @@ def test_candle_feed_requires_api_key_and_valid_ohlc(tmp_path, monkeypatch):
                                headers={"X-API-Key": "test-secret"})
         assert response.status_code == 422
 
-def test_settings_read_requires_api_key(tmp_path, monkeypatch):
+def test_auth_and_settings_reads_require_api_key(tmp_path, monkeypatch):
     with setup_client(tmp_path, monkeypatch) as client:
+        assert client.get("/api/auth/check").status_code == 401
         assert client.get("/api/settings").status_code == 401
-        response = client.get("/api/settings", headers={"X-API-Key": "test-secret"})
+        headers = {"X-API-Key": "test-secret"}
+        auth = client.get("/api/auth/check", headers=headers)
+        assert auth.status_code == 200
+        assert auth.json()["ok"] is True
+        response = client.get("/api/settings", headers=headers)
         assert response.status_code == 200
         assert "settings" in response.json()
 
