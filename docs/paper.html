@@ -1177,7 +1177,7 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
 'use strict';
 const $=id=>document.getElementById(id), STORE='forexPaperUI.v2';
 const cfg={EURUSD:[1.085,.00012,5],GBPUSD:[1.271,.00015,5],USDJPY:[149.2,.018,3],XAUUSD:[2325,.65,2],BTCUSD:[67500,38,2],USDCAD:[1.36,.00013,5],NZDUSD:[.612,.00012,5],USDCHF:[.89,.0001,5]};
-let symbol=$('symbol').value,tf=15,price=cfg[symbol][0],bars=[],positions=[],history=[],chart,rsiChart,candles,rsi,drag=null;
+let symbol=$('symbol').value,tf=15,price=cfg[symbol][0],bars=[],rsiPoints=[],positions=[],history=[],chart,rsiChart,candles,rsi,drag=null;
 const fmt=n=>Number(n).toFixed(cfg[symbol][2]), text=(id,v)=>{if($(id))$(id).textContent=v;};
 function restore(){try{const d=JSON.parse(localStorage.getItem(STORE)||'{}');positions=d.positions||[];history=d.history||[];}catch(_){}}
 function save(){try{localStorage.setItem(STORE,JSON.stringify({positions,history}));}catch(_){}}
@@ -1193,7 +1193,7 @@ function init(){
 function seed(){
  const step=cfg[symbol][1],now=Math.floor(Date.now()/(tf*60000))*(tf*60);let p=cfg[symbol][0];bars=[];
  for(let i=180;i>=0;i--){const o=p;p=Math.max(step,p+(Math.random()-.5)*step*4);bars.push({time:now-i*tf*60,open:o,high:Math.max(o,p)+Math.random()*step,low:Math.min(o,p)-Math.random()*step,close:p});}
- price=p;candles.setData(bars);rsi.setData(bars.map((b,i)=>({time:b.time,value:50+Math.sin(i/8)*17+(Math.random()-.5)*6})));chart.timeScale().fitContent();rsiChart.timeScale().fitContent();header();createLines();
+ price=p;candles.setData(bars);rsiPoints=bars.map((b,i)=>({time:b.time,value:50+Math.sin(i/8)*17+(Math.random()-.5)*6}));rsi.setData(rsiPoints);chart.timeScale().fitContent();rsiChart.timeScale().fitContent();header();createLines();
 }
 function header(){
  text('chartTitle',symbol+' · '+$('tf').value+' · PAPER');text('feedState','PAPER SIMULATION');text('positionCount',positions.length);
@@ -1212,10 +1212,11 @@ function placeLines(){if(!chart)return;$('priceChart').querySelectorAll('.paper-
 function syncCrosshair(source,target,sourceSeries,targetSeries,param){
  if(crosshairSyncing)return;
  if(!param||!param.time){crosshairSyncing=true;target.clearCrosshairPosition();crosshairSyncing=false;return;}
- const datum=param.seriesData?.get(sourceSeries);if(!datum)return;
- const value=sourceSeries===candles?datum.close:datum.value;
- if(!Number.isFinite(value))return;
- crosshairSyncing=true;target.setCrosshairPosition(value,param.time,targetSeries);crosshairSyncing=false;
+ const time=param.time;
+ const point=sourceSeries===candles?rsiPoints.find(x=>x.time===time):bars.find(x=>x.time===time);
+ const value=sourceSeries===candles?point?.value:point?.close;
+ if(!Number.isFinite(value)){crosshairSyncing=true;target.clearCrosshairPosition();crosshairSyncing=false;return;}
+ crosshairSyncing=true;target.setCrosshairPosition(value,time,targetSeries);crosshairSyncing=false;
 }
 function bindCrosshair(){chart.subscribeCrosshairMove(p=>syncCrosshair(chart,rsiChart,candles,rsi,p));rsiChart.subscribeCrosshairMove(p=>syncCrosshair(rsiChart,chart,rsi,candles,p));}
 function bindResize(handleId,kind){
