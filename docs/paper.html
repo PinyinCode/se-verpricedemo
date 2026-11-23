@@ -1264,6 +1264,9 @@ function bind(){
  text('lotResult','PAPER DEMO · đặt lệnh giả lập và kéo Entry / SL / TP trực tiếp trên chart.');
  text('contractMeta','Không tải thông số hợp đồng MT5.');text('requestState','MÔ PHỎNG CỤC BỘ · KHÔNG GỬI LỆNH THẬT');
  document.querySelectorAll('.real-layer-title').forEach(x=>x.textContent='Lớp hiển thị Demo:');
+ $('orderMode').addEventListener('change',()=>{demoMode=$('orderMode').value;});
+ ['entryPrice','slPrice','tpPrice'].forEach(id=>$(id).addEventListener('input',()=>{const key={entryPrice:'entry',slPrice:'sl',tpPrice:'tp'}[id],line=$('priceChart').querySelector('[data-level="'+key+'"]');if(line){const v=Number($(id).value);if(Number.isFinite(v)&&v>0){line.dataset.price=v;placeLines();}}}));
+ bindResize('rsiResizeHandle','rsi');bindResize('lotResizeHandle','lot');
 }
 function clock(){text('clockGMT7',new Intl.DateTimeFormat('vi-VN',{timeZone:'Asia/Ho_Chi_Minh',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date()));}
 
