@@ -417,8 +417,8 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
   border-top:1px solid #293a52;
 }
 .confirm-dialog .cd-foot button{min-width:90px}
-.confirm-dialog .cd-foot #cdCancel{background:#192941}
-.confirm-dialog .cd-foot #cdOk{background:rgba(96,165,250,.16);border-color:var(--blue);color:#93c5fd}
+.confirm-dialog .cd-foot #cdCancel,.confirm-dialog .cd-foot #cpCancel{background:#192941}
+.confirm-dialog .cd-foot #cdOk,.confirm-dialog .cd-foot #cpOk{background:rgba(96,165,250,.16);border-color:var(--blue);color:#93c5fd}
 
 .chart-overlay-bottom{
   display:flex;
@@ -1253,7 +1253,7 @@ async function apiFetch(url, options = {}) {
       ? 'API Key không hợp lệ hoặc không được máy chủ chấp nhận. Kiểm tra lại khóa trong Cài đặt.'
       : 'Chưa nhập API Key. Mở Cài đặt để nhập khóa được cấp.');
   } else if (response.status === 503) {
-    setApiAuthWarning('error', 'Render chưa cấu hình FOREX_API_KEY. Cần cấu hình biến môi trường này trên Render.');
+    setApiAuthWarning('error', 'Server chưa cấu hình FOREX_API_KEY. Cần cấu hình biến môi trường này trên Render.');
   } else if (response.ok && String(url).includes('/api/dashboard')) {
     setApiAuthWarning('', '');
   }
@@ -1882,7 +1882,7 @@ function renderRealLines() {
     marker.addEventListener('click', ev => {
       ev.preventDefault();
       ev.stopPropagation();
-      openRealPopup({ kind, data }, ev.clientX, ev.clientY, true);
+      openRealPopup({ kind, data }, ev.clientX, ev.clientY, false);
     });
     realOverlay.appendChild(marker);
     realLineEls.push({ el: marker, type: 'entry-marker', key: 'entry-marker' });
@@ -1963,13 +1963,17 @@ function proposeRealLevelChange(payload, key, oldPrice, newPrice) {
   }
 
   if (isPending) {
+    const rawOt = String(d.order_type || '').toUpperCase();
+    const normOt = (rawOt === 'BUY_LIMIT' || rawOt === 'SELL_LIMIT')
+      ? rawOt
+      : (dir === 'SELL' ? 'SELL_LIMIT' : 'BUY_LIMIT');
     pendingPendingChange = {
       ticket: String(d.ticket ?? d.id ?? ''),
-      symbol: d.symbol, direction: dir, order_type: d.order_type || '',
+      symbol: d.symbol, direction: dir, order_type: normOt,
       oldEntry: entry, oldSl: curSl, oldTp: curTp,
       newEntry: desiredEntry, newSl: desiredSl, newTp: desiredTp,
     };
-    $('cpTicket').textContent = `${d.symbol} ${dir} #${pendingPendingChange.ticket}`;
+    $('cpTicket').textContent = `${d.symbol} ${normOt.replace('_', ' ')} #${pendingPendingChange.ticket}`;
     $('cpOldEntry').textContent = entry > 0 ? entry.toFixed(mt5Digits) : '—';
     $('cpNewEntry').textContent = desiredEntry > 0 ? desiredEntry.toFixed(mt5Digits) : '—';
     $('cpOldSl').textContent = curSl > 0 ? curSl.toFixed(mt5Digits) : '—';
@@ -2018,7 +2022,6 @@ function updateRealDragAtClientY(clientY) {
   const rect = $('priceChart').getBoundingClientRect();
   const clampedY = Math.max(0, Math.min(rect.height, clientY - rect.top));
   item.el.style.top = clampedY + 'px';
-  item.el.dataset.price = String(item.currentPrice);
 
   const rawPrice = candleSeries.coordinateToPrice(clampedY);
   if (rawPrice == null || !Number.isFinite(rawPrice)) return;
@@ -2072,7 +2075,9 @@ function finishAnyLineDrag(ev) {
 
     if (!item.moved) {
       if (item.key === 'entry' && item.payload && item.payload.kind === 'pending') {
-        openRealPopup(item.payload, ev.clientX, ev.clientY);
+        const px = ev && Number.isFinite(ev.clientX) ? ev.clientX : item.startX;
+        const py = ev && Number.isFinite(ev.clientY) ? ev.clientY : item.startY;
+        openRealPopup(item.payload, px, py);
       }
       renderRealLines();
       return;
@@ -2090,6 +2095,22 @@ function finishAnyLineDrag(ev) {
 
 window.addEventListener('pointerup', finishAnyLineDrag);
 window.addEventListener('pointercancel', finishAnyLineDrag);
+
+async function pollPendingModifyAck(requestId, timeoutMs = 20000) {
+  if (!requestId) return null;
+  const started = Date.now();
+  while (Date.now() - started < timeoutMs) {
+    await new Promise(r => setTimeout(r, 700));
+    const r = await apiFetch(API_BASE + '/api/mt5/pending-modify-requests/' + encodeURIComponent(requestId), { cache: 'no-store' });
+    if (!r.ok) continue;
+    const d = await r.json().catch(() => ({}));
+    const req = d && d.request;
+    if (!req) continue;
+    if (req.status === 'acked') return req;
+    if (req.status === 'expired') return req;
+  }
+  return null;
+}
 
 $('cpCancel').addEventListener('click', () => {
   pendingPendingChange = null;
@@ -2115,6 +2136,7 @@ $('cpOk').addEventListener('click', async () => {
     new_entry: changeRef.newEntry, new_sl: changeRef.newSl, new_tp: changeRef.newTp,
   };
   $('confirmPendingDialog').close();
+  pendingPendingChange = null;
   applyOptimisticPendingUpdate(changeRef.ticket, changeRef.newEntry, changeRef.newSl, changeRef.newTp);
   $('requestState').textContent = 'Đang gửi yêu cầu sửa lệnh chờ...';
   try {
@@ -2123,12 +2145,24 @@ $('cpOk').addEventListener('click', async () => {
     });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
-    $('requestState').textContent = 'Đã cập nhật lệnh chờ mới · chờ MT5 xác nhận';
-    pendingPendingChange = null;
+    $('requestState').textContent = 'Đã gửi lệnh chờ · đang chờ MT5 xác nhận...';
+    const acked = await pollPendingModifyAck(d.request_id);
+    if (acked && acked.status === 'acked' && acked.ok === true) {
+      $('requestState').textContent = 'MT5 đã cập nhật lệnh chờ thành công' + (acked.message ? ' · ' + acked.message : '');
+      await refreshChartPositions();
+    } else if (acked && acked.status === 'acked' && acked.ok === false) {
+      $('requestState').textContent = 'MT5 từ chối sửa lệnh chờ: ' + (acked.message || 'Lỗi không xác định') + ' · đã hoàn tác.';
+      applyOptimisticPendingUpdate(changeRef.ticket, changeRef.oldEntry, changeRef.oldSl, changeRef.oldTp);
+      await refreshChartPositions();
+    } else if (acked && acked.status === 'expired') {
+      $('requestState').textContent = 'Hết hạn chờ MT5 phản hồi sửa lệnh chờ · đã hoàn tác.';
+      applyOptimisticPendingUpdate(changeRef.ticket, changeRef.oldEntry, changeRef.oldSl, changeRef.oldTp);
+    } else {
+      $('requestState').textContent = 'Đã gửi yêu cầu sửa lệnh chờ · đang chờ EA xử lý';
+    }
   } catch (e) {
     $('requestState').textContent = 'Không gửi được yêu cầu sửa lệnh chờ: ' + e.message;
     applyOptimisticPendingUpdate(changeRef.ticket, changeRef.oldEntry, changeRef.oldSl, changeRef.oldTp);
-    pendingPendingChange = null;
   }
 });
 
@@ -2196,7 +2230,7 @@ document.addEventListener('click', e => {
   const p = $('realPopup');
   if (p.classList.contains('hidden')) return;
   if (p.contains(e.target)) return;
-  if (e.target.closest && e.target.closest('.real-line')) return;
+  if (e.target.closest && (e.target.closest('.real-line') || e.target.closest('.real-entry-marker'))) return;
   closeRealPopup();
 });
 
@@ -2216,7 +2250,6 @@ function rsi(values, period = 14) {
 }
 
 const knownRealtimeByView = new Map();
-let activeRealtimeSignal = null;
 function signalKey(s) {
   return [s.symbol,s.timeframe,s.direction,s.divergence,s.signal_type,s.signal_time].join('|');
 }
@@ -2224,7 +2257,6 @@ function signalTimeText(s) {
   return new Date(Number(s.signal_time) * 1000).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
 }
 function showRealtimeToast(s, count = 1) {
-  activeRealtimeSignal = s;
   let toast = $('rtSignalToast');
   if (!toast) {
     toast = document.createElement('div');
@@ -3280,8 +3312,7 @@ async function sendOrder(direction) {
       else if (tp > 0 && tp >= entry) error = 'SELL LIMIT yêu cầu TP < Entry.';
     }
     if (error) { $('requestState').textContent = error; return; }
-    const orderType = requestedLimitType;
-    const limitLabel = orderType.replace('_', ' ');
+    const limitLabel = requestedLimitType.replace('_', ' ');
     const summary =
       `XÁC NHẬN LỆNH (${limitLabel})\n\n`
       + `Loại lệnh: ${limitLabel}\n`
@@ -3294,7 +3325,7 @@ async function sendOrder(direction) {
       + `Tổng Risk dự kiến: $${c.actualRisk.toFixed(2)} / $${c.risk.toFixed(2)} (SL $${c.slRisk.toFixed(2)} + Comm $${c.commission.toFixed(2)} + Buf $${c.spreadCost.toFixed(2)})\n\n`
       + `Gửi lệnh ${limitLabel} lên MT5 thật? Tiếp tục?`;
     if (!window.confirm(summary)) return;
-    const payload = { symbol: $('symbol').value, timeframe: $('tf').value, direction, mode: 'PENDING', order_type: orderType, entry, sl: c.s, tp, risk_money: c.risk, requested_lot: c.lot, score: 0, source: 'web-chart' };
+    const payload = { symbol: $('symbol').value, timeframe: $('tf').value, direction, order_type: requestedLimitType, entry, sl: c.s, tp, risk_money: c.risk, requested_lot: c.lot, score: 0, source: 'web-chart' };
     $('requestState').textContent = 'Đang gửi yêu cầu ' + limitLabel + '...';
     try {
       const r = await apiFetch(API_BASE + '/api/chart/order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
@@ -3325,7 +3356,7 @@ async function sendOrder(direction) {
     + `Tổng Risk dự kiến: $${c.actualRisk.toFixed(2)} / $${c.risk.toFixed(2)} (SL $${c.slRisk.toFixed(2)} + Comm $${c.commission.toFixed(2)} + Buf $${c.spreadCost.toFixed(2)})\n\n`
     + `Gửi lệnh ${direction} lên MT5 thật? Tiếp tục?`;
   if (!window.confirm(summary)) return;
-  const payload = { symbol: $('symbol').value, timeframe: $('tf').value, direction, mode: 'MARKET', order_type: 'MARKET', entry: refPrice, sl: c.s, tp, risk_money: c.risk, requested_lot: c.lot, score: 0, source: 'web-chart' };
+  const payload = { symbol: $('symbol').value, timeframe: $('tf').value, direction, order_type: 'MARKET', entry: refPrice, sl: c.s, tp, risk_money: c.risk, requested_lot: c.lot, score: 0, source: 'web-chart' };
   $('requestState').textContent = 'Đang gửi yêu cầu...';
   try {
     const r = await apiFetch(API_BASE + '/api/chart/order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
