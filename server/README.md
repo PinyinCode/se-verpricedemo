@@ -78,3 +78,18 @@ The tests cover health, API-key protection, signal validation, claim/ack lifecyc
 - `GET /` — web dashboard.
 
 Database defaults to `server/forex_demo.db`; override with `FOREX_DB_PATH`.
+
+## MongoDB live candle mirror for the public Paper page
+
+The existing `ServerConnector_Demo.mq5` already posts candle batches to `POST /api/mt5/candles` on its configured chart-feed interval. The API now mirrors those batches into MongoDB Atlas:
+- Collection: `forex_market.paper_candles` (configurable).
+- Unique key: `symbol + timeframe + time`; repeated updates to the still-forming candle overwrite that candle rather than creating duplicates.
+- Rolling retention: newest 2,000 candles per symbol/timeframe; older candles are deleted after each batch.
+- Public Paper read endpoint: `GET /api/paper/chart?symbol=EURUSD&timeframe=M15&limit=500`. It is read-only and does not expose the MongoDB URI or broker/order endpoints.
+
+Set these variables in the backend host (Render service → Environment), not in frontend JavaScript or Git:
+- `MONGODB_URI`: MongoDB Atlas connection string. Mark it secret and keep it private.
+- `MONGODB_DB`: optional; defaults to `forex_market`.
+- `MONGODB_CANDLES_COLLECTION`: optional; defaults to `paper_candles`.
+
+Install dependencies from `server/requirements.txt` and redeploy the backend after adding the MongoDB URI. Keep the MT5 Connector running with `EnableChartCandleFeed=true`; its existing defaults publish the configured symbols/timeframes every 10 seconds. The Paper page polls the public read-only endpoint every 15 seconds. No GitHub Actions API key or daily snapshot job is required.
