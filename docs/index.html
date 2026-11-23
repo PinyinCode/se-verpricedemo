@@ -1786,6 +1786,7 @@ function renderRealLines() {
     el.style.top = y + 'px';
     el.dataset.type = type;
     el.dataset.key = key || '';
+    el.dataset.price = String(price);
     el.dataset.side = side || '';
     const span = document.createElement('span');
     span.textContent = label;
@@ -1844,6 +1845,7 @@ function renderRealLines() {
     const marker = document.createElement('button');
     marker.type = 'button';
     marker.className = 'real-entry-marker ' + (direction === 'BUY' ? 'buy' : 'sell') + (kind === 'pending' ? ' pending' : '');
+    marker.dataset.price = String(entry);
     marker.textContent = direction === 'BUY' ? '▲ BUY' : '▼ SELL';
     marker.title = 'Xem chi tiết lệnh #' + String(data.ticket ?? data.id ?? '');
     marker.style.cssText = 'position:absolute;left:' + (10 + (index % 4) * 62) + 'px;top:' + Math.max(2, y - 11) + 'px;z-index:12;padding:3px 6px;border-radius:5px;border:1px solid ' + (direction === 'BUY' ? '#218765' : '#a44758') + ';background:' + (direction === 'BUY' ? 'rgba(18,92,68,.96)' : 'rgba(111,39,54,.96)') + ';color:#fff;font-size:10px;font-weight:800;line-height:14px;cursor:pointer;white-space:nowrap;pointer-events:auto;';
@@ -2753,6 +2755,38 @@ function setLevelLines() {
     }
   }
 }
+
+// Đồng bộ tọa độ các đường giá ngay trong lúc kéo/thay đổi thang giá.
+// Chỉ cập nhật lớp hiển thị; không thay đổi dữ liệu lệnh hoặc gửi API.
+function syncChartPriceOverlays() {
+  setLevelLines();
+  for (const item of realLineEls) {
+    const el = item && item.el;
+    if (!el || !el.isConnected) continue;
+    const price = Number(el.dataset.price);
+    if (!(price > 0)) continue;
+    const y = candleSeries.priceToCoordinate(price);
+    if (y == null || !Number.isFinite(y)) continue;
+    el.style.top = (item.type === 'entry-marker' ? Math.max(2, y - 11) : y) + 'px';
+  }
+}
+
+let chartOverlaySyncRaf = 0;
+function requestChartPriceOverlaySync() {
+  if (chartOverlaySyncRaf) return;
+  chartOverlaySyncRaf = requestAnimationFrame(() => {
+    chartOverlaySyncRaf = 0;
+    syncChartPriceOverlays();
+  });
+}
+
+// Bắt sự kiện ở capture phase để vẫn nhận được thao tác kéo trực tiếp trên trục giá.
+const priceChartElement = $('priceChart');
+priceChartElement.addEventListener('pointermove', requestChartPriceOverlaySync, true);
+priceChartElement.addEventListener('pointerup', requestChartPriceOverlaySync, true);
+priceChartElement.addEventListener('pointercancel', requestChartPriceOverlaySync, true);
+priceChartElement.addEventListener('wheel', requestChartPriceOverlaySync, { capture: true, passive: true });
+window.addEventListener('resize', requestChartPriceOverlaySync, { passive: true });
 
 function updateDirectionFromSL() {
   const mode = $('orderMode').value;
