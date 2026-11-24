@@ -8,8 +8,7 @@
 .account-auth-btn.google{background:#f8fafc;color:#182334;border-color:#cbd5e1}
 .account-auth-btn:disabled{opacity:.55;cursor:wait}
 .account-auth-msg{min-height:20px;margin-top:12px;color:#fca5a5;font-size:12px;white-space:pre-wrap}
-#accountAuthDock{display:none;position:fixed;top:10px;right:12px;z-index:2147482000;align-items:center;gap:8px;max-width:calc(100vw - 24px);padding:7px 9px;border:1px solid #43536a;border-radius:10px;background:#142239;color:#e8eef7;font-size:11px;box-shadow:0 5px 18px #0008}
-#accountUserEmail{max-width:min(42vw,260px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-#accountAuthDock button{flex:none;border:1px solid #64748b;border-radius:7px;padding:7px 10px;background:#263b56;color:#fff;cursor:pointer;font-weight:700}
+#accountAuthDock{display:none;align-items:center;justify-content:space-between;gap:10px;width:100%;margin-top:14px;padding:10px 12px;border:1px solid #43536a;border-radius:10px;background:#142239;color:#e8eef7;font-size:12px}
+#accountUserEmail{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#accountAuthDock button{flex:none;border:1px solid #64748b;border-radius:7px;padding:8px 12px;background:#263b56;color:#fff;cursor:pointer;font-weight:700}
 #accountAuthDock button:hover{background:#345477}
-@media(max-width:520px){#accountAuthDock{top:8px;right:8px;padding:6px 8px}#accountUserEmail{max-width:34vw}}
