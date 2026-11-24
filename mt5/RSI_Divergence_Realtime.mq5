@@ -4,7 +4,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026"
 #property link      "https://www.mql5.com"
-#property version   "1.10"
+#property version   "1.11"
 #property indicator_chart_window
 #property indicator_buffers 1
 #property indicator_plots   1
@@ -209,6 +209,8 @@ int PostJsonToServer(string url, string jsonPayload, string &outResponse)
 {
    outResponse = "";
    if(url == "") return -1;
+   if(!TerminalInfoInteger(TERMINAL_DLLS_ALLOWED) && !MQLInfoInteger(MQL_TRADE_ALLOWED))
+      return -1;
 
    char postData[];
    int bodyLen = StringToCharArray(jsonPayload, postData, 0, WHOLE_ARRAY, CP_UTF8);
@@ -343,7 +345,7 @@ string BuildDedupSource(string signalKey)
    return dedupSource;
 }
 
-//--- Ghi tín hiệu trực tiếp sang Global Variables cho TRADE_V9 -----
+//--- Ghi tín hiệu trực tiếp sang Global Variables cho EA ----------
 void PublishDirectSignalToEA_GV(int idx, string sym, string side, string orderType,
                                 double entryPrice, double slPrice, double tpPrice,
                                 datetime signalTime, string signalKey)
@@ -393,20 +395,19 @@ void EmitRealtimeSignal(int idx, string sym, string tfStr, string side, string d
    if(entryPrice <= 0 || slPrice <= 0) return;
    if(!IsValidSLForDirection(side, entryPrice, slPrice)) return;
 
-   // 1. Luôn đẩy trực tiếp qua GV để EA tự đọc & vào lệnh ngay trên MT5
+   // 1. Luôn ghi trực tiếp qua GV cho EA — độc lập hoàn toàn với WebRequest
    PublishDirectSignalToEA_GV(idx, sym, side, "MARKET", entryPrice, slPrice, tpPrice, signalTime, signalKey);
 
-   // 2. Gửi lên server nếu bật EnableServerSend
-   if(!EnableServerSend || ServerSignalUrl == "") return;
+   // 2. Gửi HTTP lên server chỉ là luồng đồng bộ phụ; không ảnh hưởng việc vào lệnh
+   if(!EnableServerSend) return;
+   string targetUrl = (ServerSignalUrl != "") ? ServerSignalUrl : BuildServerEndpoint("/api/signals/realtime");
 
    datetime now = TimeCurrent();
    bool hasIdx = (idx >= 0 && idx < ArraySize(arrSymTF));
-   if(hasIdx)
-   {
-      if(signalKey == arrSymTF[idx].lastSentSignalKey &&
-         (now - arrSymTF[idx].lastSentSignalTime) < MathMax(1, ServerResendSeconds))
-         return;
-   }
+   int resendSec = MathMax(1, ServerResendSeconds);
+   if(hasIdx && signalKey == arrSymTF[idx].lastSentSignalKey &&
+      (now - arrSymTF[idx].lastSentSignalTime) < resendSec)
+      return;
 
    int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
    if(digits <= 0) digits = 5;
@@ -427,21 +428,27 @@ void EmitRealtimeSignal(int idx, string sym, string tfStr, string side, string d
    );
 
    string respStr = "";
-   int httpCode = PostJsonToServer(ServerSignalUrl, payload, respStr);
+   int httpCode = PostJsonToServer(targetUrl, payload, respStr);
+
+   // Cập nhật key/time để tránh gọi WebRequest lỗi liên tục mỗi nhịp quét
+   if(hasIdx)
+   {
+      arrSymTF[idx].lastSentSignalKey = signalKey;
+      arrSymTF[idx].lastSentSignalTime = now;
+   }
 
    if(httpCode >= 200 && httpCode < 300)
    {
-      if(hasIdx)
-      {
-         arrSymTF[idx].lastSentSignalKey = signalKey;
-         arrSymTF[idx].lastSentSignalTime = now;
-      }
       Print("SERVER RT SIGNAL SENT [HTTP ", httpCode, "]: ", signalKey, " (", side, " ", divType, ") src=", dedupSource);
    }
    else
    {
-      int err = GetLastError();
-      Print("SERVER RT SIGNAL FAILED [HTTP ", httpCode, ", err=", err, "]: ", signalKey, " | ", respStr);
+      static datetime lastErrLogTime = 0;
+      if(now - lastErrLogTime >= 30)
+      {
+         lastErrLogTime = now;
+         Print("SERVER RT SIGNAL SKIP/ERR [HTTP ", httpCode, ", err=", GetLastError(), "] (GV already written): ", signalKey);
+      }
    }
 }
 
@@ -1331,7 +1338,7 @@ int OnInit()
    if(tfList == "") tfList = "NONE!";
 
    Print("═══════════════════════════════════════════");
-   Print("RSI Divergence Realtime v1.10");
+   Print("RSI Divergence Realtime v1.11");
    Print("   Timeframes: ", tfList);
    Print("   Direct EA GV: ", PublishToDirectEA_GV ? "ON" : "OFF");
    Print("   Server Sync: ", EnableServerSync ? "ON" : "OFF");
