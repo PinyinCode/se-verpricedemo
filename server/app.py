@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Forex AI bridge API. MT5 real-order only; no paper simulation."""
+"""Forex AI bridge API."""
 from __future__ import annotations
 
 import hashlib
@@ -1539,9 +1539,8 @@ def update_candles(payload: CandleBatchIn):
             "(SELECT candle_time FROM candles WHERE symbol=? AND timeframe=? ORDER BY candle_time DESC LIMIT 2000)",
             (payload.symbol, payload.timeframe, payload.symbol, payload.timeframe),
         )
-    mongo_synced = False  # Paper/Mongo persistence disabled
     return {"ok": True, "symbol": payload.symbol, "timeframe": payload.timeframe,
-            "received": len(rows), "mongo_synced": mongo_synced, "updated_at": now}
+            "received": len(rows), "updated_at": now}
 
 
 @app.post("/api/mt5/commissions", dependencies=[Depends(require_key)])
