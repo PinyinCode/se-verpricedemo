@@ -877,7 +877,6 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
   <div><span class="brand">Forex AI · Chart</span> <span class="muted">/ MT5 real feed</span></div>
   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
     <span class="tag">MT5 REAL</span>
-    <a href="./paper.html" style="display:inline-flex;align-items:center;padding:4px 10px;border:1px solid #47708f;border-radius:20px;color:#b8dcff;text-decoration:none;font-size:11px">PAPER DEMO</a>
   </div>
 </header>
 
@@ -3720,12 +3719,12 @@ async function checkServerStatus() {
 
 ensureApiAuthWarnings();
 refreshApiKeyBox();
-if (!chartApiKey) {
-  location.replace('./paper.html');
+if (chartApiKey) {
+  void validateApiAccess();
 } else {
-  void validateApiAccess().then(valid => {
-    if (!valid) location.replace('./paper.html');
-  });
+  stopAuthorizedPolling();
+  setApiAuthWarning('error', 'Cần đăng nhập và xác thực trước khi sử dụng.');
+  $('feedState').textContent = 'Chưa xác thực quyền truy cập';
 }
 syncRealLayerToggles();
 bindRealLayerToggles();
