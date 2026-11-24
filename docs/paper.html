@@ -1226,7 +1226,7 @@ async function seed(resetLevels=true,force=false){
   }
   if(symbol!==selectedSymbol||$('tf').value!==selectedTf)return;
   const dataset=historyPayload?.symbols?.[selectedSymbol]?.[selectedTf];
-  if(!Array.isArray(dataset)||dataset.length<20)throw new Error('Chưa có dữ liệu '+selectedSymbol+' '+selectedTf+' trên GitHub. Hãy chờ workflow tải dữ liệu tuần.');
+  if(!Array.isArray(dataset)||dataset.length<20)throw new Error('Chưa có dữ liệu '+selectedSymbol+' '+selectedTf+' trên GitHub. Hãy kiểm tra log PAPER_HISTORY trên Render rồi tải lại.');
   bars=dataset.map(x=>({time:Number(x.time),open:Number(x.open),high:Number(x.high),low:Number(x.low),close:Number(x.close)}))
    .filter(x=>Number.isFinite(x.time)&&[x.open,x.high,x.low,x.close].every(Number.isFinite))
    .sort((a,b)=>a.time-b.time);
