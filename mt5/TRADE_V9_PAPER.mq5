@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
 //| TRADE_V9_PAPER.mq5                                               |
-//| Đọc tín hiệu Indicator qua GV_IND_<SYM>_* + Lệnh tay /api/mt5/next|
-//| Server cung cấp & đồng bộ thông số (/api/settings).              |
-//| Tự tính SL/TP/Lot, chặn tin ±N phút, tự trailing/BE, cache local.|
+//| Đọc cấu hình từ Server (/api/settings) + Cache local.          |
+//| Chỉ lấy ENTRY & SL từ Indicator (GV_IND_<SYM>_*), tự tính Lot/TP. |
+//| Vào lệnh độc lập với WebRequest tại thời điểm có tín hiệu.        |
 //+------------------------------------------------------------------+
 #property strict
-#property version "3.20"
+#property version "3.21"
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
@@ -480,8 +480,19 @@ bool Request(string method, string path, string body, string &response, int &sta
    else ArrayResize(data, 0);
    string headers = "X-API-Key: " + ApiKey + "\r\nContent-Type: application/json\r\n";
    string responseHeaders;
-   status = WebRequest(method, ServerBaseURL + path, headers, 5000, data, result, responseHeaders);
-   if(status == -1) { Print("[V9] WebRequest error=", GetLastError()); response=""; return false; }
+   ResetLastError();
+   status = WebRequest(method, ServerBaseURL + path, headers, 3000, data, result, responseHeaders);
+   if(status == -1)
+   {
+      static datetime lastReqErrLog = 0;
+      if(TimeCurrent() - lastReqErrLog >= 30)
+      {
+         lastReqErrLog = TimeCurrent();
+         Print("[V9] WebRequest error=", GetLastError(), " path=", path);
+      }
+      response = "";
+      return false;
+   }
    response = CharArrayToString(result, 0, -1, CP_UTF8);
    return status >= 200 && status < 300;
 }
@@ -609,6 +620,7 @@ bool ApplySettingsJson(string obj, bool saveDisk)
    g_settings.news_block_after_min           = JsonIntValue(obj, "news_block_after_min", g_settings.news_block_after_min);
 
    string rawNewsJson                        = JsonValue(obj, "news_events_json");
+   if(rawNewsJson == "") rawNewsJson          = JsonArrayValue(obj, "news_events_json");
    if(rawNewsJson != "") g_settings.news_events_json = rawNewsJson;
 
    g_settings.time_filter_enabled            = JsonBoolValue(obj, "time_filter_enabled", g_settings.time_filter_enabled);
@@ -690,10 +702,7 @@ void PollSettings()
 {
    string response; int status;
    if(!Request("GET", "/api/settings", "", response, status))
-   {
-      Print("[V9 SETTINGS] Poll failed HTTP=", status, " (using cached settings)");
       return;
-   }
    string obj = JsonObjectValue(response, "settings");
    if(obj == "") return;
    ApplySettingsJson(obj, true);
@@ -704,10 +713,7 @@ void PollCommissions()
 {
    string response; int status;
    if(!Request("GET", "/api/mt5/commissions", "", response, status))
-   {
-      Print("[V9 COMM] Poll failed HTTP=", status);
       return;
-   }
    string arr = JsonArrayValue(response, "items");
    if(arr == "") return;
 
@@ -1097,7 +1103,7 @@ void SendHeartbeat()
       lastHeartbeatMs = GetTickCount();
 }
 
-//--- Open trade directly from Indicator signal -----------------------
+//--- Open trade using ONLY Entry & SL from Indicator + Server settings
 bool ResolveOrderTypeFromCode(int otCode, string direction, string &normOrderType, string &errOut)
 {
    if(otCode == 0)
@@ -1124,7 +1130,7 @@ bool ResolveOrderTypeFromCode(int otCode, string direction, string &normOrderTyp
 }
 
 bool ExecuteIndicatorSignal(string sigKey, string symbol, string direction, int otCode,
-                            double entry, double sl, double tpRequested)
+                            double indEntry, double indSl)
 {
    if(!SymbolSelect(symbol, true))
    {
@@ -1160,8 +1166,17 @@ bool ExecuteIndicatorSignal(string sigKey, string symbol, string direction, int 
       return false;
    }
 
-   if(normOrderType == "MARKET" && entry <= 0)
+   // Chỉ lấy ENTRY và SL từ Indicator; nếu lệnh MARKET không có entry hợp lệ thì dùng giá thị trường hiện tại
+   double entry = indEntry;
+   if(normOrderType == "MARKET")
       entry = (direction == "BUY") ? ask : bid;
+
+   double sl = indSl;
+   if(entry <= 0 || sl <= 0)
+   {
+      Print("[V9 IND SKIP] ", sigKey, " invalid entry/sl from indicator");
+      return false;
+   }
 
    bool isLimit = (normOrderType == "BUY_LIMIT" || normOrderType == "SELL_LIMIT");
    if(isLimit)
@@ -1186,7 +1201,7 @@ bool ExecuteIndicatorSignal(string sigKey, string symbol, string direction, int 
    }
    if((direction == "BUY" && sl >= entry) || (direction == "SELL" && sl <= entry))
    {
-      Print("[V9 IND SKIP] ", sigKey, " invalid SL geometry");
+      Print("[V9 IND SKIP] ", sigKey, " invalid SL direction vs entry");
       return false;
    }
 
@@ -1240,11 +1255,9 @@ bool ExecuteIndicatorSignal(string sigKey, string symbol, string direction, int 
       return false;
    }
 
-   double tp = tpRequested > 0
-      ? tpRequested
-      : ((direction == "BUY")
-         ? entry + slDistance * g_settings.reward_risk_ratio
-         : entry - slDistance * g_settings.reward_risk_ratio);
+   double tp = (direction == "BUY")
+      ? entry + slDistance * g_settings.reward_risk_ratio
+      : entry - slDistance * g_settings.reward_risk_ratio;
 
    if((direction == "BUY" && tp <= entry) || (direction == "SELL" && tp >= entry))
    {
@@ -1309,7 +1322,6 @@ void CheckIndicatorSymbolSignal(string symbol)
    int otCode = (int)MathRound(GlobalVariableGet(pfx + "ORDER_TYPE"));
    double entry = GlobalVariableGet(pfx + "ENTRY");
    double sl = GlobalVariableGet(pfx + "SL");
-   double tp = GlobalVariableGet(pfx + "TP");
 
    string sigKey = symUp + ":" + IntegerToString(seq) + ":" + IntegerToString(sigTime);
    if(HasProcessedSignalKey(sigKey)) return;
@@ -1362,7 +1374,7 @@ void CheckIndicatorSymbolSignal(string symbol)
    }
 
    MarkProcessedSignalKey(sigKey);
-   if(ExecuteIndicatorSignal(sigKey, symUp, direction, otCode, entry, sl, tp))
+   if(ExecuteIndicatorSignal(sigKey, symUp, direction, otCode, entry, sl))
       SendAccountSnapshot();
 }
 
@@ -2027,7 +2039,7 @@ int OnInit()
    PollCommissions();
 
    EventSetTimer(1);
-   Print("[V9] Started v3.20 DIRECT-INDICATOR + MANUAL HUB. magic=", MagicNumber,
+   Print("[V9] Started v3.21 DIRECT-INDICATOR + MANUAL HUB. magic=", MagicNumber,
          " | AutoTrade=", g_settings.auto_trade_enabled ? "ON" : "OFF",
          " | Trailing=", g_settings.trailing_enabled ? "ON" : "OFF",
          " | NewsWindow=-", g_settings.news_block_before_min, "m/+", g_settings.news_block_after_min, "m",
@@ -2044,10 +2056,26 @@ void OnTick()
 
 void OnTimer()
 {
+   GlobalVariableSet("HB_TradeManager", (double)TimeCurrent());
    uint nowMs = GetTickCount();
 
    if(TimeCurrent() - g_lastOffsetCalcTime > 3600)
       CalculateServerGMTOffset();
+
+   // Luôn ưu tiên quét tín hiệu trực tiếp qua GV trước để không bị trễ do mạng/HTTP
+   if(lastIndicatorPollMs == 0 ||
+      (uint)(nowMs - lastIndicatorPollMs) >= (uint)(g_settings.poll_seconds * 1000))
+   {
+      lastIndicatorPollMs = nowMs;
+      PollIndicatorSignals();
+   }
+
+   if(lastTrailingCheckMs == 0 ||
+      (uint)(nowMs - lastTrailingCheckMs) >= (uint)(g_settings.trailing_check_seconds * 1000))
+   {
+      lastTrailingCheckMs = nowMs;
+      ManageTrailing();
+   }
 
    if(lastSettingsPollMs == 0 ||
       (uint)(nowMs - lastSettingsPollMs) >= (uint)(g_settings.settings_poll_seconds * 1000))
@@ -2069,18 +2097,8 @@ void OnTimer()
       (uint)(nowMs - lastHeartbeatMs) >= (uint)(g_settings.heartbeat_seconds * 1000))
       SendHeartbeat();
 
-   if(lastTrailingCheckMs == 0 ||
-      (uint)(nowMs - lastTrailingCheckMs) >= (uint)(g_settings.trailing_check_seconds * 1000))
+   if((uint)(nowMs - lastIndicatorPollMs) < 100)
    {
-      lastTrailingCheckMs = nowMs;
-      ManageTrailing();
-   }
-
-   if(lastIndicatorPollMs == 0 ||
-      (uint)(nowMs - lastIndicatorPollMs) >= (uint)(g_settings.poll_seconds * 1000))
-   {
-      lastIndicatorPollMs = nowMs;
-      PollIndicatorSignals();
       PollManualChartOrders();
       PollCloseCommands();
    }
@@ -2113,3 +2131,4 @@ void OnTimer()
       PublishRealClosedDeals();
    }
 }
+//+------------------------------------------------------------------+
