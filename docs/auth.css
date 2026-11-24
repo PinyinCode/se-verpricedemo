@@ -1,0 +1,12 @@
+#accountAuthOverlay{position:fixed;inset:0;z-index:2147483000;display:grid;place-items:center;padding:20px;background:#080f1b;color:#e8eef7;font:14px/1.5 system-ui,-apple-system,Arial,sans-serif}
+#accountAuthOverlay[hidden]{display:none}
+.account-auth-card{width:min(100%,390px);padding:28px 24px;border:1px solid #26364c;border-radius:18px;background:linear-gradient(145deg,#142239,#101b2c);box-shadow:0 24px 70px #0009}
+.account-auth-title{margin:0 0 6px;font-size:22px;font-weight:800;text-align:center}
+.account-auth-sub{margin:0 0 22px;color:#91a2b8;text-align:center;font-size:12px}
+.account-auth-input{display:block;width:100%;box-sizing:border-box;margin:10px 0;padding:12px 13px;border:1px solid #33465f;border-radius:9px;background:#080f1b;color:#e8eef7;font:inherit}
+.account-auth-btn{width:100%;margin-top:10px;padding:12px;border:1px solid #315d85;border-radius:9px;background:#173654;color:#fff;font:600 14px system-ui;cursor:pointer}
+.account-auth-btn.google{background:#f8fafc;color:#182334;border-color:#cbd5e1}
+.account-auth-btn:disabled{opacity:.55;cursor:wait}
+.account-auth-msg{min-height:20px;margin-top:12px;color:#fca5a5;font-size:12px;white-space:pre-wrap}
+#accountAuthDock{display:none;align-items:center;gap:8px;font-size:11px;color:#b9c8da}
+#accountAuthDock button{border:1px solid #43536a;border-radius:7px;padding:5px 8px;background:#142239;color:#e8eef7;cursor:pointer}
