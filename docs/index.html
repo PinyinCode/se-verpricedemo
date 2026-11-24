@@ -869,14 +869,33 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
   body.trade-fullscreen .chart-stage #rsiChart{height:48px}
 }
 </style>
+<link rel="stylesheet" href="./auth.css">
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script src="./config.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/lightweight-charts@4.2.2/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body class="trade-fullscreen">
+<div id="accountAuthOverlay" role="dialog" aria-modal="true" aria-labelledby="accountAuthTitle">
+ <div class="account-auth-card">
+  <h1 class="account-auth-title" id="accountAuthTitle">Forex AI · Đăng nhập</h1>
+  <p class="account-auth-sub">Đăng nhập tài khoản đã được cấp quyền để tiếp tục</p>
+  <button class="account-auth-btn google" id="accountGoogleBtn" type="button">Đăng nhập bằng Google</button>
+  <form id="accountEmailForm">
+   <input class="account-auth-input" id="accountEmail" type="email" autocomplete="username" placeholder="Email" required>
+   <input class="account-auth-input" id="accountPassword" type="password" autocomplete="current-password" placeholder="Mật khẩu" required>
+   <button class="account-auth-btn" id="accountLoginBtn" type="submit">Đăng nhập</button>
+  </form>
+  <button class="account-auth-btn" id="accountForgotBtn" type="button">Quên mật khẩu</button>
+  <div class="account-auth-msg" id="accountAuthMsg" role="status" aria-live="polite"></div>
+ </div>
+</div>
 <header>
   <div><span class="brand">Forex AI · Chart</span> <span class="muted">/ MT5 real feed</span></div>
   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
     <span class="tag">MT5 REAL</span>
+    <div id="accountAuthDock"><span id="accountUserEmail"></span><button id="accountSignOutBtn" type="button">Đăng xuất</button></div>
   </div>
 </header>
 
@@ -1236,6 +1255,7 @@ function startAuthorizedPolling() {
   ];
 }
 async function validateApiAccess() {
+  if (!window.accountAuthGranted) { stopAuthorizedPolling(); return false; }
   if (!chartApiKey) {
     stopAuthorizedPolling();
     setApiAuthWarning('error', 'Chưa nhập API Key. Mở Cài đặt để nhập khóa được cấp.');
@@ -1314,6 +1334,7 @@ function setApiAuthWarning(kind, message) {
   });
 }
 async function apiFetch(url, options = {}) {
+  if (!window.accountAuthGranted) throw new Error('Chưa đăng nhập tài khoản.');
   const opts = { ...options, headers: { ...(options.headers || {}) } };
   if (chartApiKey) opts.headers['X-API-Key'] = chartApiKey;
   const response = await fetch(url, opts);
@@ -3719,13 +3740,11 @@ async function checkServerStatus() {
 
 ensureApiAuthWarnings();
 refreshApiKeyBox();
-if (chartApiKey) {
-  void validateApiAccess();
-} else {
-  stopAuthorizedPolling();
-  setApiAuthWarning('error', 'Cần đăng nhập và xác thực trước khi sử dụng.');
-  $('feedState').textContent = 'Chưa xác thực quyền truy cập';
-}
+window.addEventListener('forex-auth-ready', () => {
+  if (window.accountAuthGranted && chartApiKey) void validateApiAccess();
+});
+window.addEventListener('forex-auth-locked', stopAuthorizedPolling);
+stopAuthorizedPolling();
 syncRealLayerToggles();
 bindRealLayerToggles();
 applyLockState();
@@ -3759,5 +3778,6 @@ $('apiKeyToggle').addEventListener('click', () => {
 updateGMT7Clock();
 setInterval(updateGMT7Clock, 1000);
 </script>
+<script src="./auth.js"></script>
 </body>
 </html>
