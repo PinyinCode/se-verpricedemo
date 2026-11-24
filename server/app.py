@@ -250,21 +250,23 @@ def _fetch_public_history_to_mongo() -> int:
         "NZDUSD": "NZDUSD=X",
         "USDCHF": "USDCHF=X",
     }
+    # Paper is a lightweight demo feed: fetch a short window, retain at most 500 bars.
     intervals = {
-        "M15": ("15m", "60d"),
-        "H1": ("1h", "2y"),
+        "M15": ("15m", "7d", 900),
+        "H1": ("1h", "60d", 3600),
     }
     total_upserts = 0
     successful_groups = 0
     download_started = time.perf_counter()
     print(
         f"[PAPER_HISTORY] DOWNLOAD CYCLE START: symbols={len(yahoo_symbols)}; "
-        f"timeframes={','.join(intervals.keys())}; collection={PUBLIC_HISTORY_COLLECTION}",
+        f"timeframes={','.join(intervals.keys())}; max_bars_per_group=500; "
+        f"mode=incremental; collection={PUBLIC_HISTORY_COLLECTION}",
         flush=True,
     )
 
     for symbol, yahoo_symbol in yahoo_symbols.items():
-        for timeframe, (interval, history_range) in intervals.items():
+        for timeframe, (interval, history_range, timeframe_seconds) in intervals.items():
             group_started = time.perf_counter()
             print(
                 f"[PAPER_HISTORY] START {symbol} {timeframe}: source={yahoo_symbol}; "
@@ -309,9 +311,16 @@ def _fetch_public_history_to_mongo() -> int:
                 lows = quote_rows.get("low") or []
                 closes = quote_rows.get("close") or []
                 volumes = quote_rows.get("volume") or []
+                latest_cursor = collection.find(
+                    {"symbol": symbol, "timeframe": timeframe},
+                    {"_id": 0, "time": 1},
+                ).sort("time", -1).limit(1)
+                latest_doc = next(iter(latest_cursor), None)
+                latest_existing_time = int(latest_doc["time"]) if latest_doc else None
                 now = utc_now()
                 operations = []
                 valid_rows = 0
+                selected_rows = 0
 
                 for index, stamp in enumerate(timestamps):
                     try:
@@ -338,17 +347,29 @@ def _fetch_public_history_to_mongo() -> int:
                             "source_symbol": yahoo_symbol,
                             "updated_at": now,
                         }
-                        operations.append(UpdateOne(
-                            {"symbol": symbol, "timeframe": timeframe, "time": int(stamp)},
-                            {"$set": doc},
-                            upsert=True,
-                        ))
                         valid_rows += 1
+                        # First fill: seed the latest 500 bars. Later runs: only
+                        # refresh the latest two bars and append genuinely newer bars.
+                        if (
+                            latest_existing_time is None
+                            or int(stamp) >= latest_existing_time - 2 * timeframe_seconds
+                        ):
+                            operations.append(UpdateOne(
+                                {"symbol": symbol, "timeframe": timeframe, "time": int(stamp)},
+                                {"$set": doc},
+                                upsert=True,
+                            ))
+                            selected_rows += 1
                     except (IndexError, TypeError, ValueError, OverflowError):
                         continue
 
+                # Keep the write batch bounded even on the initial seed or after downtime.
+                operations = operations[-500:]
                 if not operations:
-                    raise RuntimeError("Không có nến OHLC hợp lệ")
+                    raise RuntimeError(
+                        f"Không có nến mới/cần cập nhật; source_valid={valid_rows}; "
+                        f"latest_mongo_time={latest_existing_time}"
+                    )
 
                 mongo_started = time.perf_counter()
                 print(
@@ -360,7 +381,7 @@ def _fetch_public_history_to_mongo() -> int:
                 cutoff_cursor = collection.find(
                     {"symbol": symbol, "timeframe": timeframe},
                     {"_id": 0, "time": 1},
-                ).sort("time", -1).skip(1999).limit(1)
+                ).sort("time", -1).skip(499).limit(1)
                 cutoff_doc = next(iter(cutoff_cursor), None)
                 if cutoff_doc:
                     collection.delete_many({
@@ -376,8 +397,9 @@ def _fetch_public_history_to_mongo() -> int:
                 successful_groups += 1
                 print(
                     f"[PAPER_HISTORY] {symbol} {timeframe}: "
-                    f"received={valid_rows}; changed={changed}; retained={retained}; "
-                    f"source={yahoo_symbol}; mongo_elapsed={time.perf_counter() - mongo_started:.1f}s; "
+                    f"source_valid={valid_rows}; selected_for_write={len(operations)}; "
+                    f"changed={changed}; retained={retained}; source={yahoo_symbol}; "
+                    f"mongo_elapsed={time.perf_counter() - mongo_started:.1f}s; "
                     f"group_elapsed={time.perf_counter() - group_started:.1f}s",
                     flush=True,
                 )
