@@ -740,8 +740,8 @@ def _mongo_history_snapshot(export_day: str) -> dict:
     symbols: dict[str, dict] = {}
     total = 0
     for symbol, timeframe in sorted(grouped):
-        # Public history is the base; MT5 candles overlay matching timestamps
-        # without changing either collection or its retention policy.
+        # Paper snapshot is deliberately compact: at most 500 recent bars per symbol/timeframe.
+        # MT5 candles overlay matching timestamps without changing either collection.
         by_time = {}
         for collection in (public_collection, live_collection):
             if collection is None:
@@ -750,11 +750,11 @@ def _mongo_history_snapshot(export_day: str) -> dict:
                 {"symbol": symbol, "timeframe": timeframe},
                 {"_id": 0, "time": 1, "open": 1, "high": 1, "low": 1,
                  "close": 1, "volume": 1},
-            ).sort("time", -1).limit(2000)
+            ).sort("time", -1).limit(500)
             for doc in docs:
                 by_time[int(doc["time"])] = doc
 
-        selected = sorted(by_time.items(), key=lambda item: item[0])[-2000:]
+        selected = sorted(by_time.items(), key=lambda item: item[0])[-500:]
         if len(selected) < 20:
             print(f"[GITHUB_HISTORY] Skip {symbol} {timeframe}: only {len(selected)} candles")
             continue
