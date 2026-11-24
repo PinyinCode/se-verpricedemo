@@ -2556,6 +2556,31 @@ async function readChartCache(key) {
   } catch (_) { return null; }
 }
 
+async function deleteChartCache(key) {
+  try {
+    const db = await openChartCacheDb();
+    if (!db) return;
+    await new Promise(resolve => {
+      const tx = db.transaction('chartData', 'readwrite');
+      tx.objectStore('chartData').delete(key);
+      tx.oncomplete = tx.onerror = tx.onabort = () => resolve();
+    });
+  } catch (_) {}
+}
+
+function isUsableChartData(data) {
+  if (!data || !Array.isArray(data.candles) || data.candles.length === 0) return false;
+  return data.candles.every(c => {
+    if (!c) return false;
+    const time = Number(c.time), open = Number(c.open), high = Number(c.high);
+    const low = Number(c.low), close = Number(c.close);
+    return Number.isFinite(time) && time > 0
+      && Number.isFinite(open) && Number.isFinite(high)
+      && Number.isFinite(low) && Number.isFinite(close)
+      && high >= low;
+  });
+}
+
 async function writeChartCache(key, value) {
   try {
     const db = await openChartCacheDb();
@@ -2580,19 +2605,35 @@ async function load(forceNetwork = false) {
     const cacheKey = symbol + '|' + tf;
     let data = null;
     let fromCache = false;
+
     if (!forceNetwork && !chartCachePrimed.has(cacheKey)) {
-      data = await readChartCache(cacheKey);
-      if (data && Array.isArray(data.candles) && data.candles.length) {
+      const cached = await readChartCache(cacheKey);
+      if (isUsableChartData(cached)) {
+        data = cached;
         fromCache = true;
         chartCachePrimed.add(cacheKey);
+      } else if (cached) {
+        // Cache rỗng hoặc sai cấu trúc không được phép chặn lần tải API.
+        await deleteChartCache(cacheKey);
+        chartCachePrimed.delete(cacheKey);
       }
     }
+
     if (!data) {
       const res = await apiFetch(API_BASE + '/api/chart/data?symbol=' + encodeURIComponent(symbol) + '&timeframe=' + encodeURIComponent(tf) + '&limit=1000', { cache: 'no-store' });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       data = await res.json();
-      chartCachePrimed.add(cacheKey);
-      void writeChartCache(cacheKey, data);
+      if (!data || !Array.isArray(data.candles)) {
+        throw new Error('Server trả về dữ liệu nến không đúng định dạng');
+      }
+      if (isUsableChartData(data)) {
+        chartCachePrimed.add(cacheKey);
+        void writeChartCache(cacheKey, data);
+      } else {
+        // Không lưu snapshot rỗng/hỏng để lần sau không mắc kẹt ở cache cũ.
+        chartCachePrimed.delete(cacheKey);
+        await deleteChartCache(cacheKey);
+      }
     }
     if ($('symbol').value !== symbol || $('tf').value !== tf) return;
     mt5Digits = Math.max(0, Math.min(10, Number(data.digits ?? 5)));
@@ -3473,7 +3514,7 @@ chartResizeObserver.observe($('rsiChart'));
 document.addEventListener('keydown', e => {
   const tag = (e.target && e.target.tagName || '').toLowerCase();
   if (['input', 'textarea', 'select'].includes(tag) || e.target.isContentEditable) return;
-  if (e.key.toLowerCase() === 'r') { e.preventDefault(); lastBarsSignature = ''; load(); }
+  if (e.key.toLowerCase() === 'r') { e.preventDefault(); lastBarsSignature = ''; load(true); }
   if (e.key === '0') { e.preventDefault(); priceChart.timeScale().fitContent(); priceChart.timeScale().applyOptions({ rightOffset: 10 }); }
   if (e.key.toLowerCase() === 'l') { e.preventDefault(); toggleLock(); }
 });
@@ -3573,7 +3614,7 @@ $('sendBuy').addEventListener('click', () => sendOrder('BUY'));
 $('sendSell').addEventListener('click', () => sendOrder('SELL'));
 $('symbol').addEventListener('change', () => { firstLoad = true; lastBarsSignature = ''; load(); void syncSymbolCommission($('symbol').value); refreshCommissionInfo(); });
 $('tf').addEventListener('change', () => { firstLoad = true; lastBarsSignature = ''; load(); });
-$('refresh').addEventListener('click', () => { lastBarsSignature = ''; load(); void syncEaSettings(); void syncSymbolCommission($('symbol').value); });
+$('refresh').addEventListener('click', () => { lastBarsSignature = ''; load(true); void syncEaSettings(); void syncSymbolCommission($('symbol').value); });
 
 const rsiResizeHandle = $('rsiResizeHandle');
 const lotResizeHandle = $('lotResizeHandle');
