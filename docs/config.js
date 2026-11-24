@@ -1,2 +1,13 @@
 // Cấu hình địa chỉ backend Render. Không đặt API key tại đây.
 window.FOREX_API_BASE = "https://investforex.onrender.com";
+
+// Firebase Authentication dùng chung tài khoản đã cấp trong Firestore.
+window.FOREX_FIREBASE_CONFIG = {
+  apiKey: "AIzaSyA8VlFQvE_om-51pxffgd7hd2Ud6hQm11k",
+  authDomain: "hoc-tieng-trung-64b8d.firebaseapp.com",
+  projectId: "hoc-tieng-trung-64b8d",
+  storageBucket: "hoc-tieng-trung-64b8d.appspot.com",
+  messagingSenderId: "614326539390",
+  appId: "1:614326539390:web:57344a021d7cbc7b18b42f",
+  databaseURL: "https://hoc-tieng-trung-64b8d-default-rtdb.asia-southeast1.firebasedatabase.app"
+};
