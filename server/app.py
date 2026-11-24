@@ -256,9 +256,21 @@ def _fetch_public_history_to_mongo() -> int:
     }
     total_upserts = 0
     successful_groups = 0
+    download_started = time.perf_counter()
+    print(
+        f"[PAPER_HISTORY] DOWNLOAD CYCLE START: symbols={len(yahoo_symbols)}; "
+        f"timeframes={','.join(intervals.keys())}; collection={PUBLIC_HISTORY_COLLECTION}",
+        flush=True,
+    )
 
     for symbol, yahoo_symbol in yahoo_symbols.items():
         for timeframe, (interval, history_range) in intervals.items():
+            group_started = time.perf_counter()
+            print(
+                f"[PAPER_HISTORY] START {symbol} {timeframe}: source={yahoo_symbol}; "
+                f"interval={interval}; range={history_range}",
+                flush=True,
+            )
             try:
                 url = (
                     "https://query1.finance.yahoo.com/v8/finance/chart/"
@@ -268,8 +280,20 @@ def _fetch_public_history_to_mongo() -> int:
                     "Accept": "application/json",
                     "User-Agent": "Mozilla/5.0 (compatible; PaperHistoryFeed/1.0)",
                 })
+                fetch_started = time.perf_counter()
+                print(
+                    f"[PAPER_HISTORY] FETCHING {symbol} {timeframe}: Yahoo Finance request started; timeout=30s",
+                    flush=True,
+                )
                 with urlopen(request, timeout=30) as response:
-                    payload = json.loads(response.read().decode("utf-8"))
+                    response_body = response.read()
+                    payload = json.loads(response_body.decode("utf-8"))
+                    http_status = getattr(response, "status", "unknown")
+                print(
+                    f"[PAPER_HISTORY] FETCHED {symbol} {timeframe}: HTTP={http_status}; "
+                    f"bytes={len(response_body)}; elapsed={time.perf_counter() - fetch_started:.1f}s",
+                    flush=True,
+                )
 
                 chart = payload.get("chart") or {}
                 if chart.get("error"):
@@ -326,6 +350,12 @@ def _fetch_public_history_to_mongo() -> int:
                 if not operations:
                     raise RuntimeError("Không có nến OHLC hợp lệ")
 
+                mongo_started = time.perf_counter()
+                print(
+                    f"[PAPER_HISTORY] MONGO WRITE START {symbol} {timeframe}: "
+                    f"valid_candles={valid_rows}",
+                    flush=True,
+                )
                 result_write = collection.bulk_write(operations, ordered=False)
                 cutoff_cursor = collection.find(
                     {"symbol": symbol, "timeframe": timeframe},
@@ -347,18 +377,24 @@ def _fetch_public_history_to_mongo() -> int:
                 print(
                     f"[PAPER_HISTORY] {symbol} {timeframe}: "
                     f"received={valid_rows}; changed={changed}; retained={retained}; "
-                    f"source={yahoo_symbol}"
+                    f"source={yahoo_symbol}; mongo_elapsed={time.perf_counter() - mongo_started:.1f}s; "
+                    f"group_elapsed={time.perf_counter() - group_started:.1f}s",
+                    flush=True,
                 )
             except Exception as exc:
                 print(
-                    f"[PAPER_HISTORY] Failed {symbol} {timeframe} "
-                    f"({yahoo_symbol}): {type(exc).__name__}: {exc}"
+                    f"[PAPER_HISTORY] FAILED {symbol} {timeframe} "
+                    f"({yahoo_symbol}): {type(exc).__name__}: {exc}; "
+                    f"group_elapsed={time.perf_counter() - group_started:.1f}s",
+                    flush=True,
                 )
             time.sleep(0.7)
 
     print(
         f"[PAPER_HISTORY] Download finished: groups={successful_groups}/16; "
-        f"changed={total_upserts}; collection={PUBLIC_HISTORY_COLLECTION}"
+        f"changed={total_upserts}; collection={PUBLIC_HISTORY_COLLECTION}; "
+        f"elapsed={time.perf_counter() - download_started:.1f}s",
+        flush=True,
     )
     if successful_groups == 0:
         raise RuntimeError("Không tải được dữ liệu lịch sử cho bất kỳ mã/khung thời gian nào")
@@ -728,6 +764,12 @@ def _mongo_history_snapshot(export_day: str) -> dict:
     }
 
 def _export_mongo_history_to_github(export_day: str) -> bool:
+    export_started = time.perf_counter()
+    print(
+        f"[GITHUB_HISTORY] EXPORT START: date={export_day}; "
+        f"repository={GITHUB_REPOSITORY}; branch={GITHUB_BRANCH}; path={HISTORY_EXPORT_PATH}",
+        flush=True,
+    )
     if not GITHUB_TOKEN:
         print("[GITHUB_HISTORY] Bỏ qua: chưa cấu hình GITHUB_TOKEN")
         return False
@@ -749,7 +791,17 @@ def _export_mongo_history_to_github(export_day: str) -> bool:
                 print(f"[GITHUB_HISTORY] Đã commit snapshot hôm nay ({export_day}); không tạo commit mới")
                 return True
 
+    print("[GITHUB_HISTORY] SNAPSHOT BUILD START: reading MongoDB collections", flush=True)
     snapshot = _mongo_history_snapshot(export_day)
+    snapshot_candles = sum(
+        len(rows) for symbol_data in snapshot["symbols"].values()
+        for rows in symbol_data.values()
+    )
+    print(
+        f"[GITHUB_HISTORY] SNAPSHOT READY: symbols={len(snapshot['symbols'])}; "
+        f"candles={snapshot_candles}; checking GitHub destination",
+        flush=True,
+    )
     content_url = f"{api_root}/contents/{HISTORY_EXPORT_PATH}?ref={GITHUB_BRANCH}"
     existing_sha = None
     try:
@@ -768,11 +820,21 @@ def _export_mongo_history_to_github(export_day: str) -> bool:
     }
     if existing_sha:
         body["sha"] = existing_sha
+    print(
+        f"[GITHUB_HISTORY] UPLOAD START: path={HISTORY_EXPORT_PATH}; "
+        f"encoded_bytes={len(body['content'])}",
+        flush=True,
+    )
     result = _github_json_request(
         f"{api_root}/contents/{HISTORY_EXPORT_PATH}", method="PUT", payload=body
     )
     commit_sha = result.get("commit", {}).get("sha", "")
-    print(f"[GITHUB_HISTORY] Snapshot committed: {export_day}; candles={sum(len(v) for x in snapshot['symbols'].values() for v in x.values())}; sha={commit_sha[:12]}")
+    print(
+        f"[GITHUB_HISTORY] SNAPSHOT COMMITTED: date={export_day}; "
+        f"candles={snapshot_candles}; sha={commit_sha[:12]}; "
+        f"elapsed={time.perf_counter() - export_started:.1f}s",
+        flush=True,
+    )
     return True
 
 
@@ -785,18 +847,33 @@ def _daily_history_export_loop() -> None:
     # commit-date check inside the exporter still enforces at most one
     # snapshot commit per GMT+7 day, including across restarts.
     bootstrap_day = datetime.now(_GMT7).date().isoformat()
+    print(
+        f"[PAPER_HISTORY] BOOTSTRAP START: date={bootstrap_day}; "
+        f"mongo_configured={bool(MONGODB_URI)}; github_export_enabled={bool(GITHUB_TOKEN)}",
+        flush=True,
+    )
     try:
         _fetch_public_history_to_mongo()
     except Exception as exc:
-        print(f"[PAPER_HISTORY] Initial download failed: {type(exc).__name__}: {exc}")
+        print(
+            f"[PAPER_HISTORY] INITIAL DOWNLOAD FAILED: {type(exc).__name__}: {exc}",
+            flush=True,
+        )
     if GITHUB_TOKEN:
         try:
             if _export_mongo_history_to_github(bootstrap_day):
                 _last_history_export_day = bootstrap_day
         except Exception as exc:
-            print(f"[GITHUB_HISTORY] Initial export failed: {type(exc).__name__}: {exc}")
+            print(
+                f"[GITHUB_HISTORY] INITIAL EXPORT FAILED: {type(exc).__name__}: {exc}",
+                flush=True,
+            )
     else:
-        print("[GITHUB_HISTORY] Export skipped: GITHUB_TOKEN missing; public candles remain in MongoDB")
+        print(
+            "[GITHUB_HISTORY] INITIAL EXPORT SKIPPED: GITHUB_TOKEN missing; "
+            "public candles remain in MongoDB",
+            flush=True,
+        )
 
     while not _history_export_stop.is_set():
         now = datetime.now(_GMT7)
