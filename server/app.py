@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import math
 import os
 import secrets
 import sqlite3
@@ -170,6 +171,7 @@ def send_telegram_rt_signal(item: "TodaySignalItem") -> bool:
 MONGODB_URI = os.getenv("MONGODB_URI", "").strip()
 MONGODB_DB_NAME = os.getenv("MONGODB_DB", "forex_market").strip() or "forex_market"
 MONGODB_COLLECTION = os.getenv("MONGODB_CANDLES_COLLECTION", "paper_candles").strip() or "paper_candles"
+PUBLIC_HISTORY_COLLECTION = os.getenv("PAPER_HISTORY_COLLECTION", "paper_history_candles").strip() or "paper_history_candles"
 _mongo_client = None
 _mongo_lock = threading.Lock()
 _mongo_indexes_ready = False
@@ -206,6 +208,161 @@ def _paper_candles_collection():
     except Exception as exc:
         print(f"[MONGO] Paper feed unavailable: {type(exc).__name__}")
         return None
+
+
+def _public_history_collection():
+    """Separate public historical candles from the MT5 live mirror collection."""
+    base = _paper_candles_collection()
+    if base is None:
+        return None
+    try:
+        collection = base.database[PUBLIC_HISTORY_COLLECTION]
+        collection.create_index(
+            [("symbol", 1), ("timeframe", 1), ("time", 1)],
+            unique=True,
+            name="uq_public_history_symbol_tf_time",
+        )
+        collection.create_index(
+            [("symbol", 1), ("timeframe", 1), ("time", -1)],
+            name="ix_public_history_latest",
+        )
+        return collection
+    except Exception as exc:
+        print(f"[PAPER_HISTORY] Mongo collection unavailable: {type(exc).__name__}")
+        return None
+
+
+def _fetch_public_history_to_mongo() -> int:
+    """Fetch public Yahoo Finance OHLC candles for the read-only Paper chart."""
+    collection = _public_history_collection()
+    if collection is None:
+        raise RuntimeError("MongoDB Paper history chưa sẵn sàng")
+
+    from pymongo import UpdateOne
+
+    yahoo_symbols = {
+        "EURUSD": "EURUSD=X",
+        "GBPUSD": "GBPUSD=X",
+        "USDJPY": "USDJPY=X",
+        "XAUUSD": "XAUUSD=X",
+        "BTCUSD": "BTC-USD",
+        "USDCAD": "USDCAD=X",
+        "NZDUSD": "NZDUSD=X",
+        "USDCHF": "USDCHF=X",
+    }
+    intervals = {
+        "M15": ("15m", "60d"),
+        "H1": ("1h", "2y"),
+    }
+    total_upserts = 0
+    successful_groups = 0
+
+    for symbol, yahoo_symbol in yahoo_symbols.items():
+        for timeframe, (interval, history_range) in intervals.items():
+            try:
+                url = (
+                    "https://query1.finance.yahoo.com/v8/finance/chart/"
+                    f"{yahoo_symbol}?range={history_range}&interval={interval}&events=history"
+                )
+                request = Request(url, headers={
+                    "Accept": "application/json",
+                    "User-Agent": "Mozilla/5.0 (compatible; PaperHistoryFeed/1.0)",
+                })
+                with urlopen(request, timeout=30) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+
+                chart = payload.get("chart") or {}
+                if chart.get("error"):
+                    raise RuntimeError(str(chart["error"].get("description") or "Yahoo chart error"))
+                result = (chart.get("result") or [None])[0]
+                if not result:
+                    raise RuntimeError("Yahoo không trả dữ liệu cho mã nguồn " + yahoo_symbol)
+
+                timestamps = result.get("timestamp") or []
+                quote_rows = ((result.get("indicators") or {}).get("quote") or [{}])[0]
+                opens = quote_rows.get("open") or []
+                highs = quote_rows.get("high") or []
+                lows = quote_rows.get("low") or []
+                closes = quote_rows.get("close") or []
+                volumes = quote_rows.get("volume") or []
+                now = utc_now()
+                operations = []
+                valid_rows = 0
+
+                for index, stamp in enumerate(timestamps):
+                    try:
+                        o, h, low, close = (
+                            opens[index], highs[index], lows[index], closes[index]
+                        )
+                        if any(value is None for value in (o, h, low, close)):
+                            continue
+                        o, h, low, close = map(float, (o, h, low, close))
+                        if not all(math.isfinite(value) for value in (o, h, low, close)):
+                            continue
+                        volume = volumes[index] if index < len(volumes) else None
+                        volume = float(volume) if volume is not None else None
+                        doc = {
+                            "symbol": symbol,
+                            "timeframe": timeframe,
+                            "time": int(stamp),
+                            "open": o,
+                            "high": h,
+                            "low": low,
+                            "close": close,
+                            "volume": volume,
+                            "source": "YAHOO_FINANCE_PUBLIC",
+                            "source_symbol": yahoo_symbol,
+                            "updated_at": now,
+                        }
+                        operations.append(UpdateOne(
+                            {"symbol": symbol, "timeframe": timeframe, "time": int(stamp)},
+                            {"$set": doc},
+                            upsert=True,
+                        ))
+                        valid_rows += 1
+                    except (IndexError, TypeError, ValueError, OverflowError):
+                        continue
+
+                if not operations:
+                    raise RuntimeError("Không có nến OHLC hợp lệ")
+
+                result_write = collection.bulk_write(operations, ordered=False)
+                cutoff_cursor = collection.find(
+                    {"symbol": symbol, "timeframe": timeframe},
+                    {"_id": 0, "time": 1},
+                ).sort("time", -1).skip(1999).limit(1)
+                cutoff_doc = next(iter(cutoff_cursor), None)
+                if cutoff_doc:
+                    collection.delete_many({
+                        "symbol": symbol,
+                        "timeframe": timeframe,
+                        "time": {"$lt": cutoff_doc["time"]},
+                    })
+                retained = collection.count_documents({
+                    "symbol": symbol, "timeframe": timeframe
+                })
+                changed = result_write.upserted_count + result_write.modified_count
+                total_upserts += changed
+                successful_groups += 1
+                print(
+                    f"[PAPER_HISTORY] {symbol} {timeframe}: "
+                    f"received={valid_rows}; changed={changed}; retained={retained}; "
+                    f"source={yahoo_symbol}"
+                )
+            except Exception as exc:
+                print(
+                    f"[PAPER_HISTORY] Failed {symbol} {timeframe} "
+                    f"({yahoo_symbol}): {type(exc).__name__}: {exc}"
+                )
+            time.sleep(0.7)
+
+    print(
+        f"[PAPER_HISTORY] Download finished: groups={successful_groups}/16; "
+        f"changed={total_upserts}; collection={PUBLIC_HISTORY_COLLECTION}"
+    )
+    if successful_groups == 0:
+        raise RuntimeError("Không tải được dữ liệu lịch sử cho bất kỳ mã/khung thời gian nào")
+    return total_upserts
 
 
 def _mirror_candles_to_mongo(payload: "CandleBatchIn", rows: list[tuple]) -> bool:
@@ -504,32 +661,50 @@ def _github_json_request(url: str, method: str = "GET", payload: dict | None = N
 
 
 def _mongo_history_snapshot(export_day: str) -> dict:
-    collection = _paper_candles_collection()
-    if collection is None:
+    public_collection = _public_history_collection()
+    live_collection = _paper_candles_collection()
+    if public_collection is None and live_collection is None:
         raise RuntimeError("MongoDB Paper feed chưa sẵn sàng")
-    groups = list(collection.aggregate([
-        {"$group": {"_id": {"symbol": "$symbol", "timeframe": "$timeframe"}}}
-    ]))
+
+    grouped = set()
+    for collection in (public_collection, live_collection):
+        if collection is None:
+            continue
+        for group in collection.aggregate([
+            {"$group": {"_id": {"symbol": "$symbol", "timeframe": "$timeframe"}}}
+        ]):
+            key = group.get("_id") or {}
+            symbol = str(key.get("symbol") or "").strip().upper()
+            timeframe = str(key.get("timeframe") or "").strip().upper()
+            if symbol and timeframe:
+                grouped.add((symbol, timeframe))
+
     symbols: dict[str, dict] = {}
     total = 0
-    for group in groups:
-        key = group.get("_id") or {}
-        symbol = str(key.get("symbol") or "").strip().upper()
-        timeframe = str(key.get("timeframe") or "").strip().upper()
-        if not symbol or not timeframe:
+    for symbol, timeframe in sorted(grouped):
+        # Public history is the base; MT5 candles overlay matching timestamps
+        # without changing either collection or its retention policy.
+        by_time = {}
+        for collection in (public_collection, live_collection):
+            if collection is None:
+                continue
+            docs = collection.find(
+                {"symbol": symbol, "timeframe": timeframe},
+                {"_id": 0, "time": 1, "open": 1, "high": 1, "low": 1,
+                 "close": 1, "volume": 1},
+            ).sort("time", -1).limit(2000)
+            for doc in docs:
+                by_time[int(doc["time"])] = doc
+
+        selected = sorted(by_time.items(), key=lambda item: item[0])[-2000:]
+        if len(selected) < 20:
+            print(f"[GITHUB_HISTORY] Skip {symbol} {timeframe}: only {len(selected)} candles")
             continue
-        docs = list(collection.find(
-            {"symbol": symbol, "timeframe": timeframe},
-            {"_id": 0, "time": 1, "open": 1, "high": 1, "low": 1, "close": 1, "volume": 1},
-        ).sort("time", -1).limit(2000))
-        docs.reverse()
-        if len(docs) < 20:
-            print(f"[GITHUB_HISTORY] Skip {symbol} {timeframe}: only {len(docs)} candles")
-            continue
+
         rows = []
-        for doc in docs:
+        for stamp, doc in selected:
             row = {
-                "time": int(doc["time"]),
+                "time": int(stamp),
                 "open": float(doc["open"]),
                 "high": float(doc["high"]),
                 "low": float(doc["low"]),
@@ -540,17 +715,17 @@ def _mongo_history_snapshot(export_day: str) -> dict:
             rows.append(row)
         symbols.setdefault(symbol, {})[timeframe] = rows
         total += len(rows)
+
     if not total:
         raise RuntimeError("MongoDB chưa có đủ dữ liệu nến để tạo snapshot")
     return {
         "schemaVersion": 1,
         "generatedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "exportDateGMT7": export_day,
-        "source": "MT5 -> Server -> MongoDB",
+        "source": "Yahoo Finance public history + MT5 updates via MongoDB",
         "timezone": "UTC",
         "symbols": symbols,
     }
-
 
 def _export_mongo_history_to_github(export_day: str) -> bool:
     if not GITHUB_TOKEN:
@@ -611,6 +786,10 @@ def _daily_history_export_loop() -> None:
     # snapshot commit per GMT+7 day, including across restarts.
     bootstrap_day = datetime.now(_GMT7).date().isoformat()
     try:
+        _fetch_public_history_to_mongo()
+    except Exception as exc:
+        print(f"[PAPER_HISTORY] Initial download failed: {type(exc).__name__}: {exc}")
+    try:
         if _export_mongo_history_to_github(bootstrap_day):
             _last_history_export_day = bootstrap_day
     except Exception as exc:
@@ -621,6 +800,10 @@ def _daily_history_export_loop() -> None:
         target = now.replace(hour=target_hour, minute=target_minute, second=0, microsecond=0)
         if now >= target and _last_history_export_day != now.date().isoformat():
             export_day = now.date().isoformat()
+            try:
+                _fetch_public_history_to_mongo()
+            except Exception as exc:
+                print(f"[PAPER_HISTORY] Daily download failed: {type(exc).__name__}: {exc}")
             try:
                 if _export_mongo_history_to_github(export_day):
                     _last_history_export_day = export_day
