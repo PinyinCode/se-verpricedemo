@@ -789,11 +789,14 @@ def _daily_history_export_loop() -> None:
         _fetch_public_history_to_mongo()
     except Exception as exc:
         print(f"[PAPER_HISTORY] Initial download failed: {type(exc).__name__}: {exc}")
-    try:
-        if _export_mongo_history_to_github(bootstrap_day):
-            _last_history_export_day = bootstrap_day
-    except Exception as exc:
-        print(f"[GITHUB_HISTORY] Initial export failed: {type(exc).__name__}: {exc}")
+    if GITHUB_TOKEN:
+        try:
+            if _export_mongo_history_to_github(bootstrap_day):
+                _last_history_export_day = bootstrap_day
+        except Exception as exc:
+            print(f"[GITHUB_HISTORY] Initial export failed: {type(exc).__name__}: {exc}")
+    else:
+        print("[GITHUB_HISTORY] Export skipped: GITHUB_TOKEN missing; public candles remain in MongoDB")
 
     while not _history_export_stop.is_set():
         now = datetime.now(_GMT7)
@@ -804,13 +807,16 @@ def _daily_history_export_loop() -> None:
                 _fetch_public_history_to_mongo()
             except Exception as exc:
                 print(f"[PAPER_HISTORY] Daily download failed: {type(exc).__name__}: {exc}")
-            try:
-                if _export_mongo_history_to_github(export_day):
-                    _last_history_export_day = export_day
-                    continue
-            except Exception as exc:
-                print(f"[GITHUB_HISTORY] Export failed: {type(exc).__name__}: {exc}")
-            _history_export_stop.wait(900)
+            if GITHUB_TOKEN:
+                try:
+                    if _export_mongo_history_to_github(export_day):
+                        _last_history_export_day = export_day
+                        continue
+                except Exception as exc:
+                    print(f"[GITHUB_HISTORY] Export failed: {type(exc).__name__}: {exc}")
+                _history_export_stop.wait(900)
+            else:
+                _last_history_export_day = export_day
         else:
             wait_seconds = max(5, min(60, (target - now).total_seconds()))
             _history_export_stop.wait(wait_seconds)
@@ -818,9 +824,11 @@ def _daily_history_export_loop() -> None:
 
 def _start_daily_history_exporter() -> None:
     global _history_export_thread
-    if not GITHUB_TOKEN:
-        print("[GITHUB_HISTORY] Daily exporter disabled: GITHUB_TOKEN chưa được cấu hình")
+    if not MONGODB_URI:
+        print("[PAPER_HISTORY] Downloader disabled: MONGODB_URI chưa được cấu hình")
         return
+    if not GITHUB_TOKEN:
+        print("[GITHUB_HISTORY] Export disabled: thiếu GITHUB_TOKEN; downloader vẫn chạy")
     if _history_export_thread and _history_export_thread.is_alive():
         return
     _history_export_stop.clear()
@@ -830,7 +838,9 @@ def _start_daily_history_exporter() -> None:
         daemon=True,
     )
     _history_export_thread.start()
-    print(f"[GITHUB_HISTORY] Daily snapshot scheduled at {HISTORY_EXPORT_HOUR:02d}:{HISTORY_EXPORT_MINUTE:02d} GMT+7")
+    print(f"[PAPER_HISTORY] Public history downloader started; GitHub export {'enabled' if GITHUB_TOKEN else 'disabled'}")
+    if GITHUB_TOKEN:
+        print(f"[GITHUB_HISTORY] Daily snapshot scheduled at {HISTORY_EXPORT_HOUR:02d}:{HISTORY_EXPORT_MINUTE:02d} GMT+7")
 
 
 @asynccontextmanager
