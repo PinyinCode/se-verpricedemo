@@ -10,7 +10,20 @@ const loginBtn=document.getElementById('accountLoginBtn');
 const dock=document.getElementById('accountAuthDock');
 const emailLabel=document.getElementById('accountUserEmail');
 let auth=null,db=null,checking=false;
+const AUTH_CACHE_KEY='forex_account_auth_cache_v1';
 window.accountAuthGranted=false;
+function readAuthCache(user){
+ try{
+  const cached=JSON.parse(localStorage.getItem(AUTH_CACHE_KEY)||'null');
+  return !!(cached&&user&&cached.uid===user.uid&&cached.granted===true);
+ }catch(_){return false;}
+}
+function writeAuthCache(user){
+ try{localStorage.setItem(AUTH_CACHE_KEY,JSON.stringify({uid:user.uid,email:user.email||'',granted:true,savedAt:Date.now()}));}catch(_){}
+}
+function clearAuthCache(){
+ try{localStorage.removeItem(AUTH_CACHE_KEY);}catch(_){}
+}
 function show(message){msg.textContent=message||'';}
 function lock(message){
  window.accountAuthGranted=false;
@@ -54,12 +67,16 @@ async function checkPermission(user){
 }
 async function onUser(user){
  if(checking)return;
- if(!user){lock('Đăng nhập để tiếp tục.');return;}
+ if(!user){clearAuthCache();lock('Đăng nhập để tiếp tục.');return;}
+ // Reuse the previously verified session after refresh; only query Firestore on first login.
+ if(readAuthCache(user)){unlock(user);return;}
  checking=true;loginBtn.disabled=true;googleBtn.disabled=true;show('Đang kiểm tra quyền truy cập...');
  try{
   await checkPermission(user);
+  writeAuthCache(user);
   unlock(user);
  }catch(e){
+  clearAuthCache();
   lock(firebaseError(e));
  }finally{
   checking=false;loginBtn.disabled=false;googleBtn.disabled=false;
@@ -93,6 +110,7 @@ document.getElementById('accountForgotBtn').addEventListener('click',async()=>{
  catch(e){show(firebaseError(e));}
 });
 document.getElementById('accountSignOutBtn').addEventListener('click',async()=>{
+ clearAuthCache();
  lock('Đang đăng xuất...');
  try{await auth.signOut();}catch(e){show(firebaseError(e));}
 });
