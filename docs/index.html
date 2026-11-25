@@ -285,24 +285,10 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
   position:absolute;
   left:0;
   right:0;
-  height:1px;
+  height:0;
   border-top:1px dashed var(--amber);
   pointer-events:none;
   z-index:5;
-}
-.ask-line span{
-  position:absolute;
-  right:8px;
-  top:-18px;
-  padding:1px 6px;
-  border-radius:4px;
-  background:rgba(28,24,14,.92);
-  border:1px solid rgba(251,191,36,.55);
-  color:#fcd34d;
-  font-size:10px;
-  font-weight:700;
-  white-space:nowrap;
-  user-select:none;
 }
 
 .real-line{position:absolute;left:0;right:0;height:2px;pointer-events:auto;touch-action:none;cursor:ns-resize;z-index:6}
@@ -1331,7 +1317,7 @@ const $ = id => document.getElementById(id);
 
 const COMMISSION_IS_ROUND_TURN = false;
 
-let mt5Digits = 5, mt5TickSize = 0.00001, mt5TickValue = 0, mt5VolumeMin = 0, mt5VolumeMax = 0, mt5VolumeStep = 0, latestMarketPrice = 0, latestAskPrice = 0, latestSpreadPoints = 0;
+let mt5Digits = 5, mt5TickSize = 0.00001, mt5TickValue = 0, mt5VolumeMin = 0, mt5VolumeMax = 0, mt5VolumeStep = 0, latestMarketPrice = 0, serverAskPrice = 0;
 let chartMt5Accounts = [];
 let chartOpenPositions = [], chartPendingOrders = [], closingIds = new Set(), cancelingIds = new Set();
 
@@ -1346,17 +1332,39 @@ function fmtMoney(val, ccy = 'USD') {
   return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + (ccy ? ' ' + ccy : '');
 }
 
-function getEffectiveAskPrice() {
-  if (Number(latestAskPrice) > 0 && Number.isFinite(Number(latestAskPrice))) {
-    return Number(latestAskPrice);
+function extractAskFromPayload(payload, symbol) {
+  if (!payload || typeof payload !== 'object') return 0;
+  const sym = String(symbol || '').trim().toUpperCase();
+  const directKeys = ['ask', 'ask_price', 'latest_ask', 'current_ask', 'mt5_ask'];
+  for (const key of directKeys) {
+    const val = Number(payload[key]);
+    if (Number.isFinite(val) && val > 0) return val;
   }
-  const bid = Number(latestMarketPrice);
-  if (!(bid > 0 && Number.isFinite(bid))) return 0;
-  const tick = mt5TickSize > 0 ? mt5TickSize : Math.pow(10, -mt5Digits);
-  const spreadPts = Number(latestSpreadPoints) > 0
-    ? Number(latestSpreadPoints)
-    : (Number(eaState.settings.spread_buffer_points) || 0);
-  return spreadPts > 0 ? bid + spreadPts * tick : bid;
+  const mapContainers = ['mt5_ticks', 'mt5_quotes', 'mt5_prices', 'quotes', 'ticks', 'prices'];
+  for (const containerKey of mapContainers) {
+    const container = payload[containerKey];
+    if (!container) continue;
+    if (Array.isArray(container)) {
+      const matched = container.find(item => item && String(item.symbol || '').toUpperCase() === sym);
+      if (matched) {
+        const val = Number(matched.ask ?? matched.ask_price ?? matched.price);
+        if (Number.isFinite(val) && val > 0) return val;
+      }
+    } else if (typeof container === 'object') {
+      const entry = container[sym] || container[sym.toLowerCase()];
+      if (typeof entry === 'number' && Number.isFinite(entry) && entry > 0) return entry;
+      if (entry && typeof entry === 'object') {
+        const val = Number(entry.ask ?? entry.ask_price ?? entry.price);
+        if (Number.isFinite(val) && val > 0) return val;
+      }
+    }
+  }
+  return 0;
+}
+
+function getRealServerAskPrice() {
+  const n = Number(serverAskPrice);
+  return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
 function renderMt5AccountInfo(accounts) {
@@ -1869,8 +1877,6 @@ const dragLevels = {};
 const askLineEl = document.createElement('div');
 askLineEl.className = 'ask-line';
 askLineEl.style.display = 'none';
-const askLineTag = document.createElement('span');
-askLineEl.appendChild(askLineTag);
 dragOverlay.appendChild(askLineEl);
 
 function renderAskLine() {
@@ -1878,7 +1884,7 @@ function renderAskLine() {
     askLineEl.style.display = 'none';
     return;
   }
-  const askPrice = getEffectiveAskPrice();
+  const askPrice = getRealServerAskPrice();
   if (!(askPrice > 0)) {
     askLineEl.style.display = 'none';
     return;
@@ -1890,7 +1896,6 @@ function renderAskLine() {
   }
   askLineEl.style.display = 'block';
   askLineEl.style.top = y + 'px';
-  askLineTag.textContent = 'ASK ' + askPrice.toFixed(mt5Digits);
 }
 
 function syncAskLineToggle() {
@@ -3254,8 +3259,8 @@ async function load(forceNetwork = false) {
     mt5VolumeMin = Number(data.volume_min ?? 0);
     mt5VolumeMax = Number(data.volume_max ?? 0);
     mt5VolumeStep = Number(data.volume_step ?? 0);
-    latestAskPrice = Number(data.ask ?? data.ask_price ?? 0) || 0;
-    latestSpreadPoints = Number(data.spread_points ?? data.spread ?? 0) || 0;
+    const parsedAsk = extractAskFromPayload(data, symbol);
+    if (parsedAsk > 0) serverAskPrice = parsedAsk;
 
     candleSeries.applyOptions({
       priceFormat: { type: 'price', precision: mt5Digits, minMove: mt5TickSize > 0 ? mt5TickSize : Math.pow(10, -mt5Digits) },
@@ -3551,6 +3556,11 @@ async function refreshChartPositions() {
     const openList = Array.isArray(d.mt5_positions) ? d.mt5_positions : [];
     const pendingList = Array.isArray(d.mt5_pending_orders) ? d.mt5_pending_orders : [];
     const snapshotAge = d.mt5_snapshot_updated_at ? Math.max(0, Math.round((Date.now() - Date.parse(d.mt5_snapshot_updated_at)) / 1000)) : null;
+    const parsedAsk = extractAskFromPayload(d, $('symbol').value);
+    if (parsedAsk > 0) {
+      serverAskPrice = parsedAsk;
+      renderAskLine();
+    }
     chartMt5Accounts = Array.isArray(d.mt5_accounts) ? d.mt5_accounts : [];
     renderChartPositions(openList, pendingList);
     if (!closingIds.size && !cancelingIds.size) {
@@ -4234,7 +4244,7 @@ async function sendOrder(direction) {
 
 $('sendBuy').addEventListener('click', () => sendOrder('BUY'));
 $('sendSell').addEventListener('click', () => sendOrder('SELL'));
-$('symbol').addEventListener('change', () => { firstLoad = true; lastBarsSignature = ''; load(); void syncSymbolCommission($('symbol').value); refreshCommissionInfo(); syncRealtimeReopenButton(); });
+$('symbol').addEventListener('change', () => { serverAskPrice = 0; renderAskLine(); firstLoad = true; lastBarsSignature = ''; load(); void syncSymbolCommission($('symbol').value); refreshCommissionInfo(); syncRealtimeReopenButton(); });
 $('tf').addEventListener('change', () => { firstLoad = true; lastBarsSignature = ''; load(); syncRealtimeReopenButton(); });
 $('refresh').addEventListener('click', () => { lastBarsSignature = ''; load(true); void syncEaSettings(); void syncSymbolCommission($('symbol').value); });
 
