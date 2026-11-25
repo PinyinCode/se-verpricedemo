@@ -88,6 +88,11 @@ struct SSymbolTFData
    datetime lastBearHidRTTime;
    datetime lastBullRegRTTime;
    datetime lastBullHidRTTime;
+
+   bool pendingBearRegStrong;
+   bool pendingBearHidStrong;
+   bool pendingBullRegStrong;
+   bool pendingBullHidStrong;
 };
 
 struct SRTLine { string text; datetime time; bool isToday; };
@@ -142,6 +147,7 @@ bool IsNewsFilterEnabledEffective();
 bool IsNewsSafe();
 void GetEnabledTimeframes(ENUM_TIMEFRAMES &tfs[], string &tfStrs[]);
 double GetATRValue(int idx, string sym, ENUM_TIMEFRAMES tf, int period);
+double GetCurrentSpreadPrice(string sym);
 ENUM_TIMEFRAMES StringToEnum(string tfStr);
 
 bool IsSymbolExcluded(string sym);
@@ -590,6 +596,21 @@ double GetATRValue(int idx, string sym, ENUM_TIMEFRAMES tf, int p)
    return (b[0] > 0 && MathIsValidNumber(b[0])) ? b[0] : 0;
 }
 
+double GetCurrentSpreadPrice(string sym)
+{
+   double ask = SymbolInfoDouble(sym, SYMBOL_ASK);
+   double bid = SymbolInfoDouble(sym, SYMBOL_BID);
+   if(ask > 0 && bid > 0 && ask >= bid)
+      return (ask - bid);
+
+   long sprPts = SymbolInfoInteger(sym, SYMBOL_SPREAD);
+   double pt = SymbolInfoDouble(sym, SYMBOL_POINT);
+   if(sprPts > 0 && pt > 0)
+      return (double)sprPts * pt;
+
+   return 0.0;
+}
+
 ENUM_TIMEFRAMES StringToEnum(string ts)
 {
    if(ts == "M15") return PERIOD_M15;
@@ -800,6 +821,10 @@ int InitSymTF(string sym, ENUM_TIMEFRAMES tf, string tfStr)
    arrSymTF[idx].lastBearHidRTTime = 0;
    arrSymTF[idx].lastBullRegRTTime = 0;
    arrSymTF[idx].lastBullHidRTTime = 0;
+   arrSymTF[idx].pendingBearRegStrong = false;
+   arrSymTF[idx].pendingBearHidStrong = false;
+   arrSymTF[idx].pendingBullRegStrong = false;
+   arrSymTF[idx].pendingBullHidStrong = false;
    ArraySetAsSeries(arrSymTF[idx].rsiBuf, true);
    return idx;
 }
@@ -1625,6 +1650,12 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
       if(arrSymTF[idx].lastBarTime != 0 && arrSymTF[idx].lastShiftCached < MS_SwingBars)
          arrSymTF[idx].lastShiftCached = MS_SwingBars;
       arrSymTF[idx].lastBarTime = currentBarTime;
+
+      // Sang nến mới mà nến trước chưa reject -> bỏ cờ chờ của nến cũ
+      arrSymTF[idx].pendingBearRegStrong = false;
+      arrSymTF[idx].pendingBearHidStrong = false;
+      arrSymTF[idx].pendingBullRegStrong = false;
+      arrSymTF[idx].pendingBullHidStrong = false;
    }
 
    double bestBearH1 = 0, bestBearH2 = 0, bestBearR1 = 0, bestBearR2 = 0;
@@ -1816,6 +1847,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
    arrSymTF[idx].lastShiftCached = MS_SwingBars - 1;
 
    datetime currentBarTimeForTrack = iTime(sym, tf, 0);
+   double spreadVal = GetCurrentSpreadPrice(sym);
 
    // REALTIME BEARISH
    if(lastHighPrice > 0 && lastHighShift >= 0)
@@ -1851,11 +1883,22 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                {
                   datetime gmt7Time = ServerTimeToGMT7(timeAtMaxHigh);
                   string timeStr = TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES);
+
+                  // Tạm lưu điều kiện như mã cũ
                   double closeNew = iClose(sym, tf, rtMaxHighShift);
                   double closeOld = iClose(sym, tf, iBarShift(sym, tf, lastHighTime, false));
-                  bool isStrong = (closeNew > closeOld);
+                  if(closeNew > closeOld)
+                     arrSymTF[idx].pendingBearRegStrong = true;
 
+                  // Xác nhận isStrong khi reject trên nến hiện tại (shift == 0)
                   double currentPrice = SymbolInfoDouble(sym, SYMBOL_BID);
+                  bool rejectNow = (rtMaxHighShift == 0) && (currentPrice < lastHighPrice);
+                  bool isStrong = arrSymTF[idx].pendingBearRegStrong && rejectNow;
+                  if(isStrong)
+                     arrSymTF[idx].pendingBearRegStrong = false;
+
+                  double slSellReg = rtMaxHigh + spreadVal;
+
                   bool shouldTrack = ShouldRetrack(idx, currentPrice, arrSymTF[idx].lastBearRegRTPrice, sym, tf, currentBarTimeForTrack, arrSymTF[idx].lastBearRegRTTime);
                   if(shouldTrack && !IsInTradeTime(timeAtMaxHigh)) shouldTrack = false;
 
@@ -1881,14 +1924,14 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   if(timeAtMaxHigh >= g_initTime && IsNewsSafe())
                   {
                      string sigKey = sym + "|" + tfStr + "|SELL|Reg|" + IntegerToString(timeAtMaxHigh);
-                     EmitRealtimeSignal(idx, sym, tfStr, "SELL", "REG", isStrong, currentPrice, rtMaxHigh, 0.0, lastHighPrice, rtMaxHigh, peakVolRatio, timeAtMaxHigh, sigKey);
+                     EmitRealtimeSignal(idx, sym, tfStr, "SELL", "REG", isStrong, currentPrice, slSellReg, 0.0, lastHighPrice, rtMaxHigh, peakVolRatio, timeAtMaxHigh, sigKey);
                   }
 
-                  if(isStrong && timeAtMaxHigh >= g_initTime && IsNewsSafe() && shouldTrack && IsValidSLForDirection("SELL", currentPrice, rtMaxHigh))
+                  if(isStrong && timeAtMaxHigh >= g_initTime && IsNewsSafe() && shouldTrack && IsValidSLForDirection("SELL", currentPrice, slSellReg))
                   {
-                     WriteStrongSignalToGV(sym, tfStr, "SELL", currentPrice, rtMaxHigh, rtMaxHigh, lastHighPrice, true, "REG", timeAtMaxHigh);
+                     WriteStrongSignalToGV(sym, tfStr, "SELL", currentPrice, slSellReg, slSellReg, lastHighPrice, true, "REG", timeAtMaxHigh);
                      string sigKey = sym + "|" + tfStr + "|SELL|Reg|" + IntegerToString(timeAtMaxHigh);
-                     PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "SELL", "Reg", currentPrice, rtMaxHigh, timeAtMaxHigh, sigKey);
+                     PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "SELL", "Reg", currentPrice, slSellReg, timeAtMaxHigh, sigKey);
                   }
 
                   if(timeAtMaxHigh >= g_initTime && timeAtMaxHigh != arrSymTF[idx].lastBearNotifyBar)
@@ -1905,6 +1948,10 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
             }
          }
       }
+      else
+      {
+         arrSymTF[idx].pendingBearRegStrong = false;
+      }
 
       if(rtMaxRSI > lastHighRSI && priceAtMaxRSI < lastHighPrice && rtMaxRSIShift != lastHighShift)
       {
@@ -1917,11 +1964,23 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                {
                   datetime gmt7Time = ServerTimeToGMT7(timeAtMaxRSI);
                   string timeStr = TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES);
+
+                  // Tạm lưu điều kiện như mã cũ
                   double closeNew = iClose(sym, tf, rtMaxRSIShift);
                   double closeOld = iClose(sym, tf, iBarShift(sym, tf, lastHighTime, false));
-                  bool isStrong = (closeNew < closeOld);
+                  if(closeNew < closeOld)
+                     arrSymTF[idx].pendingBearHidStrong = true;
 
+                  double slHidBear = MathMax(lastHighPrice, priceAtMaxRSI);
+                  double slSellHid = slHidBear + spreadVal;
+
+                  // Xác nhận isStrong khi reject trên nến hiện tại (shift == 0)
                   double currentPrice = SymbolInfoDouble(sym, SYMBOL_BID);
+                  bool rejectNow = (rtMaxRSIShift == 0) && (currentPrice < slHidBear);
+                  bool isStrong = arrSymTF[idx].pendingBearHidStrong && rejectNow;
+                  if(isStrong)
+                     arrSymTF[idx].pendingBearHidStrong = false;
+
                   bool shouldTrack = ShouldRetrack(idx, currentPrice, arrSymTF[idx].lastBearHidRTPrice, sym, tf, currentBarTimeForTrack, arrSymTF[idx].lastBearHidRTTime);
                   if(shouldTrack && !IsInTradeTime(timeAtMaxRSI)) shouldTrack = false;
 
@@ -1944,20 +2003,19 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   if(gmt7Time >= todayStartGMT7)
                      AddTodaySignal(sym, tfStr, "BEAR", "Hid", "RT", lastHighTime, timeAtMaxRSI, lastHighPrice, priceAtMaxRSI, lastHighRSI, rtMaxRSI);
 
-                  double slHidBear = MathMax(lastHighPrice, priceAtMaxRSI);
                   if(timeAtMaxRSI >= g_initTime && IsNewsSafe())
                   {
                      string sigKey = sym + "|" + tfStr + "|SELL|Hid|" + IntegerToString(timeAtMaxRSI);
-                     EmitRealtimeSignal(idx, sym, tfStr, "SELL", "HID", isStrong, currentPrice, slHidBear, 0.0, lastHighPrice, priceAtMaxRSI, peakVolRatio, timeAtMaxRSI, sigKey);
+                     EmitRealtimeSignal(idx, sym, tfStr, "SELL", "HID", isStrong, currentPrice, slSellHid, 0.0, lastHighPrice, priceAtMaxRSI, peakVolRatio, timeAtMaxRSI, sigKey);
                   }
 
                   if(isStrong && timeAtMaxRSI >= g_initTime && IsNewsSafe() && shouldTrack)
                   {
-                     if(IsValidSLForDirection("SELL", currentPrice, slHidBear))
+                     if(IsValidSLForDirection("SELL", currentPrice, slSellHid))
                      {
-                        WriteStrongSignalToGV(sym, tfStr, "SELL", currentPrice, slHidBear, lastHighPrice, lastHighPrice, true, "HID", timeAtMaxRSI);
+                        WriteStrongSignalToGV(sym, tfStr, "SELL", currentPrice, slSellHid, slSellHid, lastHighPrice, true, "HID", timeAtMaxRSI);
                         string sigKey = sym + "|" + tfStr + "|SELL|Hid|" + IntegerToString(timeAtMaxRSI);
-                        PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "SELL", "Hid", currentPrice, slHidBear, timeAtMaxRSI, sigKey);
+                        PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "SELL", "Hid", currentPrice, slSellHid, timeAtMaxRSI, sigKey);
                      }
                   }
 
@@ -1975,6 +2033,15 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
             }
          }
       }
+      else
+      {
+         arrSymTF[idx].pendingBearHidStrong = false;
+      }
+   }
+   else
+   {
+      arrSymTF[idx].pendingBearRegStrong = false;
+      arrSymTF[idx].pendingBearHidStrong = false;
    }
 
    // REALTIME BULLISH
@@ -2011,11 +2078,20 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                {
                   datetime gmt7Time = ServerTimeToGMT7(timeAtMinLow);
                   string timeStr = TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES);
+
+                  // Tạm lưu điều kiện như mã cũ
                   double closeNew = iClose(sym, tf, rtMinLowShift);
                   double closeOld = iClose(sym, tf, iBarShift(sym, tf, lastLowTime, false));
-                  bool isStrong = (closeNew < closeOld);
+                  if(closeNew < closeOld)
+                     arrSymTF[idx].pendingBullRegStrong = true;
 
+                  // Xác nhận isStrong khi reject trên nến hiện tại (shift == 0)
                   double currentPrice = SymbolInfoDouble(sym, SYMBOL_ASK);
+                  bool rejectNow = (rtMinLowShift == 0) && (currentPrice > lastLowPrice);
+                  bool isStrong = arrSymTF[idx].pendingBullRegStrong && rejectNow;
+                  if(isStrong)
+                     arrSymTF[idx].pendingBullRegStrong = false;
+
                   bool shouldTrack = ShouldRetrack(idx, currentPrice, arrSymTF[idx].lastBullRegRTPrice, sym, tf, currentBarTimeForTrack, arrSymTF[idx].lastBullRegRTTime);
                   if(shouldTrack && !IsInTradeTime(timeAtMinLow)) shouldTrack = false;
 
@@ -2065,6 +2141,10 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
             }
          }
       }
+      else
+      {
+         arrSymTF[idx].pendingBullRegStrong = false;
+      }
 
       if(rtMinRSI < lastLowRSI && priceAtMinRSI > lastLowPrice && rtMinRSIShift != lastLowShift)
       {
@@ -2077,11 +2157,22 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                {
                   datetime gmt7Time = ServerTimeToGMT7(timeAtMinRSI);
                   string timeStr = TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES);
+
+                  // Tạm lưu điều kiện như mã cũ
                   double closeNew = iClose(sym, tf, rtMinRSIShift);
                   double closeOld = iClose(sym, tf, iBarShift(sym, tf, lastLowTime, false));
-                  bool isStrong = (closeNew > closeOld);
+                  if(closeNew > closeOld)
+                     arrSymTF[idx].pendingBullHidStrong = true;
 
+                  double slHidBull = MathMin(lastLowPrice, priceAtMinRSI);
+
+                  // Xác nhận isStrong khi reject trên nến hiện tại (shift == 0)
                   double currentPrice = SymbolInfoDouble(sym, SYMBOL_ASK);
+                  bool rejectNow = (rtMinRSIShift == 0) && (currentPrice > slHidBull);
+                  bool isStrong = arrSymTF[idx].pendingBullHidStrong && rejectNow;
+                  if(isStrong)
+                     arrSymTF[idx].pendingBullHidStrong = false;
+
                   bool shouldTrack = ShouldRetrack(idx, currentPrice, arrSymTF[idx].lastBullHidRTPrice, sym, tf, currentBarTimeForTrack, arrSymTF[idx].lastBullHidRTTime);
                   if(shouldTrack && !IsInTradeTime(timeAtMinRSI)) shouldTrack = false;
 
@@ -2104,7 +2195,6 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   if(gmt7Time >= todayStartGMT7)
                      AddTodaySignal(sym, tfStr, "BULL", "Hid", "RT", lastLowTime, timeAtMinRSI, lastLowPrice, priceAtMinRSI, lastLowRSI, rtMinRSI);
 
-                  double slHidBull = MathMin(lastLowPrice, priceAtMinRSI);
                   if(timeAtMinRSI >= g_initTime && IsNewsSafe())
                   {
                      string sigKey = sym + "|" + tfStr + "|BUY|Hid|" + IntegerToString(timeAtMinRSI);
@@ -2135,6 +2225,15 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
             }
          }
       }
+      else
+      {
+         arrSymTF[idx].pendingBullHidStrong = false;
+      }
+   }
+   else
+   {
+      arrSymTF[idx].pendingBullRegStrong = false;
+      arrSymTF[idx].pendingBullHidStrong = false;
    }
 }
 
