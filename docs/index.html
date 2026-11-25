@@ -179,7 +179,7 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
 }
 .mt5-account-grid{
   display:grid;
-  grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
+  grid-template-columns:repeat(auto-fit,minmax(130px,1fr));
   gap:7px;
 }
 .mt5-account-cell{
@@ -280,6 +280,30 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
 .drag-line.sl{background:var(--red)}
 .drag-line.tp{background:var(--green)}
 .drag-line.locked{cursor:not-allowed;opacity:.55}
+
+.ask-line{
+  position:absolute;
+  left:0;
+  right:0;
+  height:1px;
+  border-top:1px dashed var(--amber);
+  pointer-events:none;
+  z-index:5;
+}
+.ask-line span{
+  position:absolute;
+  right:8px;
+  top:-18px;
+  padding:1px 6px;
+  border-radius:4px;
+  background:rgba(28,24,14,.92);
+  border:1px solid rgba(251,191,36,.55);
+  color:#fcd34d;
+  font-size:10px;
+  font-weight:700;
+  white-space:nowrap;
+  user-select:none;
+}
 
 .real-line{position:absolute;left:0;right:0;height:2px;pointer-events:auto;touch-action:none;cursor:ns-resize;z-index:6}
 .real-line::before{
@@ -649,6 +673,21 @@ th{color:var(--muted);font-weight:600}
 .positions-dialog td,.positions-dialog th{padding:9px 8px;font-size:12px}
 
 .trade-settings-dialog{width:min(480px,calc(100vw - 24px));max-height:85dvh}
+.settings-checkbox-row{
+  display:flex !important;
+  align-items:center;
+  gap:8px;
+  padding:8px 10px;
+  border:1px solid #293a52;
+  border-radius:8px;
+  background:rgba(17,31,51,.72);
+  cursor:pointer;
+}
+.settings-checkbox-row input[type="checkbox"]{
+  width:auto !important;
+  margin:0;
+  accent-color:var(--amber);
+}
 .commission-panel{margin-top:14px;padding:11px;border:1px solid #2b4059;border-radius:10px;background:rgba(10,23,39,.72)}
 .commission-panel-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:9px}
 .commission-panel-head strong{font-size:11px;letter-spacing:.3px}
@@ -1017,7 +1056,7 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
             <div class="status-strip" id="telemetryBar">
               <span id="clockGMT7">--:--:--</span>
               <span class="server-state" id="serverState" title="Đang kiểm tra"><i></i><span>--</span></span>
-              <span class="mt5-account-pill" id="mt5AccountStrip" title="Balance / Equity">Bal <b>—</b></span>
+              <span class="mt5-account-pill" id="mt5AccountStrip" title="Balance">Bal <b>—</b></span>
             </div>
             <div class="ohlc-strip" id="ohlcLegend">
               <b>O —</b><span>H —</span><span>L —</span><span>C —</span><span class="ohlc-change">—</span>
@@ -1117,7 +1156,7 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
 
 <dialog id="tradeSettingsDialog" class="positions-dialog trade-settings-dialog">
   <div class="positions-dialog-head">
-    <div><strong>CÀI ĐẶT GIAO DỊCH</strong><div class="small">API key, chế độ, Risk, Entry (Limit), SL và TP</div></div>
+    <div><strong>CÀI ĐẶT GIAO DỊCH</strong><div class="small">API key, Ask line, chế độ, Risk, Entry (Limit), SL và TP</div></div>
     <button type="button" id="closeTradeSettings" aria-label="Đóng">✕</button>
   </div>
   <div class="positions-dialog-body">
@@ -1134,6 +1173,10 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
         </div>
       </label>
       <div id="apiKeyStatus" class="small" role="status">API key được lưu trong trình duyệt này.</div>
+      <label class="settings-checkbox-row" for="showAskLine">
+        <input id="showAskLine" type="checkbox">
+        <span>Hiện đường Ask line trên biểu đồ giá</span>
+      </label>
       <section class="commission-panel" aria-live="polite">
         <div class="commission-panel-head">
           <strong>DỮ LIỆU CHI PHÍ TỪ MT5</strong>
@@ -1175,7 +1218,7 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
 
 <dialog id="positionsDialog" class="positions-dialog">
   <div class="positions-dialog-head">
-    <div><strong>VỊ THẾ ĐANG MỞ &amp; VỊ THẾ CHỜ</strong><div class="small">Số dư tài khoản &amp; lệnh có thể thao tác</div></div>
+    <div><strong>VỊ THẾ ĐANG MỞ &amp; VỊ THẾ CHỜ</strong><div class="small">Thông tin tài khoản MT5 &amp; lệnh có thể thao tác</div></div>
     <button type="button" id="closePositionsDialog" aria-label="Đóng">✕</button>
   </div>
   <div class="positions-dialog-body">
@@ -1185,12 +1228,17 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
     </div>
     <section class="mt5-account-card" id="mt5AccountCard" aria-live="polite">
       <div class="mt5-account-card-head">
-        <strong id="mt5AccountTitle">SỐ DƯ TÀI KHOẢN</strong>
+        <strong id="mt5AccountTitle">THÔNG TIN TÀI KHOẢN MT5</strong>
         <span id="mt5AccountMeta" class="small">Chưa nhận dữ liệu</span>
       </div>
       <div class="mt5-account-grid">
+        <div class="mt5-account-cell"><span>Tài khoản</span><b id="mt5AccLogin">—</b></div>
+        <div class="mt5-account-cell"><span>Server</span><b id="mt5AccServer">—</b></div>
         <div class="mt5-account-cell"><span>Balance</span><b id="mt5AccBalance">—</b></div>
-        <div class="mt5-account-cell" id="mt5AccEquityWrap" style="display:none"><span>Equity</span><b id="mt5AccEquity">—</b></div>
+        <div class="mt5-account-cell"><span>Equity</span><b id="mt5AccEquity">—</b></div>
+        <div class="mt5-account-cell"><span>Margin</span><b id="mt5AccMargin">—</b></div>
+        <div class="mt5-account-cell"><span>Free Margin</span><b id="mt5AccFreeMargin">—</b></div>
+        <div class="mt5-account-cell"><span>Profit</span><b id="mt5AccProfit">—</b></div>
       </div>
     </section>
     <div id="positionsUpdated" class="small" style="margin-top:8px">Đang đồng bộ...</div>
@@ -1283,14 +1331,32 @@ const $ = id => document.getElementById(id);
 
 const COMMISSION_IS_ROUND_TURN = false;
 
-let mt5Digits = 5, mt5TickSize = 0.00001, mt5TickValue = 0, mt5VolumeMin = 0, mt5VolumeMax = 0, mt5VolumeStep = 0, latestMarketPrice = 0;
+let mt5Digits = 5, mt5TickSize = 0.00001, mt5TickValue = 0, mt5VolumeMin = 0, mt5VolumeMax = 0, mt5VolumeStep = 0, latestMarketPrice = 0, latestAskPrice = 0, latestSpreadPoints = 0;
 let chartMt5Accounts = [];
 let chartOpenPositions = [], chartPendingOrders = [], closingIds = new Set(), cancelingIds = new Set();
+
+const ASK_LINE_STORAGE = 'chartShowAskLine';
+let showAskLine = (() => {
+  try { return localStorage.getItem(ASK_LINE_STORAGE) === '1'; } catch { return false; }
+})();
 
 function fmtMoney(val, ccy = 'USD') {
   const n = Number(val);
   if (!Number.isFinite(n)) return '—';
   return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + (ccy ? ' ' + ccy : '');
+}
+
+function getEffectiveAskPrice() {
+  if (Number(latestAskPrice) > 0 && Number.isFinite(Number(latestAskPrice))) {
+    return Number(latestAskPrice);
+  }
+  const bid = Number(latestMarketPrice);
+  if (!(bid > 0 && Number.isFinite(bid))) return 0;
+  const tick = mt5TickSize > 0 ? mt5TickSize : Math.pow(10, -mt5Digits);
+  const spreadPts = Number(latestSpreadPoints) > 0
+    ? Number(latestSpreadPoints)
+    : (Number(eaState.settings.spread_buffer_points) || 0);
+  return spreadPts > 0 ? bid + spreadPts * tick : bid;
 }
 
 function renderMt5AccountInfo(accounts) {
@@ -1299,7 +1365,6 @@ function renderMt5AccountInfo(accounts) {
   const acc = list[0] || null;
   const hasOpenPos = Array.isArray(chartOpenPositions) && chartOpenPositions.length > 0;
   const strip = $('mt5AccountStrip');
-  const eqWrap = $('mt5AccEquityWrap');
 
   if (!acc) {
     if (strip) {
@@ -1308,9 +1373,12 @@ function renderMt5AccountInfo(accounts) {
       strip.title = 'Balance';
     }
     if ($('mt5AccountMeta')) $('mt5AccountMeta').textContent = 'Chưa nhận dữ liệu';
-    if ($('mt5AccBalance')) $('mt5AccBalance').textContent = '—';
-    if ($('mt5AccEquity')) $('mt5AccEquity').textContent = '—';
-    if (eqWrap) eqWrap.style.display = 'none';
+    ['mt5AccLogin', 'mt5AccServer', 'mt5AccBalance', 'mt5AccEquity', 'mt5AccMargin', 'mt5AccFreeMargin', 'mt5AccProfit'].forEach(id => {
+      if ($(id)) {
+        $(id).textContent = '—';
+        $(id).style.color = '';
+      }
+    });
     return;
   }
 
@@ -1319,6 +1387,9 @@ function renderMt5AccountInfo(accounts) {
   const ageSec = Number.isFinite(Number(acc.age_seconds)) ? Number(acc.age_seconds) : null;
   const balText = fmtMoney(acc.balance, ccy);
   const eqText = fmtMoney(acc.equity, ccy);
+  const loginText = acc.login || acc.account || acc.id || '—';
+  const serverText = acc.server || acc.broker || 'MT5';
+  const profitNum = Number(acc.profit ?? acc.floating_profit ?? (Number(acc.equity) - Number(acc.balance)));
 
   if (strip) {
     strip.classList.toggle('stale', isStale);
@@ -1336,9 +1407,21 @@ function renderMt5AccountInfo(accounts) {
       + (ageSec !== null ? ' · ' + ageSec + 's trước' : '')
       + (isStale ? ' (dữ liệu cũ)' : '');
   }
+  if ($('mt5AccLogin')) $('mt5AccLogin').textContent = String(loginText);
+  if ($('mt5AccServer')) $('mt5AccServer').textContent = String(serverText);
   if ($('mt5AccBalance')) $('mt5AccBalance').textContent = balText;
   if ($('mt5AccEquity')) $('mt5AccEquity').textContent = eqText;
-  if (eqWrap) eqWrap.style.display = hasOpenPos ? '' : 'none';
+  if ($('mt5AccMargin')) $('mt5AccMargin').textContent = acc.margin != null ? fmtMoney(acc.margin, ccy) : '—';
+  if ($('mt5AccFreeMargin')) $('mt5AccFreeMargin').textContent = acc.free_margin != null ? fmtMoney(acc.free_margin, ccy) : (acc.margin_free != null ? fmtMoney(acc.margin_free, ccy) : '—');
+  if ($('mt5AccProfit')) {
+    if (Number.isFinite(profitNum)) {
+      $('mt5AccProfit').textContent = (profitNum > 0 ? '+' : '') + fmtMoney(profitNum, ccy);
+      $('mt5AccProfit').style.color = profitNum >= 0 ? '#27c995' : '#f06b7e';
+    } else {
+      $('mt5AccProfit').textContent = '—';
+      $('mt5AccProfit').style.color = '';
+    }
+  }
 }
 
 const eaState = {
@@ -1535,6 +1618,7 @@ async function syncEaSettings() {
       riskInput.value = String(eaState.settings.risk_money);
     }
     calcLot();
+    renderAskLine();
   } catch (_) {}
 }
 
@@ -1781,6 +1865,50 @@ const dragOverlay = document.createElement('div');
 dragOverlay.className = 'drag-overlay';
 $('priceChart').appendChild(dragOverlay);
 const dragLevels = {};
+
+const askLineEl = document.createElement('div');
+askLineEl.className = 'ask-line';
+askLineEl.style.display = 'none';
+const askLineTag = document.createElement('span');
+askLineEl.appendChild(askLineTag);
+dragOverlay.appendChild(askLineEl);
+
+function renderAskLine() {
+  if (!showAskLine) {
+    askLineEl.style.display = 'none';
+    return;
+  }
+  const askPrice = getEffectiveAskPrice();
+  if (!(askPrice > 0)) {
+    askLineEl.style.display = 'none';
+    return;
+  }
+  const y = candleSeries.priceToCoordinate(askPrice);
+  if (y == null || !Number.isFinite(y)) {
+    askLineEl.style.display = 'none';
+    return;
+  }
+  askLineEl.style.display = 'block';
+  askLineEl.style.top = y + 'px';
+  askLineTag.textContent = 'ASK ' + askPrice.toFixed(mt5Digits);
+}
+
+function syncAskLineToggle() {
+  const cb = $('showAskLine');
+  if (cb) cb.checked = showAskLine;
+  renderAskLine();
+}
+
+function bindAskLineToggle() {
+  const cb = $('showAskLine');
+  if (!cb) return;
+  cb.checked = showAskLine;
+  cb.addEventListener('change', () => {
+    showAskLine = cb.checked;
+    try { localStorage.setItem(ASK_LINE_STORAGE, showAskLine ? '1' : '0'); } catch (_) {}
+    renderAskLine();
+  });
+}
 
 function openEntryPopupAt(clientX, clientY) {
   const popup = $('entryPopup');
@@ -3126,6 +3254,8 @@ async function load(forceNetwork = false) {
     mt5VolumeMin = Number(data.volume_min ?? 0);
     mt5VolumeMax = Number(data.volume_max ?? 0);
     mt5VolumeStep = Number(data.volume_step ?? 0);
+    latestAskPrice = Number(data.ask ?? data.ask_price ?? 0) || 0;
+    latestSpreadPoints = Number(data.spread_points ?? data.spread ?? 0) || 0;
 
     candleSeries.applyOptions({
       priceFormat: { type: 'price', precision: mt5Digits, minMove: mt5TickSize > 0 ? mt5TickSize : Math.pow(10, -mt5Digits) },
@@ -3209,6 +3339,7 @@ async function load(forceNetwork = false) {
       void load(true);
     }
     renderRealLines();
+    renderAskLine();
   } catch (e) {
     $('feedState').textContent = 'Lỗi tải dữ liệu: ' + e.message;
   }
@@ -3457,7 +3588,7 @@ async function refreshEmergencyModalWarning() {
     banners.forEach(banner => render(banner, 'unknown', '<strong>KHÔNG ĐỌC ĐƯỢC TRẠNG THÁI EMERGENCY</strong><span>Không thể xác minh trạng thái từ máy chủ (' + detail + '). Hãy kiểm tra trang Settings.</span>'));
   }
 }
-$('settingsButton').addEventListener('click', () => { refreshApiKeyBox(); calcLot(); $('tradeSettingsDialog').showModal(); refreshCommissionInfo(); refreshEmergencyModalWarning(); });
+$('settingsButton').addEventListener('click', () => { refreshApiKeyBox(); syncAskLineToggle(); calcLot(); $('tradeSettingsDialog').showModal(); refreshCommissionInfo(); refreshEmergencyModalWarning(); });
 
 const tradePanel = document.querySelector('.chart-overlay-bottom');
 const tradePanelToggle = $('tradePanelToggle');
@@ -3629,6 +3760,7 @@ function setLevelLines() {
 
 function syncChartPriceOverlays() {
   if (!activeFormDragKey) setLevelLines();
+  renderAskLine();
   if (!activeRealDragItem) {
     for (const item of realLineEls) {
       const el = item && item.el;
@@ -3961,6 +4093,7 @@ $('fitChart').addEventListener('click', () => {
   priceChart.timeScale().applyOptions({ rightOffset: 10 });
   setLevelLines();
   renderRealLines();
+  renderAskLine();
 });
 $('presetMarket').addEventListener('click', activateMarketPreset);
 $('presetBuyLimit').addEventListener('click', () => activateLimitPreset('BUY_LIMIT'));
@@ -3993,6 +4126,7 @@ function applyChartDimensions() {
   if (!isAnyLineDragging()) {
     setLevelLines();
     renderRealLines();
+    renderAskLine();
   }
 }
 const chartResizeObserver = new ResizeObserver(applyChartDimensions);
@@ -4220,6 +4354,7 @@ window.addEventListener('forex-auth-locked', stopAuthorizedPolling);
 stopAuthorizedPolling();
 syncRealLayerToggles();
 bindRealLayerToggles();
+bindAskLineToggle();
 applyLockState();
 syncPresetButtons();
 
