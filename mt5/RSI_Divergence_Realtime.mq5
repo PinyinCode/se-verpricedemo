@@ -1,10 +1,11 @@
 //+------------------------------------------------------------------+
 //|                           RSI_Divergence_Realtime.mq5            |
 //|   Realtime Signal Only -> Direct GV to EA + Full Server Sync     |
+//|   Unified TimeGMT7() Clock                                       |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026"
 #property link      "https://www.mql5.com"
-#property version   "1.11"
+#property version   "1.12"
 #property indicator_chart_window
 #property indicator_buffers 1
 #property indicator_plots   1
@@ -56,12 +57,11 @@ input int    ServerResendSeconds     = 30;
 input int    HeartbeatIntervalSec    = 15;
 input int    TodaySyncIntervalSec    = 20;
 
-// TIMEZONE
-int g_serverToGMTOffset = 0;
-int g_gmt7TargetOffset = 7 * 3600;
-datetime g_lastOffsetCalcTime = 0;
-datetime g_lastScanM15 = 0, g_lastScanH1 = 0;
-datetime g_todayStartGMT7 = 0;
+// TIMEZONE (Unified TimeGMT7)
+int      g_brokerToGMTOffset     = 0;
+datetime g_lastBrokerOffsetSync  = 0;
+datetime g_lastScanM15           = 0, g_lastScanH1 = 0;
+datetime g_todayStartGMT7        = 0;
 
 struct SSymbolTFData
 {
@@ -132,7 +132,8 @@ datetime g_lastTodaySyncTime = 0;
 string g_lastSyncedSymbolsJson = "";
 
 // FORWARD DECLARATIONS
-void CalculateServerGMTOffset();
+void SyncBrokerGMTOffset(bool force = false);
+datetime TimeGMT7();
 datetime ServerTimeToGMT7(datetime serverTime);
 datetime GetGMT7Now();
 void UpdateTodayBounds();
@@ -233,16 +234,17 @@ int PostJsonToServer(string url, string jsonPayload, string &outResponse)
 void SyncHeartbeatToServer(string status, string details, bool force)
 {
    if(!EnableServerSync) return;
-   datetime now = TimeCurrent();
+   datetime nowGmt7 = TimeGMT7();
    int interval = MathMax(5, HeartbeatIntervalSec);
-   if(!force && (now - g_lastServerHeartbeatTime) < interval) return;
+   if(!force && (nowGmt7 - g_lastServerHeartbeatTime) < interval) return;
 
-   g_lastServerHeartbeatTime = now;
+   g_lastServerHeartbeatTime = nowGmt7;
    string url = BuildServerEndpoint("/api/heartbeat");
    string payload = StringFormat(
-      "{\"component\":\"rsi-divergence-indicator\",\"status\":\"%s\",\"details\":\"%s\"}",
+      "{\"component\":\"rsi-divergence-indicator\",\"status\":\"%s\",\"details\":\"%s\",\"gmt7\":%d}",
       EscapeJson(status),
-      EscapeJson(details)
+      EscapeJson(details),
+      (int)nowGmt7
    );
    string resp = "";
    PostJsonToServer(url, payload, resp);
@@ -285,11 +287,11 @@ void SyncScansToServer(string scannedSymbols)
 void SyncTodaySignalsToServer(bool force)
 {
    if(!EnableServerSync) return;
-   datetime now = TimeCurrent();
+   datetime nowGmt7 = TimeGMT7();
    int interval = MathMax(5, TodaySyncIntervalSec);
-   if(!force && (now - g_lastTodaySyncTime) < interval) return;
+   if(!force && (nowGmt7 - g_lastTodaySyncTime) < interval) return;
 
-   g_lastTodaySyncTime = now;
+   g_lastTodaySyncTime = nowGmt7;
    string itemsJson = "[";
    int validCount = 0;
    for(int i = 0; i < g_todaySignalCount; i++)
@@ -354,14 +356,14 @@ void PublishDirectSignalToEA_GV(int idx, string sym, string side, string orderTy
    if(entryPrice <= 0 || slPrice <= 0) return;
    if(!IsValidSLForDirection(side, entryPrice, slPrice)) return;
 
-   datetime now = TimeCurrent();
+   datetime nowGmt7 = TimeGMT7();
    if(idx >= 0 && idx < ArraySize(arrSymTF))
    {
       if(signalKey == arrSymTF[idx].lastDirectEaSignalKey &&
-         (now - arrSymTF[idx].lastDirectEaSignalTime) < MathMax(1, ServerResendSeconds))
+         (nowGmt7 - arrSymTF[idx].lastDirectEaSignalTime) < MathMax(1, ServerResendSeconds))
          return;
       arrSymTF[idx].lastDirectEaSignalKey = signalKey;
-      arrSymTF[idx].lastDirectEaSignalTime = now;
+      arrSymTF[idx].lastDirectEaSignalTime = nowGmt7;
    }
 
    string symUp = sym;
@@ -373,14 +375,17 @@ void PublishDirectSignalToEA_GV(int idx, string sym, string side, string orderTy
    if(orderType == "BUY_LIMIT") otCode = 1.0;
    else if(orderType == "SELL_LIMIT") otCode = 2.0;
 
+   // Ghi TIME theo chuẩn TimeGMT7() để đồng nhất toàn hệ thống
+   datetime sigTimeGmt7 = (signalTime > 0) ? ServerTimeToGMT7(signalTime) : nowGmt7;
+
    GlobalVariableSet(pfx + "SEQ",        (double)symSeq);
-   GlobalVariableSet(pfx + "TIME",       (double)signalTime);
+   GlobalVariableSet(pfx + "TIME",       (double)sigTimeGmt7);
    GlobalVariableSet(pfx + "DIR",        (side == "BUY") ? 1.0 : -1.0);
    GlobalVariableSet(pfx + "ORDER_TYPE", otCode);
    GlobalVariableSet(pfx + "ENTRY",      entryPrice);
    GlobalVariableSet(pfx + "SL",         slPrice);
    GlobalVariableSet(pfx + "TP",         tpPrice);
-   GlobalVariableSet(pfx + "UPDATED",    (double)now);
+   GlobalVariableSet(pfx + "UPDATED",    (double)nowGmt7);
 
    long totalSeq = (long)GlobalVariableGet("GV_IND_SIG_SEQ") + 1;
    GlobalVariableSet("GV_IND_SIG_SEQ", (double)totalSeq);
@@ -402,11 +407,11 @@ void EmitRealtimeSignal(int idx, string sym, string tfStr, string side, string d
    if(!EnableServerSend) return;
    string targetUrl = (ServerSignalUrl != "") ? ServerSignalUrl : BuildServerEndpoint("/api/signals/realtime");
 
-   datetime now = TimeCurrent();
+   datetime nowGmt7 = TimeGMT7();
    bool hasIdx = (idx >= 0 && idx < ArraySize(arrSymTF));
    int resendSec = MathMax(1, ServerResendSeconds);
    if(hasIdx && signalKey == arrSymTF[idx].lastSentSignalKey &&
-      (now - arrSymTF[idx].lastSentSignalTime) < resendSec)
+      (nowGmt7 - arrSymTF[idx].lastSentSignalTime) < resendSec)
       return;
 
    int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
@@ -430,11 +435,10 @@ void EmitRealtimeSignal(int idx, string sym, string tfStr, string side, string d
    string respStr = "";
    int httpCode = PostJsonToServer(targetUrl, payload, respStr);
 
-   // Cập nhật key/time để tránh gọi WebRequest lỗi liên tục mỗi nhịp quét
    if(hasIdx)
    {
       arrSymTF[idx].lastSentSignalKey = signalKey;
-      arrSymTF[idx].lastSentSignalTime = now;
+      arrSymTF[idx].lastSentSignalTime = nowGmt7;
    }
 
    if(httpCode >= 200 && httpCode < 300)
@@ -444,9 +448,9 @@ void EmitRealtimeSignal(int idx, string sym, string tfStr, string side, string d
    else
    {
       static datetime lastErrLogTime = 0;
-      if(now - lastErrLogTime >= 30)
+      if(nowGmt7 - lastErrLogTime >= 30)
       {
-         lastErrLogTime = now;
+         lastErrLogTime = nowGmt7;
          Print("SERVER RT SIGNAL SKIP/ERR [HTTP ", httpCode, ", err=", GetLastError(), "] (GV already written): ", signalKey);
       }
    }
@@ -487,42 +491,62 @@ SHudConfig GetHudConfig()
 }
 
 //+------------------------------------------------------------------+
-//| TIMEZONE & NEWS                                                  |
+//| UNIFIED TIMEGMT7() & NEWS                                        |
 //+------------------------------------------------------------------+
-void CalculateServerGMTOffset()
+void SyncBrokerGMTOffset(bool force)
 {
-   datetime st = TimeTradeServer(), gt = TimeGMT();
-   if(st <= 0 || gt <= 0) return;
-   g_serverToGMTOffset = (int)(st - gt);
-   int h = (int)MathRound((double)g_serverToGMTOffset / 3600.0);
-   g_serverToGMTOffset = h * 3600;
-   g_lastOffsetCalcTime = TimeCurrent();
+   datetime now = TimeCurrent();
+   if(!force && g_lastBrokerOffsetSync > 0 && (now - g_lastBrokerOffsetSync) < 300)
+      return;
+
+   datetime gt = TimeGMT();
+   datetime st = TimeTradeServer();
+   if(st <= 0) st = now;
+
+   if(gt > 0 && st > 0)
+   {
+      int rawDiff = (int)(st - gt);
+      int roundedHours = (int)MathRound((double)rawDiff / 3600.0);
+      g_brokerToGMTOffset = roundedHours * 3600;
+      g_lastBrokerOffsetSync = now;
+   }
 }
 
-datetime ServerTimeToGMT7(datetime st)
+datetime TimeGMT7()
 {
-   return (st - g_serverToGMTOffset) + g_gmt7TargetOffset;
+   datetime gt = TimeGMT();
+   if(gt > 0)
+      return gt + 7 * 3600;
+
+   SyncBrokerGMTOffset(false);
+   datetime st = TimeTradeServer();
+   if(st <= 0) st = TimeCurrent();
+   return (st - g_brokerToGMTOffset) + 7 * 3600;
+}
+
+datetime ServerTimeToGMT7(datetime serverTime)
+{
+   if(serverTime <= 0) return 0;
+   SyncBrokerGMTOffset(false);
+   return (serverTime - g_brokerToGMTOffset) + 7 * 3600;
 }
 
 datetime GetGMT7Now()
 {
-   datetime st = TimeTradeServer();
-   if(st <= 0) st = TimeCurrent();
-   return ServerTimeToGMT7(st);
+   return TimeGMT7();
 }
 
 void UpdateTodayBounds()
 {
-   datetime n = GetGMT7Now();
+   datetime n = TimeGMT7();
    g_todayStartGMT7 = n - (n % 86400);
 }
 
 bool IsInScanTime()
 {
    if(!EnableTimeFilter) return true;
-   if(TimeCurrent() - g_lastOffsetCalcTime >= 60)
-      CalculateServerGMTOffset();
-   datetime n = GetGMT7Now();
+   SyncBrokerGMTOffset(false);
+   datetime n = TimeGMT7();
    MqlDateTime dt;
    TimeToStruct(n, dt);
    int h = dt.hour;
@@ -808,6 +832,9 @@ void WriteStrongSignalToGV(string sym, string tfStr, string type, double entryPr
 {
    if(!EnableSignalOutput || !isStrong) return;
    if(!IsValidSLForDirection(type, entryPrice, slPrice)) return;
+   datetime nowGmt7 = TimeGMT7();
+   datetime sigGmt7 = (signalTime > 0) ? ServerTimeToGMT7(signalTime) : nowGmt7;
+
    string prefix = "DIVSIGNAL_";
    GlobalVariableSet(prefix + "TYPE", type == "SELL" ? -1 : 1);
    GlobalVariableSet(prefix + "ORDER_TYPE", 0);
@@ -815,7 +842,7 @@ void WriteStrongSignalToGV(string sym, string tfStr, string type, double entryPr
    GlobalVariableSet(prefix + "SL", slPrice);
    GlobalVariableSet(prefix + "HIGH", highPrice);
    GlobalVariableSet(prefix + "LOW", lowPrice);
-   GlobalVariableSet(prefix + "TIME", (double)signalTime);
+   GlobalVariableSet(prefix + "TIME", (double)sigGmt7);
    GlobalVariableSet(prefix + "ACTIVE", 1);
    GlobalVariableSet(prefix + "TF", StringToEnum(tfStr));
    if(score > 0) GlobalVariableSet(prefix + "SCORE", score);
@@ -823,7 +850,7 @@ void WriteStrongSignalToGV(string sym, string tfStr, string type, double entryPr
    if(q != INVALID_HANDLE)
    {
       FileSeek(q, 0, SEEK_END);
-      string queueLine = StringFormat("%s|%s|%s|%s|%d|%.8f|%.8f|%.2f|%d\r\n", sym, tfStr, type, divType, (int)signalTime, entryPrice, slPrice, score, (int)TimeCurrent());
+      string queueLine = StringFormat("%s|%s|%s|%s|%d|%.8f|%.8f|%.2f|%d\r\n", sym, tfStr, type, divType, (int)sigGmt7, entryPrice, slPrice, score, (int)nowGmt7);
       FileWriteString(q, queueLine);
       FileClose(q);
    }
@@ -885,20 +912,20 @@ void WriteRTDivergence(string sym, string tfStr, bool isBearish, bool isRegular,
    GlobalVariableSet(prefix + type + "_PRICE2", price2);
    GlobalVariableSet(prefix + type + "_ISREG", isRegular ? 1 : 0);
    GlobalVariableSet(prefix + type + "_ACTIVE", 1);
-   GlobalVariableSet(prefix + type + "_TIME", (double)TimeCurrent());
+   GlobalVariableSet(prefix + type + "_TIME", (double)TimeGMT7());
 }
 
 void ClearInactiveRTDivergence(string sym, string tfStr, ENUM_TIMEFRAMES tf)
 {
    string prefix = "DIVDATA_" + sym + "_" + tfStr + "_";
-   datetime now = TimeCurrent();
+   datetime nowGmt7 = TimeGMT7();
 
    if(GlobalVariableCheck(prefix + "BEAR_ACTIVE") && GlobalVariableGet(prefix + "BEAR_ACTIVE") == 1)
    {
       bool shouldClear = false;
       if(GlobalVariableCheck(prefix + "BEAR_TIME"))
       {
-         if(now - (datetime)GlobalVariableGet(prefix + "BEAR_TIME") > 10)
+         if(nowGmt7 - (datetime)GlobalVariableGet(prefix + "BEAR_TIME") > 10)
             shouldClear = true;
       }
       else shouldClear = true;
@@ -922,7 +949,7 @@ void ClearInactiveRTDivergence(string sym, string tfStr, ENUM_TIMEFRAMES tf)
       bool shouldClear = false;
       if(GlobalVariableCheck(prefix + "BULL_TIME"))
       {
-         if(now - (datetime)GlobalVariableGet(prefix + "BULL_TIME") > 10)
+         if(nowGmt7 - (datetime)GlobalVariableGet(prefix + "BULL_TIME") > 10)
             shouldClear = true;
       }
       else shouldClear = true;
@@ -961,7 +988,7 @@ void CleanupOldSignals()
    string prefix = "DIVSIGNAL_";
    if(GlobalVariableCheck(prefix + "TIME"))
    {
-      if(TimeCurrent() - (datetime)GlobalVariableGet(prefix + "TIME") > SignalExpirySeconds)
+      if(TimeGMT7() - (datetime)GlobalVariableGet(prefix + "TIME") > SignalExpirySeconds)
       {
          GlobalVariableSet(prefix + "ACTIVE", 0);
          FileDelete("DIVSIGNAL_SYMBOL.txt", FILE_COMMON);
@@ -977,15 +1004,15 @@ void PrintStrongSignalOnce(SSymbolTFData &data, string sym, string tfStr, string
    if(digits <= 0) digits = 5;
    Print("STRONG SIGNAL SENT: ", sym, " ", tfStr, " ", type, " ", divType, " Entry=", DoubleToString(entryPrice, digits), " SL=", DoubleToString(slPrice, digits), " Time=", TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES));
    data.lastStrongSignalKey = signalKey;
-   data.lastStrongSignalPrintTime = TimeCurrent();
+   data.lastStrongSignalPrintTime = TimeGMT7();
 }
 
 void PrintRTSignalChange(int currentRTCount, string comment)
 {
-   datetime now = TimeCurrent();
-   if(now - g_lastRTPrintTime >= RTPrintCooldownSeconds || currentRTCount != g_lastRTCount)
+   datetime nowGmt7 = TimeGMT7();
+   if(nowGmt7 - g_lastRTPrintTime >= RTPrintCooldownSeconds || currentRTCount != g_lastRTCount)
    {
-      g_lastRTPrintTime = now;
+      g_lastRTPrintTime = nowGmt7;
       g_lastRTCount = currentRTCount;
    }
 }
@@ -1016,7 +1043,7 @@ void PublishTodaySignals()
 {
    int h = FileOpen("DIVTODAY_SIGNALS.txt", FILE_WRITE | FILE_TXT | FILE_COMMON | FILE_SHARE_READ);
    if(h == INVALID_HANDLE) return;
-   datetime nowGMT7 = GetGMT7Now();
+   datetime nowGMT7 = TimeGMT7();
    FileWriteString(h, "TIME|" + IntegerToString((int)nowGMT7) + "\r\n");
    for(int i = 0; i < g_todaySignalCount; i++)
    {
@@ -1052,7 +1079,7 @@ void CleanupInvalidRTTodaySignals()
 
 void ClearOldTodaySignals()
 {
-   datetime gmt7Now = GetGMT7Now();
+   datetime gmt7Now = TimeGMT7();
    datetime todayStartGMT7 = gmt7Now - (gmt7Now % 86400);
    int validCount = 0;
    for(int i = 0; i < g_todaySignalCount; i++)
@@ -1122,7 +1149,7 @@ void Draw(string divergenceComment)
 
    if(hud.showHeader)
    {
-      datetime gmt7Time = GetGMT7Now();
+      datetime gmt7Time = TimeGMT7();
       string timeStr = TimeToString(gmt7Time, TIME_MINUTES | TIME_SECONDS);
       string dotChar = g_heartbeatState ? "●" : "○";
       string speedStr = (g_lastScanDurationMs >= 1000)
@@ -1304,21 +1331,21 @@ void ClearAll()
 //+------------------------------------------------------------------+
 int OnInit()
 {
-   datetime ct = TimeCurrent();
-   if(ct > expiry)
+   datetime nowGmt7 = TimeGMT7();
+   if(nowGmt7 > expiry)
    {
       MessageBox("Expired!", "EXPIRED", MB_OK | MB_ICONSTOP);
       return INIT_FAILED;
    }
 
    EventSetTimer(1);
-   CalculateServerGMTOffset();
+   SyncBrokerGMTOffset(true);
    UpdateTodayBounds();
-   g_lastUpdateTime = ct;
+   g_lastUpdateTime = nowGmt7;
    g_heartbeatCounter = 0;
    g_lastScanDurationMs = 0;
    g_firstScanDone = false;
-   g_initTime = ct;
+   g_initTime = TimeCurrent();
    g_statusText = "KHỞI TẠO...";
    g_statusColor = clrDimGray;
    g_lastScanM15 = g_lastScanH1 = 0;
@@ -1338,8 +1365,9 @@ int OnInit()
    if(tfList == "") tfList = "NONE!";
 
    Print("═══════════════════════════════════════════");
-   Print("RSI Divergence Realtime v1.11");
+   Print("RSI Divergence Realtime v1.12 (TimeGMT7)");
    Print("   Timeframes: ", tfList);
+   Print("   GMT+7 Now: ", TimeToString(nowGmt7, TIME_DATE|TIME_SECONDS));
    Print("   Direct EA GV: ", PublishToDirectEA_GV ? "ON" : "OFF");
    Print("   Server Sync: ", EnableServerSync ? "ON" : "OFF");
    Print("═══════════════════════════════════════════");
@@ -1358,25 +1386,27 @@ void PublishScanSymbols(string symbols)
 {
    int h = FileOpen("DIVSCAN_SYMBOLS.txt", FILE_WRITE | FILE_TXT | FILE_COMMON);
    if(h == INVALID_HANDLE) return;
-   FileWriteString(h, IntegerToString((int)TimeCurrent()) + "#" + symbols);
+   FileWriteString(h, IntegerToString((int)TimeGMT7()) + "#" + symbols);
    FileClose(h);
    SyncScansToServer(symbols);
 }
 
 void OnTimer()
 {
-   GlobalVariableSet("HB_RSI_Indicator", (double)TimeCurrent());
-   g_lastUpdateTime = TimeCurrent();
+   datetime nowGmt7 = TimeGMT7();
+   GlobalVariableSet("HB_RSI_Indicator", (double)nowGmt7);
+   g_lastUpdateTime = nowGmt7;
    g_heartbeatCounter++;
    if(g_heartbeatCounter % 2 == 0) g_heartbeatState = !g_heartbeatState;
 
+   SyncBrokerGMTOffset(false);
    ClearOldTodaySignals();
    UpdateTodayBounds();
 
-   if(IsNewsFilterEnabledEffective() && TimeCurrent() - g_lastNewsCheckTime >= NewsCheckIntervalSeconds)
+   if(IsNewsFilterEnabledEffective() && nowGmt7 - g_lastNewsCheckTime >= NewsCheckIntervalSeconds)
    {
       g_isNewsBlocked = !IsNewsSafe();
-      g_lastNewsCheckTime = TimeCurrent();
+      g_lastNewsCheckTime = nowGmt7;
    }
    else if(!IsNewsFilterEnabledEffective())
    {
@@ -1438,8 +1468,8 @@ void OnTimer()
 
    datetime now = TimeCurrent();
    bool sM15 = false, sH1 = false;
-   if(EnableM15) sM15 = true;
-   if(EnableH1 && now - g_lastScanH1 >= 5) { sH1 = true; g_lastScanH1 = now; }
+   if(EnableM15 && now - g_lastScanM15 >= 2) { sM15 = true; g_lastScanM15 = now; }
+   if(EnableH1  && now - g_lastScanH1  >= 5) { sH1 = true;  g_lastScanH1 = now; }
 
    if(!sM15 && !sH1)
    {
@@ -1739,7 +1769,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
       }
    }
 
-   datetime gmt7Now = GetGMT7Now();
+   datetime gmt7Now = TimeGMT7();
    datetime todayStartGMT7 = gmt7Now - (gmt7Now % 86400);
 
    if(bestBearT2 > 0)
@@ -1874,7 +1904,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
 
                   if(timeAtMaxHigh >= g_initTime && timeAtMaxHigh != arrSymTF[idx].lastBearNotifyBar)
                   {
-                     datetime now2 = TimeCurrent();
+                     datetime now2 = TimeGMT7();
                      if(EnablePushNotify && now2 - arrSymTF[idx].lastBearNotifyTime >= NotifyCooldownMinutes * 60 && IsNewsSafe())
                      {
                         SendDivergenceNotify(sym, tfStr, "Reg", "SELL", timeStr);
@@ -1944,7 +1974,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
 
                   if(timeAtMaxRSI >= g_initTime && timeAtMaxRSI != arrSymTF[idx].lastBearNotifyBar)
                   {
-                     datetime now2 = TimeCurrent();
+                     datetime now2 = TimeGMT7();
                      if(EnablePushNotify && now2 - arrSymTF[idx].lastBearNotifyTime >= NotifyCooldownMinutes * 60 && IsNewsSafe())
                      {
                         SendDivergenceNotify(sym, tfStr, "Hid", "SELL", timeStr);
@@ -2034,7 +2064,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
 
                   if(timeAtMinLow >= g_initTime && timeAtMinLow != arrSymTF[idx].lastBullNotifyBar)
                   {
-                     datetime now2 = TimeCurrent();
+                     datetime now2 = TimeGMT7();
                      if(EnablePushNotify && now2 - arrSymTF[idx].lastBullNotifyTime >= NotifyCooldownMinutes * 60 && IsNewsSafe())
                      {
                         SendDivergenceNotify(sym, tfStr, "Reg", "BUY", timeStr);
@@ -2104,7 +2134,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
 
                   if(timeAtMinRSI >= g_initTime && timeAtMinRSI != arrSymTF[idx].lastBullNotifyBar)
                   {
-                     datetime now2 = TimeCurrent();
+                     datetime now2 = TimeGMT7();
                      if(EnablePushNotify && now2 - arrSymTF[idx].lastBullNotifyTime >= NotifyCooldownMinutes * 60 && IsNewsSafe())
                      {
                         SendDivergenceNotify(sym, tfStr, "Hid", "BUY", timeStr);
