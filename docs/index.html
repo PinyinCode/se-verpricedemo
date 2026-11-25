@@ -1437,18 +1437,18 @@ function renderMt5AccountInfo(accounts) {
   if (strip) {
     strip.classList.toggle('stale', isStale);
     strip.innerHTML = hasOpenPos
-      ? 'Bal <b>' + esc(balText) + '</b> · Eq <b>' + esc(eqText) + '</b>' + (isStale ? ' (cũ)' : '')
-      : 'Bal <b>' + esc(balText) + '</b>' + (isStale ? ' (cũ)' : '');
-    strip.title = hasOpenPos
+      ? 'Bal <b>' + esc(balText) + '</b> · Eq <b>' + esc(eqText) + '</b>'
+      : 'Bal <b>' + esc(balText) + '</b>';
+    strip.title = (hasOpenPos
       ? 'Balance: ' + balText + ' · Equity: ' + eqText
-      : 'Balance: ' + balText;
+      : 'Balance: ' + balText)
+      + (ageSec !== null ? ' · Cập nhật ' + ageSec + 's trước' : '');
   }
 
   if ($('mt5AccountMeta')) {
     $('mt5AccountMeta').textContent =
       (hasOpenPos ? 'Có ' + chartOpenPositions.length + ' vị thế mở' : 'Không có vị thế mở')
-      + (ageSec !== null ? ' · ' + ageSec + 's trước' : '')
-      + (isStale ? ' (dữ liệu cũ)' : '');
+      + (ageSec !== null ? ' · ' + ageSec + 's trước' : '');
   }
   if ($('mt5AccLogin')) $('mt5AccLogin').textContent = String(loginText);
   if ($('mt5AccServer')) $('mt5AccServer').textContent = String(serverText);
