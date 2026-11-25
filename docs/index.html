@@ -689,22 +689,23 @@ body.trade-fullscreen .chart-stage #tradePanelToggle.floating-trade-toggle:hover
 
 .rt-reopen-btn{
   position:fixed;
-  z-index:40;
+  z-index:1200;
   right:14px;
   bottom:14px;
   display:none;
   align-items:center;
   gap:6px;
-  padding:6px 11px;
+  padding:7px 12px;
   border-radius:999px;
   border:1px solid #2c9b78;
-  background:rgba(12,27,43,.95);
+  background:rgba(12,27,43,.96);
   color:#75e5bd;
   font-size:11px;
   font-weight:800;
   letter-spacing:.35px;
-  box-shadow:0 10px 26px rgba(0,0,0,.45);
+  box-shadow:0 10px 26px rgba(0,0,0,.5);
   backdrop-filter:blur(8px);
+  cursor:pointer;
 }
 .rt-reopen-btn.show{display:inline-flex}
 .rt-reopen-btn.sell-mode{border-color:#a84457;color:#ff9aaa}
@@ -728,7 +729,7 @@ body.trade-fullscreen .chart-stage #tradePanelToggle.floating-trade-toggle:hover
 @media(max-width:560px){
   .rt-signal-toast{top:44px;left:7px;width:min(300px,calc(100% - 14px));padding:8px 10px}
   .rt-toast-main{font-size:12px}
-  .rt-reopen-btn{right:10px;bottom:10px;padding:5px 9px;font-size:10px}
+  .rt-reopen-btn{right:10px;bottom:10px;padding:6px 10px;font-size:10px}
 }
 
 @media (orientation:portrait){
@@ -923,7 +924,6 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
   <div><span class="brand">Forex AI · Chart</span> <span class="muted">/ MT5 real feed</span></div>
   <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
     <span class="tag">MT5 REAL</span>
-    
   </div>
 </header>
 
@@ -2400,7 +2400,50 @@ function rsi(values, period = 14) {
 }
 
 const knownRealtimeByView = new Map();
-let latestRealtimeSignal = null;
+const RT_DISMISSED_KEY_STORAGE = 'chartRtDismissedSignalKey';
+const RT_LATEST_SIGNAL_STORAGE = 'chartRtLatestSignal';
+
+function readStoredLatestRealtimeSignal() {
+  try {
+    const raw = sessionStorage.getItem(RT_LATEST_SIGNAL_STORAGE) || localStorage.getItem(RT_LATEST_SIGNAL_STORAGE);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    return parsed && parsed.signal_time ? parsed : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function saveLatestRealtimeSignal(s) {
+  if (!s) return;
+  try {
+    const str = JSON.stringify(s);
+    sessionStorage.setItem(RT_LATEST_SIGNAL_STORAGE, str);
+    localStorage.setItem(RT_LATEST_SIGNAL_STORAGE, str);
+  } catch (_) {}
+}
+
+function readDismissedSignalKey() {
+  try {
+    return sessionStorage.getItem(RT_DISMISSED_KEY_STORAGE) || localStorage.getItem(RT_DISMISSED_KEY_STORAGE) || '';
+  } catch (_) {
+    return '';
+  }
+}
+
+function saveDismissedSignalKey(key) {
+  try {
+    if (key) {
+      sessionStorage.setItem(RT_DISMISSED_KEY_STORAGE, key);
+      localStorage.setItem(RT_DISMISSED_KEY_STORAGE, key);
+    } else {
+      sessionStorage.removeItem(RT_DISMISSED_KEY_STORAGE);
+      localStorage.removeItem(RT_DISMISSED_KEY_STORAGE);
+    }
+  } catch (_) {}
+}
+
+let latestRealtimeSignal = readStoredLatestRealtimeSignal();
 let latestRealtimeCount = 1;
 let rtToastDismissedByUser = false;
 
@@ -2415,20 +2458,44 @@ function syncRealtimeReopenButton() {
   const toast = $('rtSignalToast');
   if (!btn) return;
   const toastVisible = !!(toast && toast.classList.contains('show'));
-  if (!latestRealtimeSignal || toastVisible) {
+  if (toastVisible) {
     btn.classList.remove('show');
+    return;
+  }
+  if (!latestRealtimeSignal) {
+    btn.classList.remove('sell-mode');
+    $('rtReopenText').textContent = 'RT · ' + $('symbol').value + ' · ' + $('tf').value;
+    btn.classList.add('show');
     return;
   }
   const isBuy = latestRealtimeSignal.direction === 'BUY';
   btn.classList.toggle('sell-mode', !isBuy);
-  $('rtReopenText').textContent = (isBuy ? '▲ BUY' : '▼ SELL') + ' · ' + latestRealtimeSignal.symbol + ' · ' + latestRealtimeSignal.timeframe + (latestRealtimeCount > 1 ? ' (+' + (latestRealtimeCount - 1) + ')' : '');
+  $('rtReopenText').textContent =
+    (isBuy ? '▲ BUY' : '▼ SELL') +
+    ' · ' +
+    latestRealtimeSignal.symbol +
+    ' · ' +
+    latestRealtimeSignal.timeframe +
+    (latestRealtimeCount > 1 ? ' (+' + (latestRealtimeCount - 1) + ')' : '');
   btn.classList.add('show');
 }
 function showRealtimeToast(s, count = 1, { forceOpen = false } = {}) {
   if (!s) return;
+  const prevKey = latestRealtimeSignal ? signalKey(latestRealtimeSignal) : '';
+  const nextKey = signalKey(s);
   latestRealtimeSignal = s;
   latestRealtimeCount = Math.max(1, Number(count) || 1);
-  if (forceOpen) rtToastDismissedByUser = false;
+  saveLatestRealtimeSignal(s);
+
+  if (nextKey !== prevKey) {
+    rtToastDismissedByUser = false;
+  }
+  if (forceOpen) {
+    rtToastDismissedByUser = false;
+    if (readDismissedSignalKey() === nextKey) saveDismissedSignalKey('');
+  }
+
+  const shouldStayHidden = !forceOpen && (rtToastDismissedByUser || readDismissedSignalKey() === nextKey);
 
   let toast = $('rtSignalToast');
   if (!toast) {
@@ -2438,13 +2505,17 @@ function showRealtimeToast(s, count = 1, { forceOpen = false } = {}) {
     $('priceChart').appendChild(toast);
   }
   const isBuy = s.direction === 'BUY';
-  toast.innerHTML = '<div class="rt-toast-head"><span class="rt-toast-label">● REALTIME MỚI' + (latestRealtimeCount > 1 ? ' · +' + (latestRealtimeCount - 1) : '') + '</span><button type="button" class="rt-toast-close" aria-label="Ẩn">×</button></div>'
-    + '<div class="rt-toast-main ' + (isBuy ? 'buy' : 'sell') + '">' + (isBuy ? '▲ BUY' : '▼ SELL') + ' · ' + esc(s.symbol) + ' · ' + esc(s.timeframe) + '</div>'
-    + '<div class="rt-toast-meta">' + esc(s.divergence) + ' · Giá điểm phân kỳ: ' + fmt(s.price2) + '</div>'
-    + '<div class="rt-toast-meta">' + esc(signalTimeText(s)) + '</div>'
-    + '<div class="rt-toast-actions"><button type="button" class="rt-detail-btn">Xem chi tiết</button></div>';
+  toast.innerHTML =
+    '<div class="rt-toast-head"><span class="rt-toast-label">● REALTIME MỚI' +
+    (latestRealtimeCount > 1 ? ' · +' + (latestRealtimeCount - 1) : '') +
+    '</span><button type="button" class="rt-toast-close" aria-label="Ẩn">×</button></div>' +
+    '<div class="rt-toast-main ' + (isBuy ? 'buy' : 'sell') + '">' +
+    (isBuy ? '▲ BUY' : '▼ SELL') + ' · ' + esc(s.symbol) + ' · ' + esc(s.timeframe) + '</div>' +
+    '<div class="rt-toast-meta">' + esc(s.divergence) + ' · Giá điểm phân kỳ: ' + fmt(s.price2) + '</div>' +
+    '<div class="rt-toast-meta">' + esc(signalTimeText(s)) + '</div>' +
+    '<div class="rt-toast-actions"><button type="button" class="rt-detail-btn">Xem chi tiết</button></div>';
 
-  if (!rtToastDismissedByUser || forceOpen) {
+  if (!shouldStayHidden) {
     toast.classList.add('show');
   } else {
     toast.classList.remove('show');
@@ -2453,6 +2524,7 @@ function showRealtimeToast(s, count = 1, { forceOpen = false } = {}) {
 
   toast.querySelector('.rt-toast-close').addEventListener('click', () => {
     rtToastDismissedByUser = true;
+    saveDismissedSignalKey(signalKey(s));
     toast.classList.remove('show');
     syncRealtimeReopenButton();
   });
@@ -2475,8 +2547,11 @@ function openRealtimeDetails(s) {
   if (!$('rtSignalDialog').open) $('rtSignalDialog').showModal();
 }
 $('rtReopenBtn').addEventListener('click', () => {
-  if (!latestRealtimeSignal) return;
-  showRealtimeToast(latestRealtimeSignal, latestRealtimeCount, { forceOpen: true });
+  if (latestRealtimeSignal) {
+    showRealtimeToast(latestRealtimeSignal, latestRealtimeCount, { forceOpen: true });
+  } else {
+    $('requestState').textContent = 'Chưa có tín hiệu RT nào trên cặp/khung giờ này.';
+  }
 });
 $('rtDialogClose').addEventListener('click', () => $('rtSignalDialog').close());
 $('rtDialogOk').addEventListener('click', () => $('rtSignalDialog').close());
@@ -2499,7 +2574,9 @@ function renderSignals(signals, bars) {
   if (!knownRealtimeByView.has(viewKey)) {
     knownRealtimeByView.set(viewKey, currentKeys);
     if (rtItems.length) {
-      showRealtimeToast(rtItems[0], rtItems.length, { forceOpen: true });
+      const topSignal = rtItems[0];
+      const alreadyDismissed = readDismissedSignalKey() === signalKey(topSignal);
+      showRealtimeToast(topSignal, rtItems.length, { forceOpen: !alreadyDismissed });
     }
   } else {
     const known = knownRealtimeByView.get(viewKey);
@@ -2510,6 +2587,10 @@ function renderSignals(signals, bars) {
       showRealtimeToast(fresh[0], fresh.length, { forceOpen: true });
     }
   }
+}
+
+if (latestRealtimeSignal) {
+  showRealtimeToast(latestRealtimeSignal, 1, { forceOpen: false });
 }
 
 function defaultGap(ref) {
@@ -3706,8 +3787,8 @@ async function sendOrder(direction) {
 
 $('sendBuy').addEventListener('click', () => sendOrder('BUY'));
 $('sendSell').addEventListener('click', () => sendOrder('SELL'));
-$('symbol').addEventListener('change', () => { firstLoad = true; lastBarsSignature = ''; load(); void syncSymbolCommission($('symbol').value); refreshCommissionInfo(); });
-$('tf').addEventListener('change', () => { firstLoad = true; lastBarsSignature = ''; load(); });
+$('symbol').addEventListener('change', () => { firstLoad = true; lastBarsSignature = ''; load(); void syncSymbolCommission($('symbol').value); refreshCommissionInfo(); syncRealtimeReopenButton(); });
+$('tf').addEventListener('change', () => { firstLoad = true; lastBarsSignature = ''; load(); syncRealtimeReopenButton(); });
 $('refresh').addEventListener('click', () => { lastBarsSignature = ''; load(true); void syncEaSettings(); void syncSymbolCommission($('symbol').value); });
 
 const rsiResizeHandle = $('rsiResizeHandle');
