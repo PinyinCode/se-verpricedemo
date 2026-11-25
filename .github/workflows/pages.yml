@@ -38,9 +38,33 @@ jobs:
         uses: actions/configure-pages@v5
 
       - name: Upload site artifact
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@v3
         with:
           path: ./docs
+
+      - name: Wait for Pages artifact registration
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const runId = context.runId;
+            for (let attempt = 1; attempt <= 12; attempt++) {
+              const response = await github.rest.actions.listWorkflowRunArtifacts({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: runId,
+                per_page: 100
+              });
+              const artifact = response.data.artifacts.find(item =>
+                item.name === "github-pages" && !item.expired
+              );
+              if (artifact) {
+                core.info(`Pages artifact visible: ${artifact.id}`);
+                return;
+              }
+              core.info(`Pages artifact not visible yet (attempt ${attempt}/12); waiting 3 seconds`);
+              await new Promise(resolve => setTimeout(resolve, 3000));
+            }
+            throw new Error("Artifact github-pages was not visible after 36 seconds.");
 
       - name: Deploy to GitHub Pages
         id: deployment
