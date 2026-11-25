@@ -10,7 +10,7 @@ import sqlite3
 import threading
 import time
 from contextlib import asynccontextmanager, contextmanager
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Literal
 from urllib.request import Request, urlopen
@@ -36,6 +36,10 @@ _conn: sqlite3.Connection | None = None
 _recently_acked: dict[str, float] = {}
 _ACK_COOLDOWN = 10.0
 _GMT7 = timezone(timedelta(hours=7))
+
+_ticks_lock = threading.Lock()
+_latest_ticks: dict[str, dict] = {}
+_last_candle_prune_ts: dict[tuple[str, str], float] = {}
 
 
 def utc_now() -> str:
@@ -457,6 +461,60 @@ def send_telegram_rt_signal(item: "TodaySignalItem") -> bool:
     return False
 
 
+# ============ Fast Tick Cache & Helpers ============
+
+def _set_latest_tick(
+    symbol: str,
+    bid: float | None,
+    ask: float | None,
+    last: float = 0.0,
+    time_msc: int = 0,
+    source: str = "mt5",
+) -> dict:
+    now_mono = time.monotonic()
+    now_iso = utc_now()
+    with _ticks_lock:
+        prev = _latest_ticks.get(symbol, {})
+        resolved_bid = float(bid) if (bid is not None and bid > 0) else prev.get("bid")
+        resolved_ask = float(ask) if (ask is not None and ask > 0) else prev.get("ask")
+        resolved_last = (
+            float(last)
+            if (last and last > 0)
+            else (resolved_bid or resolved_ask or prev.get("last") or 0.0)
+        )
+        entry = {
+            "symbol": symbol,
+            "bid": resolved_bid,
+            "ask": resolved_ask,
+            "last": resolved_last,
+            "time_msc": int(time_msc or prev.get("time_msc") or 0),
+            "source": source,
+            "updated_at": now_iso,
+            "_mono": now_mono,
+        }
+        _latest_ticks[symbol] = entry
+        return {k: v for k, v in entry.items() if not k.startswith("_")}
+
+
+def _get_cached_tick(symbol: str, max_age_sec: float = 30.0) -> dict | None:
+    now_mono = time.monotonic()
+    with _ticks_lock:
+        entry = _latest_ticks.get(symbol)
+        if not entry:
+            return None
+        if (now_mono - float(entry.get("_mono", 0.0))) > max_age_sec:
+            return None
+        return {k: v for k, v in entry.items() if not k.startswith("_")}
+
+
+def _get_all_cached_ticks() -> dict[str, dict]:
+    with _ticks_lock:
+        return {
+            k: {kk: vv for kk, vv in v.items() if not kk.startswith("_")}
+            for k, v in _latest_ticks.items()
+        }
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
@@ -472,7 +530,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Forex AI Server",
-    version="0.6.1",
+    version="0.6.2-fast",
     description="Signal analysis and MT5 real-order bridge with runtime control panel.",
     lifespan=lifespan,
 )
@@ -498,6 +556,25 @@ def require_key(x_api_key: str | None = Header(default=None)) -> None:
 
 
 # ============ Models ============
+
+class TickIn(BaseModel):
+    symbol: str = Field(min_length=3, max_length=32)
+    bid: float = Field(gt=0)
+    ask: float = Field(gt=0)
+    last: float = Field(default=0, ge=0)
+    time_msc: int = Field(default=0, ge=0)
+    timestamp: int = Field(default=0, ge=0)
+    consumer_id: str = Field(default="mt5", max_length=40)
+
+    @field_validator("symbol")
+    @classmethod
+    def normalize_tick_symbol(cls, value: str) -> str:
+        return value.strip().upper()
+
+
+class TickBatchIn(BaseModel):
+    ticks: list[TickIn] = Field(min_length=1, max_length=200)
+
 
 class SignalIn(BaseModel):
     symbol: str = Field(min_length=3, max_length=32)
@@ -1033,6 +1110,9 @@ def _get_latest_market_price(
     symbol: str,
     timeframe: str | None = None,
 ) -> float | None:
+    cached = _get_cached_tick(symbol, max_age_sec=15.0)
+    if cached and cached.get("bid"):
+        return float(cached["bid"])
     if timeframe:
         row = conn.execute(
             "SELECT close FROM candles WHERE symbol=? AND timeframe=? ORDER BY candle_time DESC LIMIT 1",
@@ -1052,6 +1132,9 @@ def _get_latest_symbol_ask(
     symbol: str,
     timeframe: str | None = None,
 ) -> float | None:
+    cached = _get_cached_tick(symbol, max_age_sec=15.0)
+    if cached and cached.get("ask"):
+        return float(cached["ask"])
     if timeframe:
         row = conn.execute(
             "SELECT ask FROM candles WHERE symbol=? AND timeframe=? AND ask IS NOT NULL AND ask > 0 "
@@ -1106,6 +1189,44 @@ def _insert_signal(
         "status": status,
         "created_at": created,
     }
+
+
+@app.post("/api/mt5/ticks", dependencies=[Depends(require_key)])
+def ingest_tick(payload: TickIn):
+    tick = _set_latest_tick(
+        symbol=payload.symbol,
+        bid=payload.bid,
+        ask=payload.ask,
+        last=payload.last,
+        time_msc=payload.time_msc,
+        source=payload.consumer_id,
+    )
+    return {"ok": True, "tick": tick}
+
+
+@app.post("/api/mt5/ticks/batch", dependencies=[Depends(require_key)])
+def ingest_tick_batch(payload: TickBatchIn):
+    updated = [
+        _set_latest_tick(
+            symbol=item.symbol,
+            bid=item.bid,
+            ask=item.ask,
+            last=item.last,
+            time_msc=item.time_msc,
+            source=item.consumer_id,
+        )
+        for item in payload.ticks
+    ]
+    return {"ok": True, "count": len(updated), "ticks": updated}
+
+
+@app.get("/api/mt5/ticks", dependencies=[Depends(require_key)])
+def get_latest_ticks(symbol: str | None = Query(default=None, max_length=32)):
+    if symbol:
+        sym = symbol.strip().upper()
+        t = _get_cached_tick(sym, max_age_sec=120.0)
+        return {"ok": True, "symbol": sym, "tick": t}
+    return {"ok": True, "ticks": _get_all_cached_ticks(), "server_time": utc_now()}
 
 
 @app.post("/api/signals", dependencies=[Depends(require_key)])
@@ -1953,9 +2074,11 @@ def update_candles(payload: CandleBatchIn):
     now = utc_now()
     ask_val = payload.resolved_ask
     rows = []
+    last_close = 0.0
     for candle in payload.candles:
         if candle.high < max(candle.open, candle.close, candle.low) or candle.low > min(candle.open, candle.close, candle.high):
             raise HTTPException(status_code=422, detail="OHLC không hợp lệ")
+        last_close = candle.close
         rows.append((
             payload.symbol, payload.timeframe, candle.time, candle.open,
             candle.high, candle.low, candle.close, candle.volume,
@@ -1963,8 +2086,21 @@ def update_candles(payload: CandleBatchIn):
             payload.volume_min, payload.volume_max, payload.volume_step,
             ask_val,
         ))
+
+    if last_close > 0 or ask_val is not None:
+        _set_latest_tick(
+            symbol=payload.symbol,
+            bid=last_close if last_close > 0 else None,
+            ask=ask_val,
+            last=last_close,
+            source=f"candles:{payload.timeframe}",
+        )
+
+    prune_key = (payload.symbol, payload.timeframe)
+    now_mono = time.monotonic()
+    should_prune = (now_mono - _last_candle_prune_ts.get(prune_key, 0.0)) >= 30.0
+
     with db() as conn:
-        _ensure_candles_ask_column(conn)
         conn.executemany(
             "INSERT INTO candles(symbol,timeframe,candle_time,open,high,low,close,volume,digits,tick_size,tick_value,volume_min,volume_max,volume_step,ask) "
             "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(symbol,timeframe,candle_time) DO UPDATE SET "
@@ -1974,16 +2110,13 @@ def update_candles(payload: CandleBatchIn):
             "ask=COALESCE(excluded.ask, candles.ask)",
             rows,
         )
-        if ask_val is not None:
+        if should_prune:
+            _last_candle_prune_ts[prune_key] = now_mono
             conn.execute(
-                "UPDATE candles SET ask=? WHERE symbol=? AND timeframe=?",
-                (ask_val, payload.symbol, payload.timeframe),
+                "DELETE FROM candles WHERE symbol=? AND timeframe=? AND candle_time NOT IN "
+                "(SELECT candle_time FROM candles WHERE symbol=? AND timeframe=? ORDER BY candle_time DESC LIMIT 2000)",
+                (payload.symbol, payload.timeframe, payload.symbol, payload.timeframe),
             )
-        conn.execute(
-            "DELETE FROM candles WHERE symbol=? AND timeframe=? AND candle_time NOT IN "
-            "(SELECT candle_time FROM candles WHERE symbol=? AND timeframe=? ORDER BY candle_time DESC LIMIT 2000)",
-            (payload.symbol, payload.timeframe, payload.symbol, payload.timeframe),
-        )
     return {
         "ok": True,
         "symbol": payload.symbol,
@@ -2044,7 +2177,6 @@ def chart_data(
 ):
     symbol = symbol.strip().upper()
     with db() as conn:
-        _ensure_candles_ask_column(conn)
         candles = [dict(r) for r in conn.execute(
             "SELECT candle_time AS time,open,high,low,close,volume,digits,tick_size,tick_value,volume_min,volume_max,volume_step,ask "
             "FROM candles WHERE symbol=? AND timeframe=? ORDER BY candle_time DESC LIMIT ?",
@@ -2057,6 +2189,12 @@ def chart_data(
             (symbol, timeframe),
         ).fetchall()]
         ask_val = _get_latest_symbol_ask(conn, symbol, timeframe)
+    cached_tick = _get_cached_tick(symbol, max_age_sec=30.0)
+    bid_val = (
+        cached_tick["bid"]
+        if (cached_tick and cached_tick.get("bid"))
+        else (candles[-1]["close"] if candles else None)
+    )
     meta = {
         "digits": candles[-1]["digits"],
         "tick_size": candles[-1]["tick_size"],
@@ -2073,6 +2211,7 @@ def chart_data(
         "symbol": symbol,
         "timeframe": timeframe,
         **meta,
+        "bid": bid_val,
         "ask": ask_val,
         "ask_price": ask_val,
         "candles": candles,
@@ -2167,6 +2306,7 @@ def dashboard_data():
     return {
         "mode": "REAL_ONLY",
         "mt5_accounts": mt5_accounts,
+        "latest_ticks": _get_all_cached_ticks(),
         "signals": signals,
         "today_signals": today_signals,
         "mt5_positions": mt5_positions,
