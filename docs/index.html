@@ -1909,7 +1909,6 @@ function renderRsiDivergences(signals, bars) {
   const list = Array.isArray(signals) ? signals : [];
   const rsiData = typeof rsiSeries.data === 'function' ? (rsiSeries.data() || []) : [];
 
-  // Sắp xếp để tín hiệu RT được vẽ cuối cùng (nổi bật lên trên)
   const ordered = [...list].slice(0, 80).sort((a, b) => {
     const aRt = a.signal_type === 'RT' ? 1 : 0;
     const bRt = b.signal_type === 'RT' ? 1 : 0;
@@ -1958,7 +1957,6 @@ function renderRsiDivergences(signals, bars) {
       ]);
       priceDivergenceSeries.push(priceLine);
     } else if (isRealtime) {
-      // Line phân kỳ realtime dự phòng khi chỉ có mốc signal_time / price2
       const sigTs = Number(s.signal_time || t2 || 0);
       if (sigTs > 0) {
         const snappedTs = nearestTime(sigTs, bars);
@@ -3832,55 +3830,170 @@ document.addEventListener('click', e => {
 
 function normalizeTimestamp(val) {
   if (val == null || val === '') return NaN;
-  if (typeof val === 'number') return val > 1e12 ? val / 1000 : val;
-  const n = Number(val);
-  if (Number.isFinite(n) && n > 0) return n > 1e12 ? n / 1000 : n;
-  const parsed = Date.parse(String(val));
+  if (typeof val === 'number') {
+    if (!Number.isFinite(val) || val <= 0) return NaN;
+    return val > 1e12 ? val / 1000 : val;
+  }
+  const str = String(val).trim();
+  const n = Number(str);
+  if (Number.isFinite(n) && n > 0) {
+    return n > 1e12 ? n / 1000 : n;
+  }
+  const parsed = Date.parse(str);
   return Number.isFinite(parsed) ? parsed / 1000 : NaN;
 }
+
+function parseNumSafe(val, fallback = 0) {
+  if (typeof val === 'number') return Number.isFinite(val) ? val : fallback;
+  if (val == null || val === '') return fallback;
+  const cleaned = String(val).replace(/,/g, '').trim();
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : fallback;
+}
+
 const localDayKey = ts => {
   const sec = normalizeTimestamp(ts);
   if (!Number.isFinite(sec)) return '';
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Ho_Chi_Minh', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(sec * 1000));
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date(sec * 1000));
 };
+
 const localDateTime = ts => {
   const sec = normalizeTimestamp(ts);
   if (!Number.isFinite(sec)) return String(ts || '—');
-  return new Date(sec * 1000).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour12: false });
+  return new Date(sec * 1000).toLocaleString('vi-VN', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    hour12: false,
+  });
 };
 
-function renderStats(data) {
-  const todaySignals = Array.isArray(data.today_signals) ? data.today_signals : [];
-  const history = Array.isArray(data.real_history) ? data.real_history : [];
-  const todayKey = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Ho_Chi_Minh', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
-  const closedToday = history.filter(p => localDayKey(p.closed_at ?? p.close_time ?? p.time) === todayKey);
-  const wins = closedToday.filter(p => Number(p.profit ?? p.pnl ?? 0) > 0).length;
-  const losses = closedToday.filter(p => Number(p.profit ?? p.pnl ?? 0) < 0).length;
-  const net = closedToday.reduce((sum, p) => sum + (Number(p.profit ?? p.pnl) || 0), 0);
+function dedupeRealHistory(rawList) {
+  if (!Array.isArray(rawList)) return [];
+  const seen = new Set();
+  const result = [];
 
-  $('statsSignalCount').textContent = String(todaySignals.length);
-  $('statsClosedCount').textContent = String(closedToday.length);
-  $('statsWinLoss').textContent = wins + ' / ' + losses;
-  $('statsTodayPL').textContent = (net > 0 ? '+' : '') + net.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-  $('statsTodayPL').style.color = net >= 0 ? '#27c995' : '#f06b7e';
-  $('statsSignalMeta').textContent = todaySignals.length + ' tín hiệu nhận được';
+  for (const item of rawList) {
+    if (!item || typeof item !== 'object') continue;
 
-  $('statsTodaySignals').innerHTML = todaySignals.length
-    ? todaySignals.map(x => '<tr><td>' + esc(localDateTime(x.signal_time)) + '</td><td>' + esc(x.symbol) + '</td><td>' + esc(x.timeframe) + '</td><td class="' + (String(x.direction).toUpperCase() === 'BUY' ? 'buy' : 'sell') + '">' + esc(x.direction) + '</td><td>' + esc(x.divergence) + '</td><td>' + esc(x.signal_type) + '</td><td>' + fmt(x.price2) + '</td></tr>').join('')
-    : '<tr><td colspan="7" class="empty">Hôm nay chưa có tín hiệu</td></tr>';
+    const entryDir = String(item.entry_type ?? item.deal_entry ?? '').trim().toUpperCase();
+    if (entryDir === 'IN' || entryDir === 'DEAL_ENTRY_IN') continue;
 
-  $('statsHistoryMeta').textContent = history.length + ' giao dịch';
-  $('statsPaperHistory').innerHTML = history.length ? history.map(p => {
-    const profit = Number(p.profit ?? p.pnl ?? 0);
-    const closeTs = p.closed_at ?? p.close_time ?? p.time;
-    const entryVal = p.entry ?? p.open_price ?? p.price ?? 0;
-    const volVal = p.volume ?? p.lots ?? p.lot ?? 0;
-    return '<tr><td>' + esc(localDateTime(closeTs)) + '</td><td>' + esc(p.symbol) + '</td><td class="' + (String(p.direction ?? p.type).toUpperCase().includes('BUY') ? 'buy' : 'sell') + '">' + esc(p.direction ?? p.type) + '</td><td>' + fmt(volVal) + '</td><td>' + fmt(entryVal) + '</td><td>' + (Number(p.sl) > 0 ? fmt(p.sl) : '—') + '</td><td>' + (Number(p.tp) > 0 ? fmt(p.tp) : '—') + '</td><td>' + esc(p.outcome ?? p.reason ?? p.status ?? 'Đã đóng') + '</td><td style="font-weight:700;color:' + (profit >= 0 ? '#27c995' : '#f06b7e') + '">' + (profit > 0 ? '+' : '') + fmt(profit) + '</td></tr>';
-  }).join('') : '<tr><td colspan="9" class="empty">Chưa có giao dịch đã đóng</td></tr>';
+    const closeTs = item.closed_at ?? item.close_time ?? item.time;
+    const closeSec = normalizeTimestamp(closeTs);
+    const closeBucket = Number.isFinite(closeSec) ? Math.floor(closeSec) : String(closeTs || '').trim();
 
-  $('statsUpdated').textContent = 'Cập nhật ' + new Date().toLocaleTimeString('vi-VN');
+    const posId = String(item.position_id ?? item.ticket ?? item.deal_id ?? item.id ?? '').trim();
+    const sym = String(item.symbol || '').trim().toUpperCase();
+    const dir = String(item.direction ?? item.type ?? '').trim().toUpperCase();
+    const vol = parseNumSafe(item.volume ?? item.lots ?? item.lot, 0).toFixed(4);
+    const entryPx = parseNumSafe(item.entry ?? item.open_price ?? item.price, 0).toFixed(mt5Digits);
+    const profitVal = parseNumSafe(item.profit ?? item.pnl, 0).toFixed(2);
+
+    const key = posId
+      ? `id:${posId}|t:${closeBucket}|d:${dir}`
+      : `fb:${sym}|d:${dir}|v:${vol}|e:${entryPx}|p:${profitVal}|t:${closeBucket}`;
+
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(item);
+  }
+
+  return result;
 }
+
+function renderStats(data) {
+  const safeData = data && typeof data === 'object' ? data : {};
+  const todaySignals = Array.isArray(safeData.today_signals) ? safeData.today_signals : [];
+  const history = dedupeRealHistory(safeData.real_history);
+
+  const todayKey = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(new Date());
+
+  const closedToday = history.filter(p => {
+    const day = localDayKey(p.closed_at ?? p.close_time ?? p.time);
+    return day && day === todayKey;
+  });
+
+  const wins = closedToday.filter(p => parseNumSafe(p.profit ?? p.pnl, 0) > 0).length;
+  const losses = closedToday.filter(p => parseNumSafe(p.profit ?? p.pnl, 0) < 0).length;
+  const net = closedToday.reduce((sum, p) => sum + parseNumSafe(p.profit ?? p.pnl, 0), 0);
+
+  if ($('statsSignalCount')) $('statsSignalCount').textContent = String(todaySignals.length);
+  if ($('statsClosedCount')) $('statsClosedCount').textContent = String(closedToday.length);
+  if ($('statsWinLoss')) $('statsWinLoss').textContent = wins + ' / ' + losses;
+  if ($('statsTodayPL')) {
+    $('statsTodayPL').textContent = (net > 0 ? '+' : '') + net.toLocaleString('en-US', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+    $('statsTodayPL').style.color = net >= 0 ? '#27c995' : '#f06b7e';
+  }
+  if ($('statsSignalMeta')) $('statsSignalMeta').textContent = todaySignals.length + ' tín hiệu nhận được';
+
+  if ($('statsTodaySignals')) {
+    $('statsTodaySignals').innerHTML = todaySignals.length
+      ? todaySignals.map(x => {
+          const isBuy = String(x.direction || '').toUpperCase() === 'BUY';
+          return '<tr>'
+            + '<td>' + esc(localDateTime(x.signal_time)) + '</td>'
+            + '<td>' + esc(x.symbol || '—') + '</td>'
+            + '<td>' + esc(x.timeframe || '—') + '</td>'
+            + '<td class="' + (isBuy ? 'buy' : 'sell') + '">' + esc(x.direction || '—') + '</td>'
+            + '<td>' + esc(x.divergence || '—') + '</td>'
+            + '<td>' + esc(x.signal_type || '—') + '</td>'
+            + '<td>' + fmt(parseNumSafe(x.price2, 0)) + '</td>'
+            + '</tr>';
+        }).join('')
+      : '<tr><td colspan="7" class="empty">Hôm nay chưa có tín hiệu</td></tr>';
+  }
+
+  if ($('statsHistoryMeta')) $('statsHistoryMeta').textContent = history.length + ' giao dịch';
+
+  if ($('statsPaperHistory')) {
+    $('statsPaperHistory').innerHTML = history.length
+      ? history.map(p => {
+          const profit = parseNumSafe(p.profit ?? p.pnl, 0);
+          const closeTs = p.closed_at ?? p.close_time ?? p.time;
+          const entryVal = parseNumSafe(p.entry ?? p.open_price ?? p.price, 0);
+          const slVal = parseNumSafe(p.sl, 0);
+          const tpVal = parseNumSafe(p.tp, 0);
+          const volVal = parseNumSafe(p.volume ?? p.lots ?? p.lot, 0);
+          const dirRaw = String(p.direction ?? p.type ?? '').trim();
+          const isBuy = dirRaw.toUpperCase().includes('BUY');
+          const outcomeLabel = p.outcome ?? p.reason ?? p.status ?? (profit > 0 ? 'Win' : profit < 0 ? 'Loss' : 'Đã đóng');
+
+          return '<tr>'
+            + '<td>' + esc(localDateTime(closeTs)) + '</td>'
+            + '<td>' + esc(p.symbol || '—') + '</td>'
+            + '<td class="' + (isBuy ? 'buy' : 'sell') + '">' + esc(dirRaw || '—') + '</td>'
+            + '<td>' + fmt(volVal) + '</td>'
+            + '<td>' + fmt(entryVal) + '</td>'
+            + '<td>' + (slVal > 0 ? fmt(slVal) : '—') + '</td>'
+            + '<td>' + (tpVal > 0 ? fmt(tpVal) : '—') + '</td>'
+            + '<td>' + esc(outcomeLabel) + '</td>'
+            + '<td style="font-weight:700;color:' + (profit >= 0 ? '#27c995' : '#f06b7e') + '">'
+            + (profit > 0 ? '+' : '') + profit.toFixed(2)
+            + '</td>'
+            + '</tr>';
+        }).join('')
+      : '<tr><td colspan="9" class="empty">Chưa có giao dịch đã đóng</td></tr>';
+  }
+
+  if ($('statsUpdated')) {
+    $('statsUpdated').textContent = 'Cập nhật ' + new Date().toLocaleTimeString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
+  }
+}
+
 async function refreshStats() {
+  if ($('statsUpdated')) $('statsUpdated').textContent = 'Đang đồng bộ...';
   try {
     const r = await apiFetch(API_BASE + '/api/dashboard', { cache: 'no-store' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -3889,7 +4002,7 @@ async function refreshStats() {
     renderMt5AccountInfo(data.mt5_accounts);
     renderStats(data);
   } catch (e) {
-    $('statsUpdated').textContent = 'Không thể tải thống kê: ' + e.message;
+    if ($('statsUpdated')) $('statsUpdated').textContent = 'Không thể tải thống kê: ' + e.message;
   }
 }
 $('statsButton').addEventListener('click', () => { $('statsDialog').showModal(); refreshStats(); });
@@ -4465,79 +4578,70 @@ function stopResize(e) {
 document.addEventListener('pointerup', stopResize);
 document.addEventListener('pointercancel', stopResize);
 
-function updateGMT7Clock() {
-  $('clockGMT7').textContent = new Intl.DateTimeFormat('vi-VN', {
-    timeZone: 'Asia/Ho_Chi_Minh', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-  }).format(new Date());
+function tickGMT7() {
+  $('clockGMT7').textContent = new Date().toLocaleTimeString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour12: false }) + ' GMT+7';
 }
-const formatLatency = ms => {
-  const n = Math.max(0, Math.round(ms));
-  return n >= 1000 ? (n / 1000).toFixed(1) + 's' : n + 'ms';
-};
+tickGMT7();
+setInterval(tickGMT7, 1000);
+
 async function checkServerStatus() {
   if (!apiAccessGranted) return;
-  const t0 = performance.now();
+  const el = $('serverState');
+  if (!el) return;
   try {
-    const res = await fetch(API_BASE + '/api/health', { cache: 'no-store' });
-    const speed = formatLatency(performance.now() - t0);
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const d = await res.json();
-    const ok = d.status === 'ok' && d.database === 'ok';
-    $('serverState').classList.toggle('online', ok);
-    $('serverState').classList.toggle('offline', !ok);
-    $('serverState').innerHTML = '<i></i><span>' + speed + '</span>';
-    $('serverState').title = 'API: ' + d.status + ' · DB: ' + d.database + ' · ' + speed + (d.mode ? ' · ' + d.mode : '');
-  } catch (e) {
-    const speed = formatLatency(performance.now() - t0);
-    $('serverState').classList.remove('online');
-    $('serverState').classList.add('offline');
-    $('serverState').innerHTML = '<i></i><span>' + speed + '</span>';
-    $('serverState').title = String(e.message || e);
+    const r = await apiFetch(API_BASE + '/api/health', { cache: 'no-store' });
+    if (r.ok) {
+      el.className = 'server-state online';
+      el.querySelector('span').textContent = 'ONLINE';
+      el.title = 'Server online';
+    } else {
+      el.className = 'server-state offline';
+      el.querySelector('span').textContent = 'OFFLINE';
+      el.title = 'HTTP ' + r.status;
+    }
+  } catch (_) {
+    el.className = 'server-state offline';
+    el.querySelector('span').textContent = 'OFFLINE';
+    el.title = 'Không kết nối được';
   }
 }
 
-function triggerInitialAuthCheck() {
-  if (window.accountAuthGranted && chartApiKey) {
-    void validateApiAccess();
-  }
-}
-
-ensureApiAuthWarnings();
-refreshApiKeyBox();
-renderMt5AccountInfo([]);
-window.addEventListener('forex-auth-ready', triggerInitialAuthCheck);
-window.addEventListener('forex-auth-locked', stopAuthorizedPolling);
-stopAuthorizedPolling();
-syncRealLayerToggles();
-bindRealLayerToggles();
-bindAskLineToggle();
-applyLockState();
-syncPresetButtons();
-
+$('apiKeyToggle').addEventListener('click', () => {
+  const inp = $('apiKeyInput');
+  const next = inp.type === 'password' ? 'text' : 'password';
+  inp.type = next;
+  $('apiKeyToggle').textContent = next === 'password' ? '👁' : '🙈';
+});
 $('apiKeySave').addEventListener('click', () => {
   saveApiKey($('apiKeyInput').value);
-  stopAuthorizedPolling();
-  $('requestState').textContent = 'Đang xác thực API key (' + maskKey(chartApiKey) + ')...';
+  $('apiKeyInput').type = 'password';
+  $('apiKeyToggle').textContent = '👁';
   void validateApiAccess();
 });
 $('apiKeyInput').addEventListener('keydown', e => {
-  if (e.key === 'Enter') {
-    saveApiKey($('apiKeyInput').value);
-    stopAuthorizedPolling();
-    $('apiKeyInput').blur();
-    $('requestState').textContent = 'Đang xác thực API key (' + maskKey(chartApiKey) + ')...';
-    void validateApiAccess();
-  }
-});
-$('apiKeyToggle').addEventListener('click', () => {
-  const inp = $('apiKeyInput');
-  inp.type = inp.type === 'password' ? 'text' : 'password';
+  if (e.key === 'Enter') { e.preventDefault(); $('apiKeySave').click(); }
 });
 $('commissionRefresh').addEventListener('click', refreshCommissionInfo);
 
-updateGMT7Clock();
-setInterval(updateGMT7Clock, 1000);
+refreshApiKeyBox();
+syncRealLayerToggles();
+bindRealLayerToggles();
+syncAskLineToggle();
+bindAskLineToggle();
+applyLockState();
+syncPresetButtons();
+calcLot();
+applyChartDimensions();
 </script>
-<script src="./auth.js"></script>
+<script type="module" src="./auth.js"></script>
+<script>
+window.addEventListener('account-auth-changed', event => {
+  if (event && event.detail && event.detail.granted) {
+    void validateApiAccess();
+  } else {
+    stopAuthorizedPolling();
+  }
+});
+</script>
 </body>
 </html>
