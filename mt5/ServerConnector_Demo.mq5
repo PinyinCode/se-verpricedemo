@@ -4,7 +4,7 @@
 //| Chart & account feed only (no trade execution).                  |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.20"
+#property version "1.21"
 
 #include <Trade\Trade.mqh>
 
@@ -629,6 +629,17 @@ int BuildChartTargets(string &symbols[], string &timeframes[])
    return ArraySize(symbols);
 }
 
+double GetRealSymbolAsk(string symbol)
+{
+   MqlTick tick;
+   if(SymbolInfoTick(symbol, tick) && tick.ask > 0.0 && MathIsValidNumber(tick.ask))
+      return tick.ask;
+   double ask = SymbolInfoDouble(symbol, SYMBOL_ASK);
+   if(ask > 0.0 && MathIsValidNumber(ask))
+      return ask;
+   return 0.0;
+}
+
 bool PublishCandleBatch(string symbol, string tfText, ENUM_TIMEFRAMES period)
 {
    if(symbol=="" || period==PERIOD_CURRENT) return false;
@@ -674,8 +685,14 @@ bool PublishCandleBatch(string symbol, string tfText, ENUM_TIMEFRAMES period)
    double volumeMin=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MIN);
    double volumeMax=SymbolInfoDouble(symbol,SYMBOL_VOLUME_MAX);
    double volumeStep=SymbolInfoDouble(symbol,SYMBOL_VOLUME_STEP);
-   string body=StringFormat("{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"digits\":%d,\"tick_size\":%.10f,\"tick_value\":%.10f,\"volume_min\":%.8f,\"volume_max\":%.8f,\"volume_step\":%.8f,\"candles\":%s}",
-      JsonEscape(symbol),JsonEscape(tfText),digits,tickSize,tickValue,volumeMin,volumeMax,volumeStep,candles);
+   double askPrice=GetRealSymbolAsk(symbol);
+
+   string askJson="";
+   if(askPrice>0.0)
+      askJson=StringFormat(",\"ask\":%.10f,\"ask_price\":%.10f",askPrice,askPrice);
+
+   string body=StringFormat("{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"digits\":%d,\"tick_size\":%.10f,\"tick_value\":%.10f,\"volume_min\":%.8f,\"volume_max\":%.8f,\"volume_step\":%.8f%s,\"candles\":%s}",
+      JsonEscape(symbol),JsonEscape(tfText),digits,tickSize,tickValue,volumeMin,volumeMax,volumeStep,askJson,candles);
    string response; int status;
    bool posted=HttpRequest("POST","/api/mt5/candles",body,response,status);
    if(!posted)
@@ -845,7 +862,7 @@ int OnInit()
       return INIT_PARAMETERS_INCORRECT;
    }
    EventSetTimer(1);
-   Print("ServerConnector v1.20 initialized. Account + Chart feed + AI OOP V8 sync only. ",
+   Print("ServerConnector v1.21 initialized. Account + Chart feed (with Ask) + AI OOP V8 sync only. ",
          "Add ",ServerBaseURL," to MT5 WebRequest allowlist.");
    return INIT_SUCCEEDED;
 }
