@@ -2532,12 +2532,73 @@ function showRealtimeToast(s, count = 1, { forceOpen = false } = {}) {
   toast.querySelector('.rt-detail-btn').addEventListener('click', () => openRealtimeDetails(s));
 }
 
+function computeCandleExtremeSl(target, refPrice, bufferPrice) {
+  const isBuy = String(target?.direction || '').toUpperCase() === 'BUY';
+  const p1 = Number(target?.price1) || 0;
+  const p2 = Number(target?.price2) || 0;
+  const rawT1 = Number(target?.time1) || 0;
+  const rawT2 = Number(target?.time2) || 0;
+  const bars = typeof candleSeries?.data === 'function' ? (candleSeries.data() || []) : [];
+
+  let scopedBars = [];
+  if (rawT1 > 0 && rawT2 > 0 && bars.length) {
+    const startTime = Math.min(rawT1, rawT2);
+    const endTime = Math.max(rawT1, rawT2);
+    scopedBars = bars.filter(b => {
+      const bt = Number(b.time);
+      return Number.isFinite(bt) && bt >= startTime && bt <= endTime;
+    });
+  } else if (rawT1 > 0 && bars.length) {
+    scopedBars = bars.filter(b => Number(b.time) >= rawT1);
+  }
+
+  if (!scopedBars.length && bars.length) {
+    scopedBars = bars.slice(-20);
+  }
+
+  let extreme = 0;
+  if (scopedBars.length) {
+    const prices = scopedBars
+      .map(b => Number(isBuy ? b.low : b.high))
+      .filter(v => Number.isFinite(v) && v > 0);
+    if (prices.length) {
+      extreme = isBuy ? Math.min(...prices) : Math.max(...prices);
+    }
+  }
+
+  const pivotExtreme = (p1 > 0 && p2 > 0)
+    ? (isBuy ? Math.min(p1, p2) : Math.max(p1, p2))
+    : (p2 || p1 || 0);
+
+  let anchor = 0;
+  if (extreme > 0 && pivotExtreme > 0) {
+    anchor = isBuy ? Math.min(extreme, pivotExtreme) : Math.max(extreme, pivotExtreme);
+  } else {
+    anchor = extreme || pivotExtreme || refPrice;
+  }
+
+  if (!(anchor > 0)) {
+    return refPrice > 0
+      ? Math.max(0, Number((isBuy ? refPrice - defaultGap(refPrice) : refPrice + defaultGap(refPrice)).toFixed(mt5Digits)))
+      : 0;
+  }
+
+  const minGap = defaultGap(refPrice || anchor) * 0.5;
+  let sl = isBuy ? anchor - bufferPrice : anchor + bufferPrice;
+
+  if (refPrice > 0) {
+    if (isBuy && (refPrice - sl) < minGap) sl = refPrice - minGap;
+    if (!isBuy && (sl - refPrice) < minGap) sl = refPrice + minGap;
+  }
+
+  return Math.max(0, Number(sl.toFixed(mt5Digits)));
+}
+
 function applyRealtimeSignalToForm(s) {
   const target = s || latestModalSignalContext?.signal || latestRealtimeSignal;
   if (!target) return;
 
   const isBuy = String(target.direction || '').toUpperCase() === 'BUY';
-  const p1 = Number(target.price1) || 0;
   const p2 = Number(target.price2) || 0;
   const refPrice = Number(latestMarketPrice) > 0 ? Number(latestMarketPrice) : p2;
 
@@ -2545,15 +2606,9 @@ function applyRealtimeSignalToForm(s) {
   const spreadBufPts = Number(eaState.settings.spread_buffer_points) || 0;
   const bufferPrice = spreadBufPts > 0 ? spreadBufPts * tick : defaultGap(refPrice || p2 || 1) * 0.25;
 
-  let suggestedSl = Number(latestModalSignalContext?.suggestedSl) || 0;
-  if (!(suggestedSl > 0)) {
-    if (p1 > 0 && p2 > 0) {
-      suggestedSl = isBuy ? Math.min(p1, p2) - bufferPrice : Math.max(p1, p2) + bufferPrice;
-    } else if (refPrice > 0) {
-      suggestedSl = isBuy ? refPrice - defaultGap(refPrice) : refPrice + defaultGap(refPrice);
-    }
-    suggestedSl = Math.max(0, Number(suggestedSl.toFixed(mt5Digits)));
-  }
+  const suggestedSl = Number(latestModalSignalContext?.suggestedSl) > 0
+    ? Number(latestModalSignalContext.suggestedSl)
+    : computeCandleExtremeSl(target, refPrice, bufferPrice);
 
   const targetSym = String(target.symbol || '').toUpperCase();
   const targetTf = String(target.timeframe || '').toUpperCase();
@@ -2641,7 +2696,6 @@ function openRealtimeDetails(s) {
   const target = s || latestRealtimeSignal;
   if (!target) return;
   const isBuy = String(target.direction || '').toUpperCase() === 'BUY';
-  const p1 = Number(target.price1) || 0;
   const p2 = Number(target.price2) || 0;
   const refPrice = Number(latestMarketPrice) > 0 ? Number(latestMarketPrice) : p2;
 
@@ -2649,13 +2703,7 @@ function openRealtimeDetails(s) {
   const spreadBufPts = Number(eaState.settings.spread_buffer_points) || 0;
   const bufferPrice = spreadBufPts > 0 ? spreadBufPts * tick : defaultGap(refPrice || p2 || 1) * 0.25;
 
-  let suggestedSl = 0;
-  if (p1 > 0 && p2 > 0) {
-    suggestedSl = isBuy ? Math.min(p1, p2) - bufferPrice : Math.max(p1, p2) + bufferPrice;
-  } else if (refPrice > 0) {
-    suggestedSl = isBuy ? refPrice - defaultGap(refPrice) : refPrice + defaultGap(refPrice);
-  }
-  suggestedSl = Math.max(0, Number(suggestedSl.toFixed(mt5Digits)));
+  const suggestedSl = computeCandleExtremeSl(target, refPrice, bufferPrice);
 
   const rr = Number(eaState.settings.reward_risk_ratio) > 0
     ? Number(eaState.settings.reward_risk_ratio)
