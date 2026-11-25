@@ -3850,8 +3850,34 @@ const localDateTime = ts => {
 };
 
 function renderStats(data) {
-  const todaySignals = Array.isArray(data.today_signals) ? data.today_signals : [];
-  const history = Array.isArray(data.real_history) ? data.real_history : [];
+  // API có thể trả lại cùng một bản ghi ở nhiều lần đồng bộ; khử trùng trước
+  // khi tính KPI và render để số liệu và bảng luôn khớp nhau.
+  const uniqueBy = (items, getKey) => {
+    const seen = new Set();
+    return items.filter(item => {
+      const key = String(getKey(item) ?? '').trim();
+      if (!key || seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
+  const rawSignals = Array.isArray(data.today_signals) ? data.today_signals : [];
+  const todaySignals = uniqueBy(rawSignals, x => [
+    x.symbol, x.timeframe, x.direction, x.divergence, x.signal_type,
+    x.signal_time ?? x.time ?? ''
+  ].join('|'));
+  const rawHistory = Array.isArray(data.real_history) ? data.real_history : [];
+  const history = uniqueBy(rawHistory, p => {
+    const stableId = p.id ?? p.ticket ?? p.deal_ticket ?? p.position_id;
+    if (stableId !== undefined && stableId !== null && String(stableId).trim()) {
+      return 'trade:' + String(stableId).trim();
+    }
+    return [
+      p.symbol, p.direction ?? p.type, p.opened_at ?? p.open_time ?? '',
+      p.closed_at ?? p.close_time ?? p.time ?? '', p.entry ?? p.open_price ?? p.price ?? '',
+      p.volume ?? p.lots ?? p.lot ?? '', p.profit ?? p.pnl ?? ''
+    ].join('|');
+  });
   const todayKey = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Ho_Chi_Minh', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
   const closedToday = history.filter(p => localDayKey(p.closed_at ?? p.close_time ?? p.time) === todayKey);
   const wins = closedToday.filter(p => Number(p.profit ?? p.pnl ?? 0) > 0).length;
