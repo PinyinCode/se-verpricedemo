@@ -3,10 +3,11 @@
 //| OnTimer-only + Unified TimeGMT7() Clock                          |
 //| Đọc cấu hình từ Server (/api/settings) + Cache local.          |
 //| Chỉ lấy ENTRY & SL từ Indicator (GV_IND_<SYM>_*), tự tính Lot/TP. |
+//| Chỉ vào lệnh trong đúng cây nến tạo tín hiệu; sang nến mới bỏ qua. |
 //| Vào lệnh độc lập với WebRequest tại thời điểm có tín hiệu.        |
 //+------------------------------------------------------------------+
 #property strict
-#property version "3.23"
+#property version "3.24"
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
@@ -143,6 +144,8 @@ void     ManageTrailing();
 void     CheckEmergencyStop();
 bool     IsEmergencyStopActive();
 SRiskBreakdown ComputeRiskBreakdown(string symbol, double slDistance, double volume);
+int      ResolveSignalTfSeconds(string symUp);
+bool     IsSignalInSameCandle(string symUp, long sigTime, datetime nowGmt7);
 ushort   json_safe_idx(string s, int idx);
 string   JsonValue(string json, string key);
 string   JsonObjectValue(string json, string key);
@@ -198,6 +201,42 @@ datetime GetCurrentUtcTimestamp()
    datetime st = TimeTradeServer();
    if(st <= 0) st = TimeCurrent();
    return st - g_brokerToGMTOffset;
+}
+
+int ResolveSignalTfSeconds(string symUp)
+{
+   string pfx = "GV_IND_" + symUp + "_";
+   if(GlobalVariableCheck(pfx + "TF"))
+   {
+      int tfVal = (int)MathRound(GlobalVariableGet(pfx + "TF"));
+      ENUM_TIMEFRAMES tfEnum = (ENUM_TIMEFRAMES)tfVal;
+      int sec = PeriodSeconds(tfEnum);
+      if(sec > 0) return sec;
+   }
+   int chartSec = PeriodSeconds(_Period);
+   return (chartSec > 0) ? chartSec : 900; // Mặc định M15 = 900s nếu không rõ TF
+}
+
+bool IsSignalInSameCandle(string symUp, long sigTime, datetime nowGmt7)
+{
+   if(sigTime <= 0) return true;
+
+   int tfSec = ResolveSignalTfSeconds(symUp);
+   if(tfSec <= 0) return true;
+
+   long sigGmt7 = sigTime;
+   long diffDirect = MathAbs((long)nowGmt7 - sigTime);
+   long diffViaServer = MathAbs((long)nowGmt7 - (long)ServerTimeToGMT7((datetime)sigTime));
+   if(diffViaServer < diffDirect)
+      sigGmt7 = (long)ServerTimeToGMT7((datetime)sigTime);
+
+   if(sigGmt7 > (long)nowGmt7 + tfSec)
+      return false;
+
+   long curBarStart = ((long)nowGmt7 / tfSec) * tfSec;
+   long sigBarStart = (sigGmt7 / tfSec) * tfSec;
+
+   return (curBarStart == sigBarStart);
 }
 
 bool IsInTradingHours()
@@ -1358,18 +1397,12 @@ void CheckIndicatorSymbolSignal(string symbol)
    string barSignalKey = symUp + ":BAR:" + direction + ":" + IntegerToString(sigTime);
    if(HasProcessedSignalKey(sigKey) || HasProcessedSignalKey(barSignalKey)) return;
 
-   // Đồng bộ tuổi tín hiệu qua TimeGMT7()
+   // Chỉ vào lệnh trong đúng cây nến vừa tạo tín hiệu; sang nến mới thì bỏ qua
    datetime nowGmt7 = TimeGMT7();
-   if(sigTime > 0)
+   if(sigTime > 0 && !IsSignalInSameCandle(symUp, sigTime, nowGmt7))
    {
-      long diffDirect = MathAbs((long)nowGmt7 - sigTime);
-      long diffViaServer = MathAbs((long)nowGmt7 - (long)ServerTimeToGMT7((datetime)sigTime));
-      long minAgeSec = MathMin(diffDirect, diffViaServer);
-      if(minAgeSec > 300)
-      {
-         MarkProcessedSignalKey(sigKey);
-         return;
-      }
+      MarkProcessedSignalKey(sigKey);
+      return;
    }
 
    if(IsEmergencyStopActive())
@@ -2074,7 +2107,7 @@ int OnInit()
    PollCommissions();
 
    EventSetTimer(1);
-   Print("[V9] Started v3.23 (OnTimer-only + TimeGMT7). magic=", MagicNumber,
+   Print("[V9] Started v3.24 (OnTimer-only + TimeGMT7 + SameCandle). magic=", MagicNumber,
          " | GMT+7=", TimeToString(TimeGMT7(), TIME_DATE|TIME_SECONDS),
          " | AutoTrade=", g_settings.auto_trade_enabled ? "ON" : "OFF",
          " | Trailing=", g_settings.trailing_enabled ? "ON" : "OFF",
@@ -2096,7 +2129,6 @@ void OnTimer()
 
    SyncBrokerGMTOffset(false);
 
-   // Quét tín hiệu trực tiếp từ GV trong OnTimer để không phụ thuộc OnTick
    if(lastIndicatorPollMs == 0 ||
       (uint)(nowMs - lastIndicatorPollMs) >= (uint)(MathMax(1, g_settings.poll_seconds) * 1000))
    {
