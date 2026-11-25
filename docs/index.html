@@ -1903,13 +1903,64 @@ function findBarAtTime(targetTime, bars) {
   }
   return best;
 }
+
+function isRtSignalInvalidatedOnClient(s, bars = []) {
+  if (!s || String(s.signal_type || '').toUpperCase() !== 'RT') return false;
+  const dir = String(s.direction || '').toUpperCase();
+  const p1 = Number(s.price1) || 0;
+  const p2 = Number(s.price2) || 0;
+  const refTime = Number(s.time2 || s.signal_time || 0);
+  const barList = Array.isArray(bars) && bars.length
+    ? bars
+    : (typeof candleSeries?.data === 'function' ? (candleSeries.data() || []) : []);
+
+  if (dir === 'BUY') {
+    const validPrices = [p1, p2].filter(v => Number.isFinite(v) && v > 0);
+    if (!validPrices.length) return false;
+    const breakLow = Math.min(...validPrices);
+    if (Number(latestMarketPrice) > 0 && Number(latestMarketPrice) < breakLow) return true;
+    const askVal = getRealServerAskPrice();
+    if (askVal > 0 && askVal < breakLow) return true;
+    for (const b of barList) {
+      const bt = Number(b.time) || 0;
+      if (refTime > 0 && bt < refTime) continue;
+      const bLow = Number(b.low) || 0;
+      const bClose = Number(b.close) || 0;
+      if ((bLow > 0 && bLow < breakLow) || (bClose > 0 && bClose < breakLow)) return true;
+    }
+    return false;
+  }
+
+  if (dir === 'SELL') {
+    const validPrices = [p1, p2].filter(v => Number.isFinite(v) && v > 0);
+    if (!validPrices.length) return false;
+    const breakHigh = Math.max(...validPrices);
+    if (Number(latestMarketPrice) > 0 && Number(latestMarketPrice) > breakHigh) return true;
+    const askVal = getRealServerAskPrice();
+    if (askVal > 0 && askVal > breakHigh) return true;
+    for (const b of barList) {
+      const bt = Number(b.time) || 0;
+      if (refTime > 0 && bt < refTime) continue;
+      const bHigh = Number(b.high) || 0;
+      const bClose = Number(b.close) || 0;
+      if ((bHigh > 0 && bHigh > breakHigh) || (bClose > 0 && bClose > breakHigh)) return true;
+    }
+    return false;
+  }
+
+  return false;
+}
+
+function filterActiveSignals(signals, bars = []) {
+  return (Array.isArray(signals) ? signals : []).filter(s => !isRtSignalInvalidatedOnClient(s, bars));
+}
+
 function renderRsiDivergences(signals, bars) {
   clearDivergenceLines();
   if (!bars.length) return;
-  const list = Array.isArray(signals) ? signals : [];
+  const list = filterActiveSignals(signals, bars);
   const rsiData = typeof rsiSeries.data === 'function' ? (rsiSeries.data() || []) : [];
 
-  // Sắp xếp để tín hiệu RT được vẽ cuối cùng (nổi bật lên trên)
   const ordered = [...list].slice(0, 80).sort((a, b) => {
     const aRt = a.signal_type === 'RT' ? 1 : 0;
     const bRt = b.signal_type === 'RT' ? 1 : 0;
@@ -1958,7 +2009,6 @@ function renderRsiDivergences(signals, bars) {
       ]);
       priceDivergenceSeries.push(priceLine);
     } else if (isRealtime) {
-      // Line phân kỳ realtime dự phòng khi chỉ có mốc signal_time / price2
       const sigTs = Number(s.signal_time || t2 || 0);
       if (sigTs > 0) {
         const snappedTs = nearestTime(sigTs, bars);
@@ -2795,14 +2845,28 @@ function readStoredLatestRealtimeSignal() {
     const raw = sessionStorage.getItem(RT_LATEST_SIGNAL_STORAGE) || localStorage.getItem(RT_LATEST_SIGNAL_STORAGE);
     if (!raw) return null;
     const parsed = JSON.parse(raw);
-    return parsed && parsed.signal_time ? parsed : null;
+    if (!parsed || !parsed.signal_time || isRtSignalInvalidatedOnClient(parsed)) {
+      clearStoredLatestRealtimeSignal();
+      return null;
+    }
+    return parsed;
   } catch (_) {
     return null;
   }
 }
 
+function clearStoredLatestRealtimeSignal() {
+  try {
+    sessionStorage.removeItem(RT_LATEST_SIGNAL_STORAGE);
+    localStorage.removeItem(RT_LATEST_SIGNAL_STORAGE);
+  } catch (_) {}
+}
+
 function saveLatestRealtimeSignal(s) {
-  if (!s) return;
+  if (!s || isRtSignalInvalidatedOnClient(s)) {
+    clearStoredLatestRealtimeSignal();
+    return;
+  }
   try {
     const str = JSON.stringify(s);
     sessionStorage.setItem(RT_LATEST_SIGNAL_STORAGE, str);
@@ -2831,7 +2895,7 @@ function saveDismissedSignalKey(key) {
 }
 
 let latestRealtimeSignal = readStoredLatestRealtimeSignal();
-let latestRealtimeCount = 1;
+let latestRealtimeCount = latestRealtimeSignal ? 1 : 0;
 let rtToastDismissedByUser = false;
 let latestModalSignalContext = null;
 
@@ -2841,6 +2905,26 @@ function signalKey(s) {
 function signalTimeText(s) {
   return new Date(Number(s.signal_time) * 1000).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' });
 }
+
+function hideRealtimeToast() {
+  const toast = $('rtSignalToast');
+  if (toast) toast.classList.remove('show');
+}
+
+function clearRealtimeAlertState({ clearDismissed = false } = {}) {
+  latestRealtimeSignal = null;
+  latestRealtimeCount = 0;
+  latestModalSignalContext = null;
+  rtToastDismissedByUser = false;
+  clearStoredLatestRealtimeSignal();
+  if (clearDismissed) saveDismissedSignalKey('');
+  hideRealtimeToast();
+  if ($('rtSignalDialog') && $('rtSignalDialog').open) {
+    $('rtSignalDialog').close();
+  }
+  syncRealtimeReopenButton();
+}
+
 function syncRealtimeReopenButton() {
   const btn = $('rtReopenBtn');
   const toast = $('rtSignalToast');
@@ -2850,7 +2934,9 @@ function syncRealtimeReopenButton() {
     btn.classList.remove('show');
     return;
   }
-  if (!latestRealtimeSignal) {
+  if (!latestRealtimeSignal || isRtSignalInvalidatedOnClient(latestRealtimeSignal)) {
+    latestRealtimeSignal = null;
+    latestRealtimeCount = 0;
     btn.classList.remove('sell-mode');
     $('rtReopenText').textContent = 'RT · ' + $('symbol').value + ' · ' + $('tf').value;
     btn.classList.add('show');
@@ -2867,8 +2953,12 @@ function syncRealtimeReopenButton() {
     (latestRealtimeCount > 1 ? ' (+' + (latestRealtimeCount - 1) + ')' : '');
   btn.classList.add('show');
 }
+
 function showRealtimeToast(s, count = 1, { forceOpen = false } = {}) {
-  if (!s) return;
+  if (!s || isRtSignalInvalidatedOnClient(s)) {
+    clearRealtimeAlertState();
+    return;
+  }
   const prevKey = latestRealtimeSignal ? signalKey(latestRealtimeSignal) : '';
   const nextKey = signalKey(s);
   latestRealtimeSignal = s;
@@ -2983,7 +3073,11 @@ function computeCandleExtremeSl(target, refPrice, bufferPrice) {
 
 function applyRealtimeSignalToForm(s) {
   const target = s || latestModalSignalContext?.signal || latestRealtimeSignal;
-  if (!target) return;
+  if (!target || isRtSignalInvalidatedOnClient(target)) {
+    clearRealtimeAlertState();
+    $('requestState').textContent = 'Tín hiệu RT đã bị phá cấu trúc hoặc không còn hiệu lực.';
+    return;
+  }
 
   const isBuy = String(target.direction || '').toUpperCase() === 'BUY';
   const p2 = Number(target.price2) || 0;
@@ -3081,7 +3175,11 @@ function applyRealtimeSignalToForm(s) {
 
 function openRealtimeDetails(s) {
   const target = s || latestRealtimeSignal;
-  if (!target) return;
+  if (!target || isRtSignalInvalidatedOnClient(target)) {
+    clearRealtimeAlertState();
+    $('requestState').textContent = 'Tín hiệu RT đã bị phá cấu trúc hoặc không còn hiệu lực.';
+    return;
+  }
   const isBuy = String(target.direction || '').toUpperCase() === 'BUY';
   const p2 = Number(target.price2) || 0;
   const refPrice = Number(latestMarketPrice) > 0 ? Number(latestMarketPrice) : p2;
@@ -3135,17 +3233,18 @@ function openRealtimeDetails(s) {
 }
 
 $('rtReopenBtn').addEventListener('click', () => {
-  if (latestRealtimeSignal) {
+  if (latestRealtimeSignal && !isRtSignalInvalidatedOnClient(latestRealtimeSignal)) {
     showRealtimeToast(latestRealtimeSignal, latestRealtimeCount, { forceOpen: true });
   } else {
-    $('requestState').textContent = 'Chưa có tín hiệu RT nào trên cặp/khung giờ này.';
+    clearRealtimeAlertState();
+    $('requestState').textContent = 'Không có tín hiệu RT hợp lệ (hoặc đã bị phá đáy/đỉnh).';
   }
 });
 $('rtDialogClose').addEventListener('click', () => $('rtSignalDialog').close());
 $('rtDialogOk').addEventListener('click', () => $('rtSignalDialog').close());
 
 function renderSignals(signals, bars) {
-  const list = signals || [];
+  const list = filterActiveSignals(signals, bars);
   $('signalCount').textContent = list.length + ' tín hiệu';
   const markers = list.map(s => ({
     time: nearestTime(Number(s.signal_time), bars),
@@ -3159,20 +3258,44 @@ function renderSignals(signals, bars) {
   const viewKey = $('symbol').value + '|' + $('tf').value;
   const rtItems = list.filter(s => s.signal_type === 'RT').sort((a, b) => Number(b.signal_time) - Number(a.signal_time));
   const currentKeys = new Set(rtItems.map(signalKey));
+
+  if (!rtItems.length) {
+    knownRealtimeByView.set(viewKey, new Set());
+    if (
+      latestRealtimeSignal &&
+      String(latestRealtimeSignal.symbol || '').toUpperCase() === String($('symbol').value || '').toUpperCase() &&
+      String(latestRealtimeSignal.timeframe || '').toUpperCase() === String($('tf').value || '').toUpperCase()
+    ) {
+      clearRealtimeAlertState();
+    } else {
+      syncRealtimeReopenButton();
+    }
+    return;
+  }
+
   if (!knownRealtimeByView.has(viewKey)) {
     knownRealtimeByView.set(viewKey, currentKeys);
-    if (rtItems.length) {
-      const topSignal = rtItems[0];
-      const alreadyDismissed = readDismissedSignalKey() === signalKey(topSignal);
-      showRealtimeToast(topSignal, rtItems.length, { forceOpen: !alreadyDismissed });
-    }
+    const topSignal = rtItems[0];
+    const alreadyDismissed = readDismissedSignalKey() === signalKey(topSignal);
+    showRealtimeToast(topSignal, rtItems.length, { forceOpen: !alreadyDismissed });
   } else {
     const known = knownRealtimeByView.get(viewKey);
     const fresh = rtItems.filter(s => !known.has(signalKey(s)));
-    currentKeys.forEach(k => known.add(k));
+    knownRealtimeByView.set(viewKey, currentKeys);
     if (fresh.length) {
       fresh.sort((a, b) => Number(b.signal_time) - Number(a.signal_time));
       showRealtimeToast(fresh[0], fresh.length, { forceOpen: true });
+    } else if (
+      latestRealtimeSignal &&
+      String(latestRealtimeSignal.symbol || '').toUpperCase() === String($('symbol').value || '').toUpperCase() &&
+      String(latestRealtimeSignal.timeframe || '').toUpperCase() === String($('tf').value || '').toUpperCase() &&
+      !currentKeys.has(signalKey(latestRealtimeSignal))
+    ) {
+      showRealtimeToast(rtItems[0], rtItems.length, { forceOpen: true });
+    } else if (latestRealtimeSignal && isRtSignalInvalidatedOnClient(latestRealtimeSignal, bars)) {
+      showRealtimeToast(rtItems[0], rtItems.length, { forceOpen: true });
+    } else {
+      syncRealtimeReopenButton();
     }
   }
 }
@@ -3709,6 +3832,16 @@ async function refreshChartPositions() {
     }
     chartMt5Accounts = Array.isArray(d.mt5_accounts) ? d.mt5_accounts : [];
     renderChartPositions(openList, pendingList);
+    if (Array.isArray(d.today_signals)) {
+      const curSym = String($('symbol').value || '').toUpperCase();
+      const curTf = String($('tf').value || '').toUpperCase();
+      const viewSignals = d.today_signals.filter(
+        s => String(s.symbol || '').toUpperCase() === curSym && String(s.timeframe || '').toUpperCase() === curTf
+      );
+      const bars = typeof candleSeries?.data === 'function' ? (candleSeries.data() || []) : [];
+      renderSignals(viewSignals, bars);
+      renderRsiDivergences(viewSignals, bars);
+    }
     if (!closingIds.size && !cancelingIds.size) {
       $('positionsUpdated').textContent = 'Đồng bộ ' + new Date().toLocaleTimeString('vi-VN') + ' · ' + openList.length + ' vị thế mở · ' + pendingList.length + ' lệnh chờ' + (snapshotAge !== null ? (snapshotAge > 15 ? ' · Dữ liệu MT5 cũ ' + snapshotAge + 's' : ' · MT5 ' + snapshotAge + 's') : ' · Chưa nhận snapshot MT5');
     }
@@ -3850,8 +3983,6 @@ const localDateTime = ts => {
 };
 
 function renderStats(data) {
-  // API có thể trả lại cùng một bản ghi ở nhiều lần đồng bộ; khử trùng trước
-  // khi tính KPI và render để số liệu và bảng luôn khớp nhau.
   const uniqueBy = (items, getKey) => {
     const seen = new Set();
     return items.filter(item => {
@@ -3861,7 +3992,8 @@ function renderStats(data) {
       return true;
     });
   };
-  const rawSignals = Array.isArray(data.today_signals) ? data.today_signals : [];
+  const bars = typeof candleSeries?.data === 'function' ? (candleSeries.data() || []) : [];
+  const rawSignals = filterActiveSignals(Array.isArray(data.today_signals) ? data.today_signals : [], bars);
   const todaySignals = uniqueBy(rawSignals, x => [
     x.symbol, x.timeframe, x.direction, x.divergence, x.signal_type,
     x.signal_time ?? x.time ?? ''
@@ -4416,154 +4548,130 @@ async function sendOrder(direction) {
 
 $('sendBuy').addEventListener('click', () => sendOrder('BUY'));
 $('sendSell').addEventListener('click', () => sendOrder('SELL'));
-$('symbol').addEventListener('change', () => { serverAskPrice = 0; renderAskLine(); firstLoad = true; lastBarsSignature = ''; load(); void syncSymbolCommission($('symbol').value); refreshCommissionInfo(); syncRealtimeReopenButton(); });
-$('tf').addEventListener('change', () => { firstLoad = true; lastBarsSignature = ''; load(); syncRealtimeReopenButton(); });
-$('refresh').addEventListener('click', () => { lastBarsSignature = ''; load(true); void syncEaSettings(); void syncSymbolCommission($('symbol').value); });
+$('symbol').addEventListener('change', () => { serverAskPrice = 0; renderAskLine(); lastBarsSignature = ''; load(); syncSymbolCommission($('symbol').value); });
+$('tf').addEventListener('change', () => { firstLoad = true; lastBarsSignature = ''; load(); });
+$('refresh').addEventListener('click', () => { lastBarsSignature = ''; load(true); syncSymbolCommission($('symbol').value); });
+$('apiKeySave').addEventListener('click', async () => { saveApiKey($('apiKeyInput').value); if (!chartApiKey) { setApiAuthWarning('error', 'Chưa nhập API Key.'); stopAuthorizedPolling(); return; } await validateApiAccess(); });
+$('apiKeyToggle').addEventListener('click', () => { const inp = $('apiKeyInput'); inp.type = inp.type === 'password' ? 'text' : 'password'; });
+$('commissionRefresh').addEventListener('click', () => refreshCommissionInfo());
 
-const rsiResizeHandle = $('rsiResizeHandle');
-const lotResizeHandle = $('lotResizeHandle');
-let activeResize = null, resizeStartY = 0, resizeStartHeight = 0;
+function initResizers() {
+  const rsiHandle = $('rsiResizeHandle'), rsiEl = $('rsiChart'), priceEl = $('priceChart');
+  const lotHandle = $('lotResizeHandle'), lotPanel = document.querySelector('.chart-overlay-bottom');
+  const minRsi = 44, maxRsi = 220, minPrice = 80, minLot = 68;
+  const maxLot = () => Math.max(96, Math.floor(window.innerHeight * 0.45));
+  let active = null, startY = 0, startRsi = 0, startLot = 0;
 
-function setRsiHeight(height) {
-  const stage = document.querySelector('.chart-stage'), chart = $('rsiChart');
-  if (!stage || !rsiResizeHandle || !chart) return;
-  const max = Math.max(0, stage.clientHeight - rsiResizeHandle.offsetHeight - 80);
-  const next = Math.max(0, Math.min(max, height));
-  chart.style.setProperty('height', next + 'px', 'important');
-  chart.style.setProperty('flex', `0 0 ${next}px`, 'important');
-  stage.style.setProperty('--rsi-chart-height', next + 'px');
-  rsiChart.applyOptions({ width: chart.clientWidth || 1, height: Math.max(1, next) });
-  applyChartDimensions();
-  try { localStorage.setItem('chartRsiHeight', String(Math.round(next))); } catch (_) {}
-}
-function setLotHeight(height) {
-  const overlayBottom = document.querySelector('.chart-overlay-bottom');
-  const workspace = document.querySelector('.chart-workspace');
-  if (!overlayBottom || !workspace) return;
-  const max = Math.max(84, Math.floor(workspace.clientHeight * 0.72));
-  const next = Math.max(84, Math.min(max, height));
-  overlayBottom.style.setProperty('--lot-panel-h', String(Math.round(next)));
-  try { localStorage.setItem('chartLotPanelHeight', String(Math.round(next))); } catch (_) {}
-  if (overlayBottom.classList.contains('trade-panel-collapsed')) return;
-  overlayBottom.style.setProperty('height', next + 'px', 'important');
-  overlayBottom.style.setProperty('flex', `0 0 ${next}px`, 'important');
-  applyChartDimensions();
-}
+  function setRsiHeight(h) {
+    const c = Math.max(minRsi, Math.min(maxRsi, Math.round(h)));
+    rsiEl.style.setProperty('height', c + 'px', 'important');
+    rsiEl.style.setProperty('flex', '0 0 ' + c + 'px', 'important');
+    document.body.style.setProperty('--rsi-chart-height', c + 'px');
+    try { localStorage.setItem('chartRsiHeight', String(c)); } catch (_) {}
+    applyChartDimensions();
+  }
+  function setLotHeight(h) {
+    if (lotPanel && lotPanel.classList.contains('trade-panel-collapsed')) return;
+    const c = Math.max(minLot, Math.min(maxLot(), Math.round(h)));
+    lotPanel.style.setProperty('height', c + 'px', 'important');
+    lotPanel.style.setProperty('flex', '0 0 ' + c + 'px', 'important');
+    document.body.style.setProperty('--lot-panel-h', c + 'px');
+    try { localStorage.setItem('chartLotPanelHeight', String(c)); } catch (_) {}
+    applyChartDimensions();
+  }
 
-try {
-  const savedRsi = Number(localStorage.getItem('chartRsiHeight'));
-  if (Number.isFinite(savedRsi) && savedRsi >= 0) setRsiHeight(savedRsi);
-  const savedLot = Number(localStorage.getItem('chartLotPanelHeight'));
-  if (Number.isFinite(savedLot) && savedLot >= 84) setLotHeight(savedLot);
-} catch (_) {}
-
-function startResize(kind, e) {
-  e.preventDefault();
-  const handle = kind === 'rsi' ? rsiResizeHandle : lotResizeHandle;
-  activeResize = kind;
-  resizeStartY = e.clientY;
-  resizeStartHeight = kind === 'rsi'
-    ? $('rsiChart').getBoundingClientRect().height
-    : document.querySelector('.chart-overlay-bottom').getBoundingClientRect().height;
-  try { handle.setPointerCapture(e.pointerId); } catch (_) {}
-  document.body.style.setProperty('user-select', 'none');
-  document.body.style.setProperty('-webkit-user-select', 'none');
-}
-rsiResizeHandle.addEventListener('pointerdown', e => startResize('rsi', e));
-lotResizeHandle.addEventListener('pointerdown', e => startResize('lot', e));
-document.addEventListener('pointermove', e => {
-  if (!activeResize) return;
-  e.preventDefault();
-  const next = resizeStartHeight + resizeStartY - e.clientY;
-  if (activeResize === 'rsi') setRsiHeight(next);
-  else setLotHeight(next);
-}, { passive: false });
-
-function stopResize(e) {
-  if (!activeResize) return;
-  const handle = activeResize === 'rsi' ? rsiResizeHandle : lotResizeHandle;
-  if (e && e.pointerId != null) { try { handle.releasePointerCapture(e.pointerId); } catch (_) {} }
-  activeResize = null;
-  document.body.style.removeProperty('user-select');
-  document.body.style.removeProperty('-webkit-user-select');
-  requestAnimationFrame(applyChartDimensions);
-}
-document.addEventListener('pointerup', stopResize);
-document.addEventListener('pointercancel', stopResize);
-
-function updateGMT7Clock() {
-  $('clockGMT7').textContent = new Intl.DateTimeFormat('vi-VN', {
-    timeZone: 'Asia/Ho_Chi_Minh', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
-  }).format(new Date());
-}
-const formatLatency = ms => {
-  const n = Math.max(0, Math.round(ms));
-  return n >= 1000 ? (n / 1000).toFixed(1) + 's' : n + 'ms';
-};
-async function checkServerStatus() {
-  if (!apiAccessGranted) return;
-  const t0 = performance.now();
   try {
-    const res = await fetch(API_BASE + '/api/health', { cache: 'no-store' });
-    const speed = formatLatency(performance.now() - t0);
-    if (!res.ok) throw new Error('HTTP ' + res.status);
-    const d = await res.json();
-    const ok = d.status === 'ok' && d.database === 'ok';
-    $('serverState').classList.toggle('online', ok);
-    $('serverState').classList.toggle('offline', !ok);
-    $('serverState').innerHTML = '<i></i><span>' + speed + '</span>';
-    $('serverState').title = 'API: ' + d.status + ' · DB: ' + d.database + ' · ' + speed + (d.mode ? ' · ' + d.mode : '');
+    const r = Number(localStorage.getItem('chartRsiHeight'));
+    if (r >= minRsi) setRsiHeight(r); else setRsiHeight(rsiEl.clientHeight || 64);
+    const l = Number(localStorage.getItem('chartLotPanelHeight'));
+    if (l >= minLot && lotPanel && !lotPanel.classList.contains('trade-panel-collapsed')) setLotHeight(l);
+  } catch (_) {}
+
+  rsiHandle.addEventListener('pointerdown', e => {
+    if (e.button !== undefined && e.button !== 0 && e.pointerType === 'mouse') return;
+    e.preventDefault(); active = 'rsi'; startY = e.clientY; startRsi = rsiEl.getBoundingClientRect().height;
+    rsiHandle.setPointerCapture(e.pointerId);
+  });
+  lotHandle.addEventListener('pointerdown', e => {
+    if (e.button !== undefined && e.button !== 0 && e.pointerType === 'mouse') return;
+    e.preventDefault(); active = 'lot'; startY = e.clientY; startLot = lotPanel.getBoundingClientRect().height;
+    lotHandle.setPointerCapture(e.pointerId);
+  });
+
+  function move(e) {
+    if (!active) return;
+    const dy = e.clientY - startY;
+    if (active === 'rsi') {
+      const next = startRsi - dy;
+      if (priceEl.getBoundingClientRect().height + (startRsi - next) >= minPrice) setRsiHeight(next);
+    } else if (active === 'lot') {
+      const next = startLot - dy;
+      if (priceEl.getBoundingClientRect().height + (startLot - next) >= minPrice) setLotHeight(next);
+    }
+  }
+  function stop(e) {
+    if (!active) return;
+    try {
+      if (active === 'rsi') rsiHandle.releasePointerCapture(e.pointerId);
+      if (active === 'lot') lotHandle.releasePointerCapture(e.pointerId);
+    } catch (_) {}
+    active = null;
+  }
+  window.addEventListener('pointermove', move, { passive: false });
+  window.addEventListener('pointerup', stop);
+  window.addEventListener('pointercancel', stop);
+  window.addEventListener('resize', () => {
+    if (lotPanel && !lotPanel.classList.contains('trade-panel-collapsed')) {
+      const cur = lotPanel.getBoundingClientRect().height;
+      if (cur > maxLot()) setLotHeight(maxLot());
+    }
+    applyChartDimensions();
+  });
+}
+
+function updateClockGMT7() {
+  const el = $('clockGMT7');
+  if (!el) return;
+  const parts = new Intl.DateTimeFormat('vi-VN', {
+    timeZone: 'Asia/Ho_Chi_Minh',
+    hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  }).formatToParts(new Date());
+  const get = t => (parts.find(p => p.type === t) || {}).value || '00';
+  el.textContent = get('hour') + ':' + get('minute') + ':' + get('second') + ' GMT+7';
+}
+
+async function checkServerStatus() {
+  const el = $('serverState');
+  if (!el) return;
+  const label = el.querySelector('span');
+  const setStatus = (state, text, title) => {
+    el.classList.remove('online', 'offline');
+    if (state) el.classList.add(state);
+    if (label) label.textContent = text;
+    el.title = title;
+  };
+  try {
+    const res = await apiFetch(API_BASE + '/api/health', { cache: 'no-store' });
+    if (res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setStatus('online', 'Online', 'Server phản hồi bình thường' + (data.ts ? ' · ' + data.ts : ''));
+    } else {
+      setStatus('offline', 'Lỗi ' + res.status, 'Server trả về mã ' + res.status);
+    }
   } catch (e) {
-    const speed = formatLatency(performance.now() - t0);
-    $('serverState').classList.remove('online');
-    $('serverState').classList.add('offline');
-    $('serverState').innerHTML = '<i></i><span>' + speed + '</span>';
-    $('serverState').title = String(e.message || e);
+    setStatus('offline', 'Offline', 'Không kết nối được server: ' + (e.message || e));
   }
 }
 
-function triggerInitialAuthCheck() {
-  if (window.accountAuthGranted && chartApiKey) {
-    void validateApiAccess();
-  }
-}
+updateClockGMT7();
+setInterval(updateClockGMT7, 1000);
 
-ensureApiAuthWarnings();
-refreshApiKeyBox();
-renderMt5AccountInfo([]);
-window.addEventListener('forex-auth-ready', triggerInitialAuthCheck);
-window.addEventListener('forex-auth-locked', stopAuthorizedPolling);
-stopAuthorizedPolling();
-syncRealLayerToggles();
-bindRealLayerToggles();
-bindAskLineToggle();
 applyLockState();
-syncPresetButtons();
-
-$('apiKeySave').addEventListener('click', () => {
-  saveApiKey($('apiKeyInput').value);
-  stopAuthorizedPolling();
-  $('requestState').textContent = 'Đang xác thực API key (' + maskKey(chartApiKey) + ')...';
-  void validateApiAccess();
-});
-$('apiKeyInput').addEventListener('keydown', e => {
-  if (e.key === 'Enter') {
-    saveApiKey($('apiKeyInput').value);
-    stopAuthorizedPolling();
-    $('apiKeyInput').blur();
-    $('requestState').textContent = 'Đang xác thực API key (' + maskKey(chartApiKey) + ')...';
-    void validateApiAccess();
-  }
-});
-$('apiKeyToggle').addEventListener('click', () => {
-  const inp = $('apiKeyInput');
-  inp.type = inp.type === 'password' ? 'text' : 'password';
-});
-$('commissionRefresh').addEventListener('click', refreshCommissionInfo);
-
-updateGMT7Clock();
-setInterval(updateGMT7Clock, 1000);
+bindAskLineToggle();
+bindRealLayerToggles();
+initResizers();
+applyChartDimensions();
 </script>
-<script src="./auth.js"></script>
+<script type="module" src="./auth.js"></script>
 </body>
 </html>
