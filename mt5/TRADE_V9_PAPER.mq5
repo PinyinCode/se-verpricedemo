@@ -1,11 +1,12 @@
 //+------------------------------------------------------------------+
 //| TRADE_V9_PAPER.mq5                                               |
+//| OnTimer-only + Unified TimeGMT7() Clock                          |
 //| Đọc cấu hình từ Server (/api/settings) + Cache local.          |
 //| Chỉ lấy ENTRY & SL từ Indicator (GV_IND_<SYM>_*), tự tính Lot/TP. |
 //| Vào lệnh độc lập với WebRequest tại thời điểm có tín hiệu.        |
 //+------------------------------------------------------------------+
 #property strict
-#property version "3.21"
+#property version "3.22"
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
@@ -124,65 +125,84 @@ uint lastSltpPollMs          = 0;
 uint lastPendingModifyPollMs = 0;
 uint lastTrailingCheckMs     = 0;
 
-int g_serverToGMTOffset = 0;
-datetime g_lastOffsetCalcTime = 0;
-bool g_emergencyClosedOnce = false;
+int      g_brokerToGMTOffset   = 0;
+datetime g_lastBrokerOffsetSync = 0;
+bool     g_emergencyClosedOnce  = false;
 
 //--- Forward declarations -------------------------------------------
-void SendAccountSnapshot();
-void PublishRealClosedDeals();
-int  CountRealExposure();
-void PollSettings();
-void SyncDashboardGlobalVariables();
-void PollCommissions();
-void ManageTrailing();
-void CheckEmergencyStop();
+datetime TimeGMT7();
+datetime ServerTimeToGMT7(datetime st);
+void     SyncBrokerGMTOffset(bool force = false);
+void     SendAccountSnapshot();
+void     PublishRealClosedDeals();
+int      CountRealExposure();
+void     PollSettings();
+void     SyncDashboardGlobalVariables();
+void     PollCommissions();
+void     ManageTrailing();
+void     CheckEmergencyStop();
 SRiskBreakdown ComputeRiskBreakdown(string symbol, double slDistance, double volume);
-ushort json_safe_idx(string s, int idx);
-string JsonValue(string json, string key);
-string JsonObjectValue(string json, string key);
-string JsonArrayValue(string json, string key);
-bool JsonBoolValue(string json, string key, bool defaultValue);
-int JsonIntValue(string json, string key, int defaultValue);
-double JsonDoubleValue(string json, string key, double defaultValue);
-void ExtractTopLevelObjects(string arrJson, string &outObjects[]);
+ushort   json_safe_idx(string s, int idx);
+string   JsonValue(string json, string key);
+string   JsonObjectValue(string json, string key);
+string   JsonArrayValue(string json, string key);
+bool     JsonBoolValue(string json, string key, bool defaultValue);
+int      JsonIntValue(string json, string key, int defaultValue);
+double   JsonDoubleValue(string json, string key, double defaultValue);
+void     ExtractTopLevelObjects(string arrJson, string &outObjects[]);
 
-//--- Time & News helpers --------------------------------------------
-void CalculateServerGMTOffset()
+//--- Unified TimeGMT7() & News helpers ------------------------------
+void SyncBrokerGMTOffset(bool force)
 {
-   datetime st = TimeTradeServer(), gt = TimeGMT();
-   if(st <= 0 || gt <= 0) return;
-   g_serverToGMTOffset = (int)(st - gt);
-   int h = (int)MathRound((double)g_serverToGMTOffset / 3600.0);
-   g_serverToGMTOffset = h * 3600;
-   g_lastOffsetCalcTime = TimeCurrent();
+   datetime now = TimeCurrent();
+   if(!force && g_lastBrokerOffsetSync > 0 && (now - g_lastBrokerOffsetSync) < 300)
+      return;
+
+   datetime gt = TimeGMT();
+   datetime st = TimeTradeServer();
+   if(st <= 0) st = now;
+
+   if(gt > 0 && st > 0)
+   {
+      int rawDiff = (int)(st - gt);
+      int roundedHours = (int)MathRound((double)rawDiff / 3600.0);
+      g_brokerToGMTOffset = roundedHours * 3600;
+      g_lastBrokerOffsetSync = now;
+   }
 }
 
-datetime GetCurrentUtcTimestamp()
+datetime TimeGMT7()
 {
    datetime gt = TimeGMT();
-   if(gt > 0) return gt;
+   if(gt > 0)
+      return gt + 7 * 3600;
+
+   SyncBrokerGMTOffset(false);
    datetime st = TimeTradeServer();
    if(st <= 0) st = TimeCurrent();
-   return st - g_serverToGMTOffset;
+   return (st - g_brokerToGMTOffset) + 7 * 3600;
 }
 
 datetime ServerTimeToGMT7(datetime st)
 {
-   return (st - g_serverToGMTOffset) + 7 * 3600;
+   if(st <= 0) return 0;
+   SyncBrokerGMTOffset(false);
+   return (st - g_brokerToGMTOffset) + 7 * 3600;
 }
 
-datetime GetGMT7Now()
+datetime GetCurrentUtcTimestamp()
 {
+   datetime g7 = TimeGMT7();
+   if(g7 > 0) return g7 - 7 * 3600;
    datetime st = TimeTradeServer();
    if(st <= 0) st = TimeCurrent();
-   return ServerTimeToGMT7(st);
+   return st - g_brokerToGMTOffset;
 }
 
 bool IsInTradingHours()
 {
    if(!g_settings.time_filter_enabled) return true;
-   datetime gmt7 = GetGMT7Now();
+   datetime gmt7 = TimeGMT7();
    MqlDateTime dt;
    TimeToStruct(gmt7, dt);
    int h = dt.hour;
@@ -668,7 +688,7 @@ bool ApplySettingsJson(string obj, bool saveDisk)
    if(!g_settings.emergency_stop)
       g_emergencyClosedOnce = false;
 
-   g_settings.last_synced = TimeCurrent();
+   g_settings.last_synced = TimeGMT7();
    RebuildNewsScheduleCache();
    SyncDashboardGlobalVariables();
 
@@ -732,7 +752,7 @@ void PollCommissions()
       c.contract_size      = StringToDouble(JsonValue(items[i], "contract_size"));
       c.tick_value         = StringToDouble(JsonValue(items[i], "tick_value"));
       c.point_size         = StringToDouble(JsonValue(items[i], "point_size"));
-      c.received_at        = TimeCurrent();
+      c.received_at        = TimeGMT7();
       if(c.symbol == "") continue;
       int n = ArraySize(g_commissionCache);
       ArrayResize(g_commissionCache, n+1);
@@ -1096,8 +1116,8 @@ void SendHeartbeat()
 {
    int openCount = CountRealExposure();
    string body = StringFormat(
-      "{\"component\":\"TRADE-V9-REAL\",\"status\":\"online\",\"details\":\"DIRECT-IND+MANUAL consumer; positions=%d; emergency=%s; news_block=%s\"}",
-      openCount, g_settings.emergency_stop ? "ON" : "OFF", IsNewsBlocked() ? "ON" : "OFF");
+      "{\"component\":\"TRADE-V9-REAL\",\"status\":\"online\",\"details\":\"ONTIMER-GMT7 DIRECT-IND+MANUAL; positions=%d; emergency=%s; news_block=%s; gmt7=%d\"}",
+      openCount, g_settings.emergency_stop ? "ON" : "OFF", IsNewsBlocked() ? "ON" : "OFF", (long)TimeGMT7());
    string response; int status;
    if(Request("POST", "/api/heartbeat", body, response, status))
       lastHeartbeatMs = GetTickCount();
@@ -1166,7 +1186,6 @@ bool ExecuteIndicatorSignal(string sigKey, string symbol, string direction, int 
       return false;
    }
 
-   // Chỉ lấy ENTRY và SL từ Indicator; nếu lệnh MARKET không có entry hợp lệ thì dùng giá thị trường hiện tại
    double entry = indEntry;
    if(normOrderType == "MARKET")
       entry = (direction == "BUY") ? ask : bid;
@@ -1326,11 +1345,18 @@ void CheckIndicatorSymbolSignal(string symbol)
    string sigKey = symUp + ":" + IntegerToString(seq) + ":" + IntegerToString(sigTime);
    if(HasProcessedSignalKey(sigKey)) return;
 
-   long nowTs = (long)TimeCurrent();
-   if(sigTime > 0 && (nowTs - sigTime) > 300)
+   // Đồng bộ tuổi tín hiệu qua TimeGMT7()
+   datetime nowGmt7 = TimeGMT7();
+   if(sigTime > 0)
    {
-      MarkProcessedSignalKey(sigKey);
-      return;
+      long diffDirect = MathAbs((long)nowGmt7 - sigTime);
+      long diffViaServer = MathAbs((long)nowGmt7 - (long)ServerTimeToGMT7((datetime)sigTime));
+      long minAgeSec = MathMin(diffDirect, diffViaServer);
+      if(minAgeSec > 300)
+      {
+         MarkProcessedSignalKey(sigKey);
+         return;
+      }
    }
 
    string direction = (dirVal > 0) ? "BUY" : ((dirVal < 0) ? "SELL" : "");
@@ -1355,7 +1381,7 @@ void CheckIndicatorSymbolSignal(string symbol)
    if(!IsInTradingHours())
    {
       MarkProcessedSignalKey(sigKey);
-      Print("[V9 IND BLOCK] ", sigKey, " outside trading hours");
+      Print("[V9 IND BLOCK] ", sigKey, " outside GMT+7 trading hours");
       return;
    }
    if(IsNewsBlocked())
@@ -2021,7 +2047,7 @@ void PublishRealClosedDeals()
       lastHistoryDigest = tradesJson;
 }
 
-//--- Lifecycle ------------------------------------------------------
+//--- Lifecycle (OnTimer-only, no OnTick) ----------------------------
 int OnInit()
 {
    if(StringFind(ServerBaseURL, "https://") != 0 && StringFind(ServerBaseURL, "http://127.0.0.1") != 0)
@@ -2033,13 +2059,14 @@ int OnInit()
    InitDefaultSettings();
    LoadCachedSettingsFromDisk();
    SyncDashboardGlobalVariables();
-   CalculateServerGMTOffset();
+   SyncBrokerGMTOffset(true);
 
    PollSettings();
    PollCommissions();
 
    EventSetTimer(1);
-   Print("[V9] Started v3.21 DIRECT-INDICATOR + MANUAL HUB. magic=", MagicNumber,
+   Print("[V9] Started v3.22 (OnTimer-only + TimeGMT7). magic=", MagicNumber,
+         " | GMT+7=", TimeToString(TimeGMT7(), TIME_DATE|TIME_SECONDS),
          " | AutoTrade=", g_settings.auto_trade_enabled ? "ON" : "OFF",
          " | Trailing=", g_settings.trailing_enabled ? "ON" : "OFF",
          " | NewsWindow=-", g_settings.news_block_before_min, "m/+", g_settings.news_block_after_min, "m",
@@ -2047,38 +2074,36 @@ int OnInit()
    return INIT_SUCCEEDED;
 }
 
-void OnDeinit(const int reason) { EventKillTimer(); }
-
-void OnTick()
+void OnDeinit(const int reason)
 {
-   PollIndicatorSignals();
+   EventKillTimer();
 }
 
 void OnTimer()
 {
-   GlobalVariableSet("HB_TradeManager", (double)TimeCurrent());
+   datetime nowGmt7 = TimeGMT7();
+   GlobalVariableSet("HB_TradeManager", (double)nowGmt7);
    uint nowMs = GetTickCount();
 
-   if(TimeCurrent() - g_lastOffsetCalcTime > 3600)
-      CalculateServerGMTOffset();
+   SyncBrokerGMTOffset(false);
 
-   // Luôn ưu tiên quét tín hiệu trực tiếp qua GV trước để không bị trễ do mạng/HTTP
+   // Quét tín hiệu trực tiếp từ GV trong OnTimer để không phụ thuộc OnTick
    if(lastIndicatorPollMs == 0 ||
-      (uint)(nowMs - lastIndicatorPollMs) >= (uint)(g_settings.poll_seconds * 1000))
+      (uint)(nowMs - lastIndicatorPollMs) >= (uint)(MathMax(1, g_settings.poll_seconds) * 1000))
    {
       lastIndicatorPollMs = nowMs;
       PollIndicatorSignals();
    }
 
    if(lastTrailingCheckMs == 0 ||
-      (uint)(nowMs - lastTrailingCheckMs) >= (uint)(g_settings.trailing_check_seconds * 1000))
+      (uint)(nowMs - lastTrailingCheckMs) >= (uint)(MathMax(1, g_settings.trailing_check_seconds) * 1000))
    {
       lastTrailingCheckMs = nowMs;
       ManageTrailing();
    }
 
    if(lastSettingsPollMs == 0 ||
-      (uint)(nowMs - lastSettingsPollMs) >= (uint)(g_settings.settings_poll_seconds * 1000))
+      (uint)(nowMs - lastSettingsPollMs) >= (uint)(MathMax(1, g_settings.settings_poll_seconds) * 1000))
    {
       lastSettingsPollMs = nowMs;
       PollSettings();
@@ -2087,33 +2112,23 @@ void OnTimer()
    CheckEmergencyStop();
 
    if(lastCommissionPollMs == 0 ||
-      (uint)(nowMs - lastCommissionPollMs) >= (uint)(g_settings.commission_poll_seconds * 1000))
+      (uint)(nowMs - lastCommissionPollMs) >= (uint)(MathMax(5, g_settings.commission_poll_seconds) * 1000))
    {
       lastCommissionPollMs = nowMs;
       PollCommissions();
    }
 
    if(lastHeartbeatMs == 0 ||
-      (uint)(nowMs - lastHeartbeatMs) >= (uint)(g_settings.heartbeat_seconds * 1000))
+      (uint)(nowMs - lastHeartbeatMs) >= (uint)(MathMax(5, g_settings.heartbeat_seconds) * 1000))
       SendHeartbeat();
 
-   if((uint)(nowMs - lastIndicatorPollMs) < 100)
-   {
-      PollManualChartOrders();
-      PollCloseCommands();
-   }
-
    if(lastSltpPollMs == 0 ||
-      (uint)(nowMs - lastSltpPollMs) >= (uint)(g_settings.poll_seconds * 1000))
+      (uint)(nowMs - lastSltpPollMs) >= (uint)(MathMax(1, g_settings.poll_seconds) * 1000))
    {
       lastSltpPollMs = nowMs;
+      PollManualChartOrders();
+      PollCloseCommands();
       PollSltpRequests();
-   }
-
-   if(lastPendingModifyPollMs == 0 ||
-      (uint)(nowMs - lastPendingModifyPollMs) >= (uint)(g_settings.poll_seconds * 1000))
-   {
-      lastPendingModifyPollMs = nowMs;
       PollPendingModifyRequests();
    }
 
