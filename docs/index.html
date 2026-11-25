@@ -1909,6 +1909,7 @@ function renderRsiDivergences(signals, bars) {
   const list = Array.isArray(signals) ? signals : [];
   const rsiData = typeof rsiSeries.data === 'function' ? (rsiSeries.data() || []) : [];
 
+  // Sắp xếp để tín hiệu RT được vẽ cuối cùng (nổi bật lên trên)
   const ordered = [...list].slice(0, 80).sort((a, b) => {
     const aRt = a.signal_type === 'RT' ? 1 : 0;
     const bRt = b.signal_type === 'RT' ? 1 : 0;
@@ -1957,6 +1958,7 @@ function renderRsiDivergences(signals, bars) {
       ]);
       priceDivergenceSeries.push(priceLine);
     } else if (isRealtime) {
+      // Line phân kỳ realtime dự phòng khi chỉ có mốc signal_time / price2
       const sigTs = Number(s.signal_time || t2 || 0);
       if (sigTs > 0) {
         const snappedTs = nearestTime(sigTs, bars);
@@ -3847,61 +3849,9 @@ const localDateTime = ts => {
   return new Date(sec * 1000).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour12: false });
 };
 
-/* --- BẮT ĐẦU PHẦN SỬA THỐNG KÊ LỆNH BỊ LẶP --- */
-function dedupeStatsHistory(items) {
-  if (!Array.isArray(items)) return [];
-  const seen = new Set();
-  const out = [];
-  for (const p of items) {
-    if (!p || typeof p !== 'object') continue;
-    const rawId = String(p.ticket ?? p.id ?? p.position_id ?? p.deal_id ?? p.order_id ?? '').trim();
-    const closeTs = normalizeTimestamp(p.closed_at ?? p.close_time ?? p.time);
-    const closeKey = Number.isFinite(closeTs) ? String(Math.round(closeTs)) : String(p.closed_at ?? p.close_time ?? p.time ?? '').trim();
-    const sym = String(p.symbol || '').trim().toUpperCase();
-    const dir = String(p.direction ?? p.type ?? '').trim().toUpperCase();
-    const vol = Number(p.volume ?? p.lots ?? p.lot ?? 0) || 0;
-    const entry = Number(p.entry ?? p.open_price ?? p.price ?? 0) || 0;
-    const profit = Number(p.profit ?? p.pnl ?? 0) || 0;
-
-    // Ưu tiên khóa định danh lệnh nếu có cả mã lệnh/ticket và thời điểm đóng; nếu thiếu ticket thì dùng chữ ký giao dịch
-    const key = rawId
-      ? ('ID:' + rawId + '|' + closeKey + '|' + sym + '|' + dir + '|' + entry.toFixed(6) + '|' + profit.toFixed(2))
-      : ('SIG:' + closeKey + '|' + sym + '|' + dir + '|' + vol.toFixed(4) + '|' + entry.toFixed(6) + '|' + profit.toFixed(2));
-
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(p);
-  }
-  return out;
-}
-
-function dedupeStatsSignals(items) {
-  if (!Array.isArray(items)) return [];
-  const seen = new Set();
-  const out = [];
-  for (const x of items) {
-    if (!x || typeof x !== 'object') continue;
-    const ts = normalizeTimestamp(x.signal_time);
-    const tsKey = Number.isFinite(ts) ? String(Math.round(ts)) : String(x.signal_time ?? '').trim();
-    const key = [
-      String(x.symbol || '').trim().toUpperCase(),
-      String(x.timeframe || '').trim().toUpperCase(),
-      String(x.direction || '').trim().toUpperCase(),
-      String(x.divergence || '').trim().toUpperCase(),
-      String(x.signal_type || '').trim().toUpperCase(),
-      tsKey,
-      String(Number(x.price2) || 0),
-    ].join('|');
-    if (seen.has(key)) continue;
-    seen.add(key);
-    out.push(x);
-  }
-  return out;
-}
-
 function renderStats(data) {
-  const todaySignals = dedupeStatsSignals(Array.isArray(data.today_signals) ? data.today_signals : []);
-  const history = dedupeStatsHistory(Array.isArray(data.real_history) ? data.real_history : []);
+  const todaySignals = Array.isArray(data.today_signals) ? data.today_signals : [];
+  const history = Array.isArray(data.real_history) ? data.real_history : [];
   const todayKey = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Ho_Chi_Minh', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
   const closedToday = history.filter(p => localDayKey(p.closed_at ?? p.close_time ?? p.time) === todayKey);
   const wins = closedToday.filter(p => Number(p.profit ?? p.pnl ?? 0) > 0).length;
@@ -3930,8 +3880,6 @@ function renderStats(data) {
 
   $('statsUpdated').textContent = 'Cập nhật ' + new Date().toLocaleTimeString('vi-VN');
 }
-/* --- KẾT THÚC PHẦN SỬA THỐNG KÊ LỆNH BỊ LẶP --- */
-
 async function refreshStats() {
   try {
     const r = await apiFetch(API_BASE + '/api/dashboard', { cache: 'no-store' });
@@ -4531,47 +4479,65 @@ async function checkServerStatus() {
   const t0 = performance.now();
   try {
     const res = await fetch(API_BASE + '/api/health', { cache: 'no-store' });
-    const ms = performance.now() - t0;
-    const el = $('serverState');
-    if (res.ok) { el.className = 'server-state online'; el.querySelector('span').textContent = 'Online · ' + formatLatency(ms); el.title = 'Server phản hồi trong ' + Math.round(ms) + 'ms'; }
-    else { el.className = 'server-state offline'; el.querySelector('span').textContent = 'Offline · HTTP ' + res.status; el.title = 'Server lỗi HTTP ' + res.status; }
+    const speed = formatLatency(performance.now() - t0);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const d = await res.json();
+    const ok = d.status === 'ok' && d.database === 'ok';
+    $('serverState').classList.toggle('online', ok);
+    $('serverState').classList.toggle('offline', !ok);
+    $('serverState').innerHTML = '<i></i><span>' + speed + '</span>';
+    $('serverState').title = 'API: ' + d.status + ' · DB: ' + d.database + ' · ' + speed + (d.mode ? ' · ' + d.mode : '');
   } catch (e) {
-    const el = $('serverState');
-    el.className = 'server-state offline'; el.querySelector('span').textContent = 'Offline'; el.title = e.message || 'Không kết nối được server';
+    const speed = formatLatency(performance.now() - t0);
+    $('serverState').classList.remove('online');
+    $('serverState').classList.add('offline');
+    $('serverState').innerHTML = '<i></i><span>' + speed + '</span>';
+    $('serverState').title = String(e.message || e);
   }
 }
 
+function triggerInitialAuthCheck() {
+  if (window.accountAuthGranted && chartApiKey) {
+    void validateApiAccess();
+  }
+}
+
+ensureApiAuthWarnings();
+refreshApiKeyBox();
+renderMt5AccountInfo([]);
+window.addEventListener('forex-auth-ready', triggerInitialAuthCheck);
+window.addEventListener('forex-auth-locked', stopAuthorizedPolling);
+stopAuthorizedPolling();
+syncRealLayerToggles();
+bindRealLayerToggles();
+bindAskLineToggle();
+applyLockState();
+syncPresetButtons();
+
+$('apiKeySave').addEventListener('click', () => {
+  saveApiKey($('apiKeyInput').value);
+  stopAuthorizedPolling();
+  $('requestState').textContent = 'Đang xác thực API key (' + maskKey(chartApiKey) + ')...';
+  void validateApiAccess();
+});
+$('apiKeyInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') {
+    saveApiKey($('apiKeyInput').value);
+    stopAuthorizedPolling();
+    $('apiKeyInput').blur();
+    $('requestState').textContent = 'Đang xác thực API key (' + maskKey(chartApiKey) + ')...';
+    void validateApiAccess();
+  }
+});
 $('apiKeyToggle').addEventListener('click', () => {
   const inp = $('apiKeyInput');
   inp.type = inp.type === 'password' ? 'text' : 'password';
 });
-$('apiKeySave').addEventListener('click', async () => {
-  saveApiKey($('apiKeyInput').value);
-  await validateApiAccess();
-  if (!apiAccessGranted) return;
-  $('requestState').textContent = 'Đã lưu API key.';
-  load(true);
-  refreshChartPositions();
-  refreshCommissionInfo();
-  refreshEmergencyModalWarning();
-  if ($('statsDialog').open) refreshStats();
-});
-$('apiKeyInput').addEventListener('keydown', e => {
-  if (e.key === 'Enter') { e.preventDefault(); $('apiKeySave').click(); }
-});
-$('commissionRefresh').addEventListener('click', () => { refreshCommissionInfo(); });
+$('commissionRefresh').addEventListener('click', refreshCommissionInfo);
 
 updateGMT7Clock();
 setInterval(updateGMT7Clock, 1000);
-refreshApiKeyBox();
-ensureApiAuthWarnings();
-bindAskLineToggle();
-syncAskLineToggle();
-syncRealLayerToggles();
-bindRealLayerToggles();
-syncPresetButtons();
-applyLockState();
 </script>
-<script type="module" src="./auth.js"></script>
+<script src="./auth.js"></script>
 </body>
 </html>
