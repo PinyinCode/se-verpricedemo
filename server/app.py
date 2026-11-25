@@ -427,108 +427,6 @@ def evaluate_news_filter(settings_dict: dict, now_ts: float | None = None) -> di
     }
 
 
-def _is_rt_signal_invalidated_by_price(
-    conn: sqlite3.Connection,
-    symbol: str,
-    timeframe: str,
-    direction: str,
-    price1: float,
-    price2: float,
-    ref_time: int,
-) -> bool:
-    """Trả về True nếu tín hiệu RT đã bị phá đáy (với BUY) hoặc phá đỉnh (với SELL)."""
-    dir_up = (direction or "").strip().upper()
-    p1 = float(price1 or 0)
-    p2 = float(price2 or 0)
-
-    if dir_up == "BUY":
-        if p1 <= 0 and p2 <= 0:
-            return False
-        break_low = min(v for v in (p1, p2) if v > 0)
-
-        latest = conn.execute(
-            "SELECT open, high, low, close, ask FROM candles "
-            "WHERE symbol=? AND timeframe=? ORDER BY candle_time DESC LIMIT 1",
-            (symbol, timeframe),
-        ).fetchone()
-        if latest is not None:
-            for col in ("low", "close", "open", "ask"):
-                val = latest[col]
-                if val is not None and float(val) > 0 and float(val) < break_low:
-                    return True
-
-        rows = conn.execute(
-            "SELECT low, close FROM candles WHERE symbol=? AND timeframe=? AND candle_time >= ?",
-            (symbol, timeframe, max(0, int(ref_time))),
-        ).fetchall()
-        for r in rows:
-            for col in ("low", "close"):
-                val = r[col]
-                if val is not None and float(val) > 0 and float(val) < break_low:
-                    return True
-        return False
-
-    if dir_up == "SELL":
-        if p1 <= 0 and p2 <= 0:
-            return False
-        break_high = max(p1, p2)
-
-        latest = conn.execute(
-            "SELECT open, high, low, close, ask FROM candles "
-            "WHERE symbol=? AND timeframe=? ORDER BY candle_time DESC LIMIT 1",
-            (symbol, timeframe),
-        ).fetchone()
-        if latest is not None:
-            for col in ("high", "close", "open", "ask"):
-                val = latest[col]
-                if val is not None and float(val) > 0 and float(val) > break_high:
-                    return True
-
-        rows = conn.execute(
-            "SELECT high, close FROM candles WHERE symbol=? AND timeframe=? AND candle_time >= ?",
-            (symbol, timeframe, max(0, int(ref_time))),
-        ).fetchall()
-        for r in rows:
-            for col in ("high", "close"):
-                val = r[col]
-                if val is not None and float(val) > 0 and float(val) > break_high:
-                    return True
-        return False
-
-    return False
-
-
-def _prune_invalidated_rt_signals(
-    conn: sqlite3.Connection,
-    symbol: str | None = None,
-    timeframe: str | None = None,
-) -> None:
-    """Xóa các tín hiệu RT đã bị phá đáy/đỉnh khỏi bảng today_signals."""
-    clauses = ["signal_type='RT'"]
-    params: list[object] = []
-    if symbol:
-        clauses.append("symbol=?")
-        params.append(symbol.strip().upper())
-    if timeframe:
-        clauses.append("timeframe=?")
-        params.append(timeframe.strip().upper())
-
-    sql = "SELECT signal_key, symbol, timeframe, direction, price1, price2, signal_time, time2 FROM today_signals WHERE " + " AND ".join(clauses)
-    rows = conn.execute(sql, params).fetchall()
-    for row in rows:
-        ref_t = int(row["time2"] or row["signal_time"] or 0)
-        if _is_rt_signal_invalidated_by_price(
-            conn,
-            row["symbol"],
-            row["timeframe"],
-            row["direction"],
-            float(row["price1"] or 0),
-            float(row["price2"] or 0),
-            ref_t,
-        ):
-            conn.execute("DELETE FROM today_signals WHERE signal_key=?", (row["signal_key"],))
-
-
 def send_telegram_rt_signal(item: "TodaySignalItem") -> bool:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
@@ -574,7 +472,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Forex AI Server",
-    version="0.6.2",
+    version="0.6.1",
     description="Signal analysis and MT5 real-order bridge with runtime control panel.",
     lifespan=lifespan,
 )
@@ -2016,22 +1914,9 @@ def update_today_signals(payload: TodaySignalsIn):
     now = utc_now()
     new_rt_signals = []
     with db() as conn:
-        incoming_rt_keys: set[str] = set()
-        seen_pairs: set[tuple[str, str]] = set()
         for item in payload.signals:
             key = "|".join((item.symbol, item.timeframe, item.direction,
                             item.divergence, item.signal_type, str(item.signal_time)))
-            seen_pairs.add((item.symbol, item.timeframe))
-            if item.signal_type == "RT":
-                ref_t = item.time2 if item.time2 > 0 else item.signal_time
-                if _is_rt_signal_invalidated_by_price(
-                    conn, item.symbol, item.timeframe, item.direction,
-                    item.price1, item.price2, ref_t,
-                ):
-                    conn.execute("DELETE FROM today_signals WHERE signal_key=?", (key,))
-                    continue
-                incoming_rt_keys.add(key)
-
             cur = conn.execute(
                 "INSERT OR IGNORE INTO today_signals(signal_key,symbol,timeframe,direction,divergence,signal_type,"
                 "signal_time,price1,price2,rsi1,rsi2,time1,time2,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -2041,18 +1926,6 @@ def update_today_signals(payload: TodaySignalsIn):
             )
             if cur.rowcount == 1 and item.signal_type == "RT":
                 new_rt_signals.append(item)
-
-        # Đồng bộ RT: loại bỏ tín hiệu RT cũ trong các (symbol, timeframe) được báo cáo nhưng không còn active
-        for sym, tf in seen_pairs:
-            existing_rt = conn.execute(
-                "SELECT signal_key FROM today_signals WHERE symbol=? AND timeframe=? AND signal_type='RT'",
-                (sym, tf),
-            ).fetchall()
-            for r in existing_rt:
-                if r["signal_key"] not in incoming_rt_keys:
-                    conn.execute("DELETE FROM today_signals WHERE signal_key=?", (r["signal_key"],))
-
-        _prune_invalidated_rt_signals(conn)
 
     with db() as conn:
         telegram_enabled_row = conn.execute(
@@ -2111,7 +1984,6 @@ def update_candles(payload: CandleBatchIn):
             "(SELECT candle_time FROM candles WHERE symbol=? AND timeframe=? ORDER BY candle_time DESC LIMIT 2000)",
             (payload.symbol, payload.timeframe, payload.symbol, payload.timeframe),
         )
-        _prune_invalidated_rt_signals(conn, payload.symbol, payload.timeframe)
     return {
         "ok": True,
         "symbol": payload.symbol,
@@ -2173,7 +2045,6 @@ def chart_data(
     symbol = symbol.strip().upper()
     with db() as conn:
         _ensure_candles_ask_column(conn)
-        _prune_invalidated_rt_signals(conn, symbol, timeframe)
         candles = [dict(r) for r in conn.execute(
             "SELECT candle_time AS time,open,high,low,close,volume,digits,tick_size,tick_value,volume_min,volume_max,volume_step,ask "
             "FROM candles WHERE symbol=? AND timeframe=? ORDER BY candle_time DESC LIMIT ?",
@@ -2215,7 +2086,6 @@ def dashboard_data():
     _cleanup_recently_acked()
     with db() as conn:
         _expire_stale_pending_modifies(conn)
-        _prune_invalidated_rt_signals(conn)
         mt5_accounts = _format_account_rows(conn.execute(
             "SELECT * FROM mt5_account_info ORDER BY updated_at DESC"
         ).fetchall())
