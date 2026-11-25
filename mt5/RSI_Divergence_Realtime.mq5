@@ -1,11 +1,11 @@
 //+------------------------------------------------------------------+
 //|                           RSI_Divergence_Realtime.mq5            |
 //|   Realtime Signal Only -> Direct GV to EA + Full Server Sync     |
-//|   Unified TimeGMT7() Clock                                       |
+//|   Unified TimeGMT7() Clock + Synced TF for EA Candle Check       |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026"
 #property link      "https://www.mql5.com"
-#property version   "1.12"
+#property version   "1.13"
 #property indicator_chart_window
 #property indicator_buffers 1
 #property indicator_plots   1
@@ -352,7 +352,8 @@ string BuildDedupSource(string signalKey)
 }
 
 //--- Ghi tín hiệu trực tiếp sang Global Variables cho EA ----------
-void PublishDirectSignalToEA_GV(int idx, string sym, string side, string orderType,
+void PublishDirectSignalToEA_GV(int idx, string sym, ENUM_TIMEFRAMES tf,
+                                string side, string orderType,
                                 double entryPrice, double slPrice, double tpPrice,
                                 datetime signalTime, string signalKey)
 {
@@ -379,10 +380,13 @@ void PublishDirectSignalToEA_GV(int idx, string sym, string side, string orderTy
    if(orderType == "BUY_LIMIT") otCode = 1.0;
    else if(orderType == "SELL_LIMIT") otCode = 2.0;
 
-   // Ghi TIME theo chuẩn TimeGMT7() để đồng nhất toàn hệ thống
+   // Ghi TIME theo chuẩn TimeGMT7() và TF theo ENUM_TIMEFRAMES để EA đối chiếu đúng cây nến
    datetime sigTimeGmt7 = (signalTime > 0) ? ServerTimeToGMT7(signalTime) : nowGmt7;
+   ENUM_TIMEFRAMES effectiveTf = (tf != PERIOD_CURRENT) ? tf :
+      ((idx >= 0 && idx < ArraySize(arrSymTF)) ? arrSymTF[idx].tf : PERIOD_M15);
 
    GlobalVariableSet(pfx + "SEQ",        (double)symSeq);
+   GlobalVariableSet(pfx + "TF",         (double)effectiveTf);
    GlobalVariableSet(pfx + "TIME",       (double)sigTimeGmt7);
    GlobalVariableSet(pfx + "DIR",        (side == "BUY") ? 1.0 : -1.0);
    GlobalVariableSet(pfx + "ORDER_TYPE", otCode);
@@ -395,8 +399,9 @@ void PublishDirectSignalToEA_GV(int idx, string sym, string side, string orderTy
    GlobalVariableSet("GV_IND_SIG_SEQ", (double)totalSeq);
 }
 
-void EmitRealtimeSignal(int idx, string sym, string tfStr, string side, string divType,
-                        bool isStrong, double entryPrice, double slPrice, double tpPrice,
+void EmitRealtimeSignal(int idx, string sym, ENUM_TIMEFRAMES tf, string tfStr,
+                        string side, string divType, bool isStrong,
+                        double entryPrice, double slPrice, double tpPrice,
                         double refPrice1, double refPrice2, double volRatio,
                         datetime signalTime, string signalKey)
 {
@@ -405,7 +410,7 @@ void EmitRealtimeSignal(int idx, string sym, string tfStr, string side, string d
    if(!IsValidSLForDirection(side, entryPrice, slPrice)) return;
 
    // 1. Luôn ghi trực tiếp qua GV cho EA — độc lập hoàn toàn với WebRequest
-   PublishDirectSignalToEA_GV(idx, sym, side, "MARKET", entryPrice, slPrice, tpPrice, signalTime, signalKey);
+   PublishDirectSignalToEA_GV(idx, sym, tf, side, "MARKET", entryPrice, slPrice, tpPrice, signalTime, signalKey);
 
    // 2. Gửi HTTP lên server chỉ là luồng đồng bộ phụ; không ảnh hưởng việc vào lệnh
    if(!EnableServerSend) return;
@@ -1379,7 +1384,7 @@ int OnInit()
    if(tfList == "") tfList = "NONE!";
 
    Print("═══════════════════════════════════════════");
-   Print("RSI Divergence Realtime v1.12 (TimeGMT7)");
+   Print("RSI Divergence Realtime v1.13 (TimeGMT7 + TF Sync)");
    Print("   Timeframes: ", tfList);
    Print("   GMT+7 Now: ", TimeToString(nowGmt7, TIME_DATE|TIME_SECONDS));
    Print("   Direct EA GV: ", PublishToDirectEA_GV ? "ON" : "OFF");
@@ -1884,13 +1889,11 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   datetime gmt7Time = ServerTimeToGMT7(timeAtMaxHigh);
                   string timeStr = TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES);
 
-                  // Tạm lưu điều kiện như mã cũ
                   double closeNew = iClose(sym, tf, rtMaxHighShift);
                   double closeOld = iClose(sym, tf, iBarShift(sym, tf, lastHighTime, false));
                   if(closeNew > closeOld)
                      arrSymTF[idx].pendingBearRegStrong = true;
 
-                  // Xác nhận isStrong khi reject trên nến hiện tại (shift == 0)
                   double currentPrice = SymbolInfoDouble(sym, SYMBOL_BID);
                   bool rejectNow = (rtMaxHighShift == 0) && (currentPrice < lastHighPrice);
                   bool isStrong = arrSymTF[idx].pendingBearRegStrong && rejectNow;
@@ -1924,7 +1927,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   if(timeAtMaxHigh >= g_initTime && IsNewsSafe())
                   {
                      string sigKey = sym + "|" + tfStr + "|SELL|Reg|" + IntegerToString(timeAtMaxHigh);
-                     EmitRealtimeSignal(idx, sym, tfStr, "SELL", "REG", isStrong, currentPrice, slSellReg, 0.0, lastHighPrice, rtMaxHigh, peakVolRatio, timeAtMaxHigh, sigKey);
+                     EmitRealtimeSignal(idx, sym, tf, tfStr, "SELL", "REG", isStrong, currentPrice, slSellReg, 0.0, lastHighPrice, rtMaxHigh, peakVolRatio, timeAtMaxHigh, sigKey);
                   }
 
                   if(isStrong && timeAtMaxHigh >= g_initTime && IsNewsSafe() && shouldTrack && IsValidSLForDirection("SELL", currentPrice, slSellReg))
@@ -1965,7 +1968,6 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   datetime gmt7Time = ServerTimeToGMT7(timeAtMaxRSI);
                   string timeStr = TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES);
 
-                  // Tạm lưu điều kiện như mã cũ
                   double closeNew = iClose(sym, tf, rtMaxRSIShift);
                   double closeOld = iClose(sym, tf, iBarShift(sym, tf, lastHighTime, false));
                   if(closeNew < closeOld)
@@ -1974,7 +1976,6 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   double slHidBear = MathMax(lastHighPrice, priceAtMaxRSI);
                   double slSellHid = slHidBear + spreadVal;
 
-                  // Xác nhận isStrong khi reject trên nến hiện tại (shift == 0)
                   double currentPrice = SymbolInfoDouble(sym, SYMBOL_BID);
                   bool rejectNow = (rtMaxRSIShift == 0) && (currentPrice < slHidBear);
                   bool isStrong = arrSymTF[idx].pendingBearHidStrong && rejectNow;
@@ -2006,7 +2007,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   if(timeAtMaxRSI >= g_initTime && IsNewsSafe())
                   {
                      string sigKey = sym + "|" + tfStr + "|SELL|Hid|" + IntegerToString(timeAtMaxRSI);
-                     EmitRealtimeSignal(idx, sym, tfStr, "SELL", "HID", isStrong, currentPrice, slSellHid, 0.0, lastHighPrice, priceAtMaxRSI, peakVolRatio, timeAtMaxRSI, sigKey);
+                     EmitRealtimeSignal(idx, sym, tf, tfStr, "SELL", "HID", isStrong, currentPrice, slSellHid, 0.0, lastHighPrice, priceAtMaxRSI, peakVolRatio, timeAtMaxRSI, sigKey);
                   }
 
                   if(isStrong && timeAtMaxRSI >= g_initTime && IsNewsSafe() && shouldTrack)
@@ -2079,13 +2080,11 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   datetime gmt7Time = ServerTimeToGMT7(timeAtMinLow);
                   string timeStr = TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES);
 
-                  // Tạm lưu điều kiện như mã cũ
                   double closeNew = iClose(sym, tf, rtMinLowShift);
                   double closeOld = iClose(sym, tf, iBarShift(sym, tf, lastLowTime, false));
                   if(closeNew < closeOld)
                      arrSymTF[idx].pendingBullRegStrong = true;
 
-                  // Xác nhận isStrong khi reject trên nến hiện tại (shift == 0)
                   double currentPrice = SymbolInfoDouble(sym, SYMBOL_ASK);
                   bool rejectNow = (rtMinLowShift == 0) && (currentPrice > lastLowPrice);
                   bool isStrong = arrSymTF[idx].pendingBullRegStrong && rejectNow;
@@ -2117,7 +2116,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   if(timeAtMinLow >= g_initTime && IsNewsSafe())
                   {
                      string sigKey = sym + "|" + tfStr + "|BUY|Reg|" + IntegerToString(timeAtMinLow);
-                     EmitRealtimeSignal(idx, sym, tfStr, "BUY", "REG", isStrong, currentPrice, rtMinLow, 0.0, lastLowPrice, rtMinLow, troughVolRatio, timeAtMinLow, sigKey);
+                     EmitRealtimeSignal(idx, sym, tf, tfStr, "BUY", "REG", isStrong, currentPrice, rtMinLow, 0.0, lastLowPrice, rtMinLow, troughVolRatio, timeAtMinLow, sigKey);
                   }
 
                   if(isStrong && timeAtMinLow >= g_initTime && IsNewsSafe() && shouldTrack && IsValidSLForDirection("BUY", currentPrice, rtMinLow))
@@ -2158,7 +2157,6 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   datetime gmt7Time = ServerTimeToGMT7(timeAtMinRSI);
                   string timeStr = TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES);
 
-                  // Tạm lưu điều kiện như mã cũ
                   double closeNew = iClose(sym, tf, rtMinRSIShift);
                   double closeOld = iClose(sym, tf, iBarShift(sym, tf, lastLowTime, false));
                   if(closeNew > closeOld)
@@ -2166,7 +2164,6 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
 
                   double slHidBull = MathMin(lastLowPrice, priceAtMinRSI);
 
-                  // Xác nhận isStrong khi reject trên nến hiện tại (shift == 0)
                   double currentPrice = SymbolInfoDouble(sym, SYMBOL_ASK);
                   bool rejectNow = (rtMinRSIShift == 0) && (currentPrice > slHidBull);
                   bool isStrong = arrSymTF[idx].pendingBullHidStrong && rejectNow;
@@ -2198,7 +2195,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   if(timeAtMinRSI >= g_initTime && IsNewsSafe())
                   {
                      string sigKey = sym + "|" + tfStr + "|BUY|Hid|" + IntegerToString(timeAtMinRSI);
-                     EmitRealtimeSignal(idx, sym, tfStr, "BUY", "HID", isStrong, currentPrice, slHidBull, 0.0, lastLowPrice, priceAtMinRSI, troughVolRatio, timeAtMinRSI, sigKey);
+                     EmitRealtimeSignal(idx, sym, tf, tfStr, "BUY", "HID", isStrong, currentPrice, slHidBull, 0.0, lastLowPrice, priceAtMinRSI, troughVolRatio, timeAtMinRSI, sigKey);
                   }
 
                   if(isStrong && timeAtMinRSI >= g_initTime && IsNewsSafe() && shouldTrack)
