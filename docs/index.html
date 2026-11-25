@@ -179,7 +179,7 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
 }
 .mt5-account-grid{
   display:grid;
-  grid-template-columns:repeat(4,minmax(0,1fr));
+  grid-template-columns:repeat(auto-fit,minmax(140px,1fr));
   gap:7px;
 }
 .mt5-account-cell{
@@ -191,9 +191,6 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
 }
 .mt5-account-cell span{display:block;color:#91a4bc;font-size:10px}
 .mt5-account-cell b{display:block;margin-top:2px;font-size:12px;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
-@media(max-width:650px){
-  .mt5-account-grid{grid-template-columns:repeat(2,minmax(0,1fr))}
-}
 
 .ohlc-strip{
   display:flex;
@@ -1020,7 +1017,7 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
             <div class="status-strip" id="telemetryBar">
               <span id="clockGMT7">--:--:--</span>
               <span class="server-state" id="serverState" title="Đang kiểm tra"><i></i><span>--</span></span>
-              <span class="mt5-account-pill" id="mt5AccountStrip" title="Thông tin tài khoản MT5">TK: <b>—</b></span>
+              <span class="mt5-account-pill" id="mt5AccountStrip" title="Balance / Equity">Bal <b>—</b></span>
             </div>
             <div class="ohlc-strip" id="ohlcLegend">
               <b>O —</b><span>H —</span><span>L —</span><span>C —</span><span class="ohlc-change">—</span>
@@ -1178,7 +1175,7 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
 
 <dialog id="positionsDialog" class="positions-dialog">
   <div class="positions-dialog-head">
-    <div><strong>VỊ THẾ ĐANG MỞ &amp; VỊ THẾ CHỜ</strong><div class="small">Tài khoản MT5 &amp; lệnh có thể thao tác</div></div>
+    <div><strong>VỊ THẾ ĐANG MỞ &amp; VỊ THẾ CHỜ</strong><div class="small">Số dư tài khoản &amp; lệnh có thể thao tác</div></div>
     <button type="button" id="closePositionsDialog" aria-label="Đóng">✕</button>
   </div>
   <div class="positions-dialog-body">
@@ -1188,18 +1185,12 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
     </div>
     <section class="mt5-account-card" id="mt5AccountCard" aria-live="polite">
       <div class="mt5-account-card-head">
-        <strong id="mt5AccountTitle">TÀI KHOẢN MT5 · —</strong>
-        <span id="mt5AccountMeta" class="small">Chưa nhận dữ liệu tài khoản</span>
+        <strong id="mt5AccountTitle">SỐ DƯ TÀI KHOẢN</strong>
+        <span id="mt5AccountMeta" class="small">Chưa nhận dữ liệu</span>
       </div>
       <div class="mt5-account-grid">
         <div class="mt5-account-cell"><span>Balance</span><b id="mt5AccBalance">—</b></div>
-        <div class="mt5-account-cell"><span>Equity</span><b id="mt5AccEquity">—</b></div>
-        <div class="mt5-account-cell"><span>Margin</span><b id="mt5AccMargin">—</b></div>
-        <div class="mt5-account-cell"><span>Free Margin</span><b id="mt5AccFreeMargin">—</b></div>
-        <div class="mt5-account-cell"><span>Margin Level</span><b id="mt5AccMarginLevel">—</b></div>
-        <div class="mt5-account-cell"><span>Floating P/L</span><b id="mt5AccProfit">—</b></div>
-        <div class="mt5-account-cell"><span>Leverage / Mode</span><b id="mt5AccLeverage">—</b></div>
-        <div class="mt5-account-cell"><span>Trade / Algo</span><b id="mt5AccPerm">—</b></div>
+        <div class="mt5-account-cell" id="mt5AccEquityWrap" style="display:none"><span>Equity</span><b id="mt5AccEquity">—</b></div>
       </div>
     </section>
     <div id="positionsUpdated" class="small" style="margin-top:8px">Đang đồng bộ...</div>
@@ -1294,6 +1285,7 @@ const COMMISSION_IS_ROUND_TURN = false;
 
 let mt5Digits = 5, mt5TickSize = 0.00001, mt5TickValue = 0, mt5VolumeMin = 0, mt5VolumeMax = 0, mt5VolumeStep = 0, latestMarketPrice = 0;
 let chartMt5Accounts = [];
+let chartOpenPositions = [], chartPendingOrders = [], closingIds = new Set(), cancelingIds = new Set();
 
 function fmtMoney(val, ccy = 'USD') {
   const n = Number(val);
@@ -1305,74 +1297,48 @@ function renderMt5AccountInfo(accounts) {
   const list = Array.isArray(accounts) ? accounts : [];
   chartMt5Accounts = list;
   const acc = list[0] || null;
+  const hasOpenPos = Array.isArray(chartOpenPositions) && chartOpenPositions.length > 0;
   const strip = $('mt5AccountStrip');
+  const eqWrap = $('mt5AccEquityWrap');
 
   if (!acc) {
     if (strip) {
       strip.classList.remove('stale');
-      strip.innerHTML = 'TK: <b>—</b>';
-      strip.title = 'Chưa nhận thông tin tài khoản từ MT5';
+      strip.innerHTML = 'Bal <b>—</b>';
+      strip.title = 'Balance';
     }
-    if ($('mt5AccountTitle')) $('mt5AccountTitle').textContent = 'TÀI KHOẢN MT5 · —';
-    if ($('mt5AccountMeta')) $('mt5AccountMeta').textContent = 'Chưa nhận dữ liệu tài khoản';
-    ['mt5AccBalance','mt5AccEquity','mt5AccMargin','mt5AccFreeMargin','mt5AccMarginLevel','mt5AccProfit','mt5AccLeverage','mt5AccPerm']
-      .forEach(id => { if ($(id)) { $(id).textContent = '—'; $(id).style.color = ''; } });
+    if ($('mt5AccountMeta')) $('mt5AccountMeta').textContent = 'Chưa nhận dữ liệu';
+    if ($('mt5AccBalance')) $('mt5AccBalance').textContent = '—';
+    if ($('mt5AccEquity')) $('mt5AccEquity').textContent = '—';
+    if (eqWrap) eqWrap.style.display = 'none';
     return;
   }
 
   const ccy = String(acc.currency || 'USD').toUpperCase();
   const isStale = Boolean(acc.stale);
   const ageSec = Number.isFinite(Number(acc.age_seconds)) ? Number(acc.age_seconds) : null;
-  const profit = Number(acc.profit) || 0;
+  const balText = fmtMoney(acc.balance, ccy);
+  const eqText = fmtMoney(acc.equity, ccy);
 
   if (strip) {
     strip.classList.toggle('stale', isStale);
-    strip.innerHTML =
-      '#' + esc(acc.login ?? acc.account_id)
-      + ' · Bal <b>' + esc(fmtMoney(acc.balance, ccy)) + '</b>'
-      + ' · Eq <b>' + esc(fmtMoney(acc.equity, ccy)) + '</b>'
-      + (isStale ? ' (cũ)' : '');
-    strip.title =
-      'TK #' + (acc.login ?? acc.account_id)
-      + (acc.server ? ' · ' + acc.server : '')
-      + (acc.account_mode ? ' · ' + acc.account_mode : '')
-      + ' · Free: ' + fmtMoney(acc.free_margin, ccy)
-      + (ageSec !== null ? ' · ' + ageSec + 's trước' : '');
+    strip.innerHTML = hasOpenPos
+      ? 'Bal <b>' + esc(balText) + '</b> · Eq <b>' + esc(eqText) + '</b>' + (isStale ? ' (cũ)' : '')
+      : 'Bal <b>' + esc(balText) + '</b>' + (isStale ? ' (cũ)' : '');
+    strip.title = hasOpenPos
+      ? 'Balance: ' + balText + ' · Equity: ' + eqText
+      : 'Balance: ' + balText;
   }
 
-  if ($('mt5AccountTitle')) {
-    $('mt5AccountTitle').textContent =
-      'TÀI KHOẢN MT5 #' + esc(acc.login ?? acc.account_id)
-      + (acc.name ? ' · ' + esc(acc.name) : '');
-  }
   if ($('mt5AccountMeta')) {
     $('mt5AccountMeta').textContent =
-      [acc.broker, acc.server, acc.account_mode].filter(Boolean).join(' · ')
-      + (ageSec !== null ? ' · Cập nhật ' + ageSec + 's trước' : '')
+      (hasOpenPos ? 'Có ' + chartOpenPositions.length + ' vị thế mở' : 'Không có vị thế mở')
+      + (ageSec !== null ? ' · ' + ageSec + 's trước' : '')
       + (isStale ? ' (dữ liệu cũ)' : '');
   }
-  if ($('mt5AccBalance')) $('mt5AccBalance').textContent = fmtMoney(acc.balance, ccy);
-  if ($('mt5AccEquity')) $('mt5AccEquity').textContent = fmtMoney(acc.equity, ccy);
-  if ($('mt5AccMargin')) $('mt5AccMargin').textContent = fmtMoney(acc.margin, ccy);
-  if ($('mt5AccFreeMargin')) $('mt5AccFreeMargin').textContent = fmtMoney(acc.free_margin, ccy);
-  if ($('mt5AccMarginLevel')) {
-    const ml = Number(acc.margin_level);
-    $('mt5AccMarginLevel').textContent = Number.isFinite(ml) && ml > 0 ? ml.toFixed(2) + '%' : '—';
-  }
-  if ($('mt5AccProfit')) {
-    $('mt5AccProfit').textContent = (profit > 0 ? '+' : '') + fmtMoney(profit, ccy);
-    $('mt5AccProfit').style.color = profit > 0 ? 'var(--green)' : (profit < 0 ? 'var(--red)' : '');
-  }
-  if ($('mt5AccLeverage')) {
-    const lev = Number(acc.leverage) > 0 ? '1:' + Number(acc.leverage) : '—';
-    $('mt5AccLeverage').textContent = lev + (acc.account_mode ? ' · ' + acc.account_mode : '');
-  }
-  if ($('mt5AccPerm')) {
-    const tr = acc.trade_allowed ? 'Trade:ON' : 'Trade:OFF';
-    const ex = acc.expert_allowed ? 'EA:ON' : 'EA:OFF';
-    $('mt5AccPerm').textContent = tr + ' / ' + ex;
-    $('mt5AccPerm').style.color = (acc.trade_allowed && acc.expert_allowed) ? 'var(--green)' : 'var(--amber)';
-  }
+  if ($('mt5AccBalance')) $('mt5AccBalance').textContent = balText;
+  if ($('mt5AccEquity')) $('mt5AccEquity').textContent = eqText;
+  if (eqWrap) eqWrap.style.display = hasOpenPos ? '' : 'none';
 }
 
 const eaState = {
@@ -1652,8 +1618,6 @@ async function refreshCommissionInfo() {
       ? new Date(receivedMs).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }) : 'không rõ';
     const sourceLabel = sourceMs > 0
       ? new Date(sourceMs).toLocaleString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh' }) : 'không có timestamp nguồn';
-    const account = String(item.account_id || '');
-    const accountLabel = account ? ' · TK …' + account.slice(-4) : '';
     if (ageMinutes > 15 || (sourceAgeHours !== null && sourceAgeHours > 24)) {
       state.textContent = 'Dữ liệu cũ';
       state.className = 'small warn';
@@ -1661,7 +1625,7 @@ async function refreshCommissionInfo() {
       state.textContent = 'Đã đồng bộ';
       state.className = 'small ok';
     }
-    meta.textContent = 'Symbol: ' + symbol + accountLabel
+    meta.textContent = 'Symbol: ' + symbol
       + ' · Server nhận: ' + receivedLabel
       + ' · MT5 cập nhật: ' + sourceLabel
       + (ageMinutes > 15 ? ' · Cảnh báo: quá 15 phút chưa đồng bộ.' : '')
@@ -3250,7 +3214,6 @@ async function load(forceNetwork = false) {
   }
 }
 
-let chartOpenPositions = [], chartPendingOrders = [], closingIds = new Set(), cancelingIds = new Set();
 const getPositionId = p => p && (p.ticket ?? p.id ?? p.position_id ?? p.order_id ?? p.deal_id ?? '');
 const getPendingId = o => o && (o.ticket ?? o.id ?? o.position_id ?? o.order_id ?? '');
 
@@ -3444,6 +3407,7 @@ function renderChartPositions(positions, pendingOrders = []) {
   }).join('') : '<tr><td colspan="9" class="empty">Chưa có vị thế chờ</td></tr>';
   $('chartPendingOrders').querySelectorAll('[data-cancel-id]').forEach(btn => btn.addEventListener('click', () => cancelPendingOrder(btn.dataset.cancelId, btn)));
 
+  renderMt5AccountInfo(chartMt5Accounts);
   renderRealLines();
 }
 
@@ -3453,10 +3417,10 @@ async function refreshChartPositions() {
     const r = await apiFetch(API_BASE + '/api/dashboard', { cache: 'no-store' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
-    renderMt5AccountInfo(d.mt5_accounts);
     const openList = Array.isArray(d.mt5_positions) ? d.mt5_positions : [];
     const pendingList = Array.isArray(d.mt5_pending_orders) ? d.mt5_pending_orders : [];
     const snapshotAge = d.mt5_snapshot_updated_at ? Math.max(0, Math.round((Date.now() - Date.parse(d.mt5_snapshot_updated_at)) / 1000)) : null;
+    chartMt5Accounts = Array.isArray(d.mt5_accounts) ? d.mt5_accounts : [];
     renderChartPositions(openList, pendingList);
     if (!closingIds.size && !cancelingIds.size) {
       $('positionsUpdated').textContent = 'Đồng bộ ' + new Date().toLocaleTimeString('vi-VN') + ' · ' + openList.length + ' vị thế mở · ' + pendingList.length + ' lệnh chờ' + (snapshotAge !== null ? (snapshotAge > 15 ? ' · Dữ liệu MT5 cũ ' + snapshotAge + 's' : ' · MT5 ' + snapshotAge + 's') : ' · Chưa nhận snapshot MT5');
@@ -3634,6 +3598,7 @@ async function refreshStats() {
     const r = await apiFetch(API_BASE + '/api/dashboard', { cache: 'no-store' });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
+    if (Array.isArray(data.mt5_positions)) chartOpenPositions = data.mt5_positions;
     renderMt5AccountInfo(data.mt5_accounts);
     renderStats(data);
   } catch (e) {
