@@ -2446,6 +2446,7 @@ function saveDismissedSignalKey(key) {
 let latestRealtimeSignal = readStoredLatestRealtimeSignal();
 let latestRealtimeCount = 1;
 let rtToastDismissedByUser = false;
+let latestModalSignalContext = null;
 
 function signalKey(s) {
   return [s.symbol,s.timeframe,s.direction,s.divergence,s.signal_type,s.signal_time].join('|');
@@ -2530,22 +2531,174 @@ function showRealtimeToast(s, count = 1, { forceOpen = false } = {}) {
   });
   toast.querySelector('.rt-detail-btn').addEventListener('click', () => openRealtimeDetails(s));
 }
+
+function applyRealtimeSignalToForm(s) {
+  const target = s || latestModalSignalContext?.signal || latestRealtimeSignal;
+  if (!target) return;
+
+  const isBuy = String(target.direction || '').toUpperCase() === 'BUY';
+  const p1 = Number(target.price1) || 0;
+  const p2 = Number(target.price2) || 0;
+  const refPrice = Number(latestMarketPrice) > 0 ? Number(latestMarketPrice) : p2;
+
+  const tick = mt5TickSize > 0 ? mt5TickSize : Math.pow(10, -mt5Digits);
+  const spreadBufPts = Number(eaState.settings.spread_buffer_points) || 0;
+  const bufferPrice = spreadBufPts > 0 ? spreadBufPts * tick : defaultGap(refPrice || p2 || 1) * 0.25;
+
+  let suggestedSl = Number(latestModalSignalContext?.suggestedSl) || 0;
+  if (!(suggestedSl > 0)) {
+    if (p1 > 0 && p2 > 0) {
+      suggestedSl = isBuy ? Math.min(p1, p2) - bufferPrice : Math.max(p1, p2) + bufferPrice;
+    } else if (refPrice > 0) {
+      suggestedSl = isBuy ? refPrice - defaultGap(refPrice) : refPrice + defaultGap(refPrice);
+    }
+    suggestedSl = Math.max(0, Number(suggestedSl.toFixed(mt5Digits)));
+  }
+
+  const targetSym = String(target.symbol || '').toUpperCase();
+  const targetTf = String(target.timeframe || '').toUpperCase();
+  const viewChanged =
+    (targetSym && $('symbol').value !== targetSym) ||
+    (targetTf && $('tf').value !== targetTf);
+
+  if (targetSym && $('symbol').value !== targetSym) $('symbol').value = targetSym;
+  if (targetTf && $('tf').value !== targetTf) $('tf').value = targetTf;
+
+  const rr = Number(eaState.settings.reward_risk_ratio) > 0
+    ? Number(eaState.settings.reward_risk_ratio)
+    : 2.0;
+
+  let entryForCalc = refPrice;
+  if ($('orderMode').value === 'PENDING') {
+    pendingOrderType = isBuy ? 'BUY_LIMIT' : 'SELL_LIMIT';
+    if (activePreset === 'BUY_LIMIT' || activePreset === 'SELL_LIMIT') {
+      activePreset = pendingOrderType;
+    }
+    if (refPrice > 0) {
+      const gap = defaultGap(refPrice);
+      const limitEntry = isBuy ? refPrice - gap : refPrice + gap;
+      $('entryPrice').value = limitEntry.toFixed(mt5Digits);
+      entryForCalc = limitEntry;
+    }
+  } else {
+    autoDirection = isBuy ? 'BUY' : 'SELL';
+    activePreset = 'MARKET';
+    if (refPrice > 0) {
+      $('entryPrice').value = refPrice.toFixed(mt5Digits);
+      entryForCalc = refPrice;
+    }
+  }
+
+  if (suggestedSl > 0) {
+    $('slPrice').value = suggestedSl.toFixed(mt5Digits);
+    $('showSL').checked = true;
+  }
+
+  let suggestedTp = 0;
+  if (entryForCalc > 0 && suggestedSl > 0 && entryForCalc !== suggestedSl) {
+    const slDist = Math.abs(entryForCalc - suggestedSl);
+    suggestedTp = isBuy ? entryForCalc + slDist * rr : entryForCalc - slDist * rr;
+    suggestedTp = Math.max(0, Number(suggestedTp.toFixed(mt5Digits)));
+    if (suggestedTp > 0) {
+      $('tpPrice').value = suggestedTp.toFixed(mt5Digits);
+      $('showTP').checked = true;
+    }
+  }
+
+  syncPresetButtons();
+  const lotInfo = calcLot();
+  setLevelLines();
+  requestAnimationFrame(syncChartPriceOverlays);
+
+  if (typeof setTradePanelVisible === 'function') {
+    setTradePanelVisible(true);
+  }
+
+  const lotSummary = lotInfo && lotInfo.lot > 0
+    ? ' · Lot ' + lotInfo.lot.toFixed(volumeDigits(mt5VolumeStep))
+    : '';
+  const tpSummary = suggestedTp > 0 ? ' · TP ' + suggestedTp.toFixed(mt5Digits) : '';
+
+  $('requestState').textContent =
+    'Đã đặt line ' + (target.direction || '') + ' ' + (target.symbol || '')
+    + (suggestedSl > 0 ? ' · SL ' + suggestedSl.toFixed(mt5Digits) : '')
+    + tpSummary
+    + lotSummary + ' — bấm ' + (isBuy ? 'BUY' : 'SELL') + ' để vào lệnh.';
+
+  if ($('rtSignalDialog').open) {
+    $('rtSignalDialog').close();
+  }
+
+  if (viewChanged) {
+    firstLoad = true;
+    lastBarsSignature = '';
+    void load(true);
+    void syncSymbolCommission($('symbol').value);
+  }
+}
+
 function openRealtimeDetails(s) {
   const target = s || latestRealtimeSignal;
   if (!target) return;
-  const isBuy = target.direction === 'BUY';
-  $('rtDialogBody').innerHTML = '<div class="rt-dialog-direction ' + (isBuy ? 'buy' : 'sell') + '">' + (isBuy ? '▲ BUY' : '▼ SELL') + ' · ' + esc(target.divergence) + '</div>'
+  const isBuy = String(target.direction || '').toUpperCase() === 'BUY';
+  const p1 = Number(target.price1) || 0;
+  const p2 = Number(target.price2) || 0;
+  const refPrice = Number(latestMarketPrice) > 0 ? Number(latestMarketPrice) : p2;
+
+  const tick = mt5TickSize > 0 ? mt5TickSize : Math.pow(10, -mt5Digits);
+  const spreadBufPts = Number(eaState.settings.spread_buffer_points) || 0;
+  const bufferPrice = spreadBufPts > 0 ? spreadBufPts * tick : defaultGap(refPrice || p2 || 1) * 0.25;
+
+  let suggestedSl = 0;
+  if (p1 > 0 && p2 > 0) {
+    suggestedSl = isBuy ? Math.min(p1, p2) - bufferPrice : Math.max(p1, p2) + bufferPrice;
+  } else if (refPrice > 0) {
+    suggestedSl = isBuy ? refPrice - defaultGap(refPrice) : refPrice + defaultGap(refPrice);
+  }
+  suggestedSl = Math.max(0, Number(suggestedSl.toFixed(mt5Digits)));
+
+  const rr = Number(eaState.settings.reward_risk_ratio) > 0
+    ? Number(eaState.settings.reward_risk_ratio)
+    : 2.0;
+  const slDistance = (refPrice > 0 && suggestedSl > 0) ? Math.abs(refPrice - suggestedSl) : 0;
+  const suggestedTp = slDistance > 0
+    ? Math.max(0, Number((isBuy ? refPrice + slDistance * rr : refPrice - slDistance * rr).toFixed(mt5Digits)))
+    : 0;
+
+  const effectiveRisk = Number(eaState.settings.risk_money) > 0
+    ? Number(eaState.settings.risk_money)
+    : (Number($('riskMoney')?.value) > 0 ? Number($('riskMoney').value) : 25);
+
+  const lotCalc = slDistance > 0 ? calculateEaLot(target.symbol, slDistance, effectiveRisk) : null;
+
+  latestModalSignalContext = { signal: target, suggestedSl, suggestedTp, lotCalc };
+
+  const lotText = lotCalc && lotCalc.ok
+    ? lotCalc.lot.toFixed(lotCalc.lotDigits) + ' lot (~$' + lotCalc.actualRisk.toFixed(2) + ')'
+    : (lotCalc && lotCalc.reason ? lotCalc.reason : 'Chưa đủ thông số MT5');
+
+  $('rtDialogBody').innerHTML =
+    '<div class="rt-dialog-direction ' + (isBuy ? 'buy' : 'sell') + '">' + (isBuy ? '▲ BUY' : '▼ SELL') + ' · ' + esc(target.divergence) + '</div>'
     + '<div class="rt-dialog-note">' + esc(target.symbol) + ' / ' + esc(target.timeframe) + ' · RT realtime</div>'
     + '<div class="rt-dialog-grid">'
     + '<div class="rt-dialog-cell"><span>Giá điểm 1</span><b>' + fmt(target.price1) + '</b></div>'
     + '<div class="rt-dialog-cell"><span>Giá điểm 2</span><b>' + fmt(target.price2) + '</b></div>'
     + '<div class="rt-dialog-cell"><span>RSI điểm 1</span><b>' + fmt(target.rsi1) + '</b></div>'
     + '<div class="rt-dialog-cell"><span>RSI điểm 2</span><b>' + fmt(target.rsi2) + '</b></div>'
-    + '<div class="rt-dialog-cell"><span>Thời điểm pivot 2</span><b>' + esc(signalTimeText(target)) + '</b></div>'
-    + '<div class="rt-dialog-cell"><span>Loại tín hiệu</span><b>RT · Realtime</b></div></div>'
-    + '<div class="rt-dialog-note">Đây là tín hiệu phân kỳ từ AI OOP V8, không phải xác nhận lệnh đã được mở.</div>';
+    + '<div class="rt-dialog-cell"><span>SL gợi ý</span><b>' + (suggestedSl > 0 ? fmt(suggestedSl) : '—') + '</b></div>'
+    + '<div class="rt-dialog-cell"><span>TP gợi ý (1:' + rr + ')</span><b>' + (suggestedTp > 0 ? fmt(suggestedTp) : '—') + '</b></div>'
+    + '<div class="rt-dialog-cell"><span>Khối lượng (Risk $' + effectiveRisk.toFixed(2) + ')</span><b>' + esc(lotText) + '</b></div>'
+    + '<div class="rt-dialog-cell"><span>Thời điểm pivot 2</span><b>' + esc(signalTimeText(target)) + '</b></div></div>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:4px">'
+    + '<button type="button" id="rtApplyToFormBtn" class="rt-detail-btn" style="padding:7px 12px;font-weight:700">Xác nhận đưa line SL, TP &amp; Lot</button>'
+    + '</div>'
+    + '<div class="rt-dialog-note">Chỉ đưa đường line SL, TP và khối lượng ra biểu đồ; bạn tự bấm BUY hoặc SELL để gửi lệnh.</div>';
+
+  $('rtApplyToFormBtn')?.addEventListener('click', () => applyRealtimeSignalToForm(target));
+
   if (!$('rtSignalDialog').open) $('rtSignalDialog').showModal();
 }
+
 $('rtReopenBtn').addEventListener('click', () => {
   if (latestRealtimeSignal) {
     showRealtimeToast(latestRealtimeSignal, latestRealtimeCount, { forceOpen: true });
@@ -3893,11 +4046,15 @@ async function checkServerStatus() {
   }
 }
 
+function triggerInitialAuthCheck() {
+  if (window.accountAuthGranted && chartApiKey) {
+    void validateApiAccess();
+  }
+}
+
 ensureApiAuthWarnings();
 refreshApiKeyBox();
-window.addEventListener('forex-auth-ready', () => {
-  if (window.accountAuthGranted && chartApiKey) void validateApiAccess();
-});
+window.addEventListener('forex-auth-ready', triggerInitialAuthCheck);
 window.addEventListener('forex-auth-locked', stopAuthorizedPolling);
 stopAuthorizedPolling();
 syncRealLayerToggles();
@@ -3932,6 +4089,7 @@ $('apiKeyToggle').addEventListener('click', () => {
 
 updateGMT7Clock();
 setInterval(updateGMT7Clock, 1000);
+setTimeout(triggerInitialAuthCheck, 300);
 </script>
 <script src="./auth.js"></script>
 </body>
