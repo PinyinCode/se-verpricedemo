@@ -4,7 +4,7 @@
 //| Chart & account feed only (no trade execution).                  |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.21"
+#property version "1.22"
 
 #include <Trade\Trade.mqh>
 
@@ -705,12 +705,6 @@ bool PublishCandleBatch(string symbol, string tfText, ENUM_TIMEFRAMES period)
       Print("[CHART FEED] Upload failed for ",symbol," ",tfText,". HTTP=",status," response=",response);
       return false;
    }
-   if(JsonValue(response,"mongo_synced")!="true")
-   {
-      Print("[CHART FEED] API received bars but MongoDB mirror is not ready for ",
-            symbol," ",tfText,". response=",response);
-      return false;
-   }
    return true;
 }
 
@@ -862,7 +856,7 @@ int OnInit()
       return INIT_PARAMETERS_INCORRECT;
    }
    EventSetTimer(1);
-   Print("ServerConnector v1.21 initialized. Account + Chart feed (with Ask) + AI OOP V8 sync only. ",
+   Print("ServerConnector v1.22 initialized. Account + Chart feed (with Ask) + AI OOP V8 sync only. ",
          "Add ",ServerBaseURL," to MT5 WebRequest allowlist.");
    return INIT_SUCCEEDED;
 }
