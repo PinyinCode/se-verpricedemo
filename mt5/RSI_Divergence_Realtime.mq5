@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026"
 #property link      "https://www.mql5.com"
-#property version   "1.14"
+#property version   "1.13"
 #property indicator_chart_window
 #property indicator_buffers 1
 #property indicator_plots   1
@@ -168,10 +168,6 @@ bool IsMonotonicStructure(string sym, ENUM_TIMEFRAMES tf, int shiftNew, int shif
 double CalcVolumeRatio(string sym, ENUM_TIMEFRAMES tf, int shift, int bars, int maLen);
 bool IsReversalCandle(string sym, ENUM_TIMEFRAMES tf, int shift);
 bool ShouldRetrack(int idx, double currentPrice, double lastTrackedPrice, string sym, ENUM_TIMEFRAMES tf, datetime currentBarTime, datetime lastTrackedBarTime);
-
-bool IsBullRTInvalidatedByBreakLow(string sym, ENUM_TIMEFRAMES tf, datetime t2, double p1, double p2);
-bool IsBearRTInvalidatedByBreakHigh(string sym, ENUM_TIMEFRAMES tf, datetime t2, double h1, double h2);
-void DeactivateRTDivergenceFlag(string sym, string tfStr, string type);
 
 void AddTodaySignal(string sym, string tfStr, string type, string divType, string signalType, datetime time1, datetime time2, double price1, double price2, double rsi1, double rsi2);
 void ClearOldTodaySignals();
@@ -650,81 +646,6 @@ bool IsValidSLForDirection(string type, double entryPrice, double slPrice)
    return false;
 }
 
-//--- Kiểm tra tín hiệu BUY RT có bị phá đáy hay không ---
-bool IsBullRTInvalidatedByBreakLow(string sym, ENUM_TIMEFRAMES tf, datetime t2, double p1, double p2)
-{
-   if(p1 <= 0 && p2 <= 0) return false;
-   double breakLow = (p1 > 0 && p2 > 0) ? MathMin(p1, p2) : ((p2 > 0) ? p2 : p1);
-   if(breakLow <= 0) return false;
-
-   double bid = SymbolInfoDouble(sym, SYMBOL_BID);
-   double ask = SymbolInfoDouble(sym, SYMBOL_ASK);
-   if(bid > 0 && bid < breakLow) return true;
-   if(ask > 0 && ask < breakLow) return true;
-
-   double curClose = iClose(sym, tf, 0);
-   double curOpen  = iOpen(sym, tf, 0);
-   if(curClose > 0 && curClose < breakLow) return true;
-   if(curOpen  > 0 && curOpen  < breakLow) return true;
-
-   if(t2 > 0)
-   {
-      int divShift = iBarShift(sym, tf, t2, false);
-      if(divShift > 0)
-      {
-         int limit = MathMin(divShift - 1, Bars(sym, tf) - 1);
-         for(int i = limit; i >= 0; i--)
-         {
-            double barLow = iLow(sym, tf, i);
-            if(barLow > 0 && barLow < breakLow)
-               return true;
-         }
-      }
-   }
-   return false;
-}
-
-//--- Kiểm tra tín hiệu SELL RT có bị phá đỉnh hay không ---
-bool IsBearRTInvalidatedByBreakHigh(string sym, ENUM_TIMEFRAMES tf, datetime t2, double h1, double h2)
-{
-   if(h1 <= 0 && h2 <= 0) return false;
-   double breakHigh = (h1 > 0 && h2 > 0) ? MathMax(h1, h2) : ((h2 > 0) ? h2 : h1);
-   if(breakHigh <= 0) return false;
-
-   double bid = SymbolInfoDouble(sym, SYMBOL_BID);
-   double ask = SymbolInfoDouble(sym, SYMBOL_ASK);
-   if(bid > 0 && bid > breakHigh) return true;
-   if(ask > 0 && ask > breakHigh) return true;
-
-   double curClose = iClose(sym, tf, 0);
-   double curOpen  = iOpen(sym, tf, 0);
-   if(curClose > 0 && curClose > breakHigh) return true;
-   if(curOpen  > 0 && curOpen  > breakHigh) return true;
-
-   if(t2 > 0)
-   {
-      int divShift = iBarShift(sym, tf, t2, false);
-      if(divShift > 0)
-      {
-         int limit = MathMin(divShift - 1, Bars(sym, tf) - 1);
-         for(int i = limit; i >= 0; i--)
-         {
-            double barHigh = iHigh(sym, tf, i);
-            if(barHigh > 0 && barHigh > breakHigh)
-               return true;
-         }
-      }
-   }
-   return false;
-}
-
-void DeactivateRTDivergenceFlag(string sym, string tfStr, string type)
-{
-   string prefix = "DIVDATA_" + sym + "_" + tfStr + "_";
-   GlobalVariableSet(prefix + type + "_ACTIVE", 0);
-   GlobalVariableSet(prefix + type + "_TIME", 0.0);
-}
-
 //+------------------------------------------------------------------+
 //| RSI & VOLUME FUNCTIONS                                           |
 //+------------------------------------------------------------------+
@@ -1023,23 +944,23 @@ void ClearInactiveRTDivergence(string sym, string tfStr, ENUM_TIMEFRAMES tf)
       bool shouldClear = false;
       if(GlobalVariableCheck(prefix + "BEAR_TIME"))
       {
-         double bTime = GlobalVariableGet(prefix + "BEAR_TIME");
-         if(bTime <= 0 || (nowGmt7 - (datetime)bTime) > 10)
+         if(nowGmt7 - (datetime)GlobalVariableGet(prefix + "BEAR_TIME") > 10)
             shouldClear = true;
       }
       else shouldClear = true;
-
-      if(!shouldClear)
+      if(!shouldClear && GlobalVariableCheck(prefix + "BEAR_T2"))
       {
-         datetime t2 = GlobalVariableCheck(prefix + "BEAR_T2") ? (datetime)GlobalVariableGet(prefix + "BEAR_T2") : 0;
-         double h1 = GlobalVariableCheck(prefix + "BEAR_PRICE1") ? GlobalVariableGet(prefix + "BEAR_PRICE1") : 0;
-         double h2 = GlobalVariableCheck(prefix + "BEAR_PRICE2") ? GlobalVariableGet(prefix + "BEAR_PRICE2") : 0;
-         if(IsBearRTInvalidatedByBreakHigh(sym, tf, t2, h1, h2))
-            shouldClear = true;
+         datetime t2 = (datetime)GlobalVariableGet(prefix + "BEAR_T2");
+         double price2 = GlobalVariableGet(prefix + "BEAR_PRICE2");
+         int curShift = iBarShift(sym, tf, TimeCurrent());
+         int divShift = iBarShift(sym, tf, t2);
+         if(divShift >= 0 && curShift >= 0)
+            for(int i = divShift - 1; i >= curShift; i--)
+               if(iHigh(sym, tf, i) > price2)
+               { shouldClear = true; break; }
       }
-
       if(shouldClear)
-         DeactivateRTDivergenceFlag(sym, tfStr, "BEAR");
+         GlobalVariableSet(prefix + "BEAR_ACTIVE", 0);
    }
 
    if(GlobalVariableCheck(prefix + "BULL_ACTIVE") && GlobalVariableGet(prefix + "BULL_ACTIVE") == 1)
@@ -1047,23 +968,23 @@ void ClearInactiveRTDivergence(string sym, string tfStr, ENUM_TIMEFRAMES tf)
       bool shouldClear = false;
       if(GlobalVariableCheck(prefix + "BULL_TIME"))
       {
-         double bTime = GlobalVariableGet(prefix + "BULL_TIME");
-         if(bTime <= 0 || (nowGmt7 - (datetime)bTime) > 10)
+         if(nowGmt7 - (datetime)GlobalVariableGet(prefix + "BULL_TIME") > 10)
             shouldClear = true;
       }
       else shouldClear = true;
-
-      if(!shouldClear)
+      if(!shouldClear && GlobalVariableCheck(prefix + "BULL_T2"))
       {
-         datetime t2 = GlobalVariableCheck(prefix + "BULL_T2") ? (datetime)GlobalVariableGet(prefix + "BULL_T2") : 0;
-         double p1 = GlobalVariableCheck(prefix + "BULL_PRICE1") ? GlobalVariableGet(prefix + "BULL_PRICE1") : 0;
-         double p2 = GlobalVariableCheck(prefix + "BULL_PRICE2") ? GlobalVariableGet(prefix + "BULL_PRICE2") : 0;
-         if(IsBullRTInvalidatedByBreakLow(sym, tf, t2, p1, p2))
-            shouldClear = true;
+         datetime t2 = (datetime)GlobalVariableGet(prefix + "BULL_T2");
+         double price2 = GlobalVariableGet(prefix + "BULL_PRICE2");
+         int curShift = iBarShift(sym, tf, TimeCurrent());
+         int divShift = iBarShift(sym, tf, t2);
+         if(divShift >= 0 && curShift >= 0)
+            for(int i = divShift - 1; i >= curShift; i--)
+               if(iLow(sym, tf, i) < price2)
+               { shouldClear = true; break; }
       }
-
       if(shouldClear)
-         DeactivateRTDivergenceFlag(sym, tfStr, "BULL");
+         GlobalVariableSet(prefix + "BULL_ACTIVE", 0);
    }
 }
 
@@ -1165,8 +1086,7 @@ void CleanupInvalidRTTodaySignals()
       {
          string prefix = "DIVDATA_" + g_todaySignals[i].sym + "_" + g_todaySignals[i].tfStr + "_";
          string type = g_todaySignals[i].type;
-         bool active = GlobalVariableCheck(prefix + type + "_ACTIVE") && (GlobalVariableGet(prefix + type + "_ACTIVE") != 0);
-         if(!active)
+         if(!GlobalVariableCheck(prefix + type + "_ACTIVE") || GlobalVariableGet(prefix + type + "_ACTIVE") == 0)
          {
             if(i < g_todaySignalCount - 1)
                g_todaySignals[i] = g_todaySignals[g_todaySignalCount - 1];
@@ -1464,7 +1384,7 @@ int OnInit()
    if(tfList == "") tfList = "NONE!";
 
    Print("═══════════════════════════════════════════");
-   Print("RSI Divergence Realtime v1.14 (TimeGMT7 + TF Sync + Break Invalidation)");
+   Print("RSI Divergence Realtime v1.13 (TimeGMT7 + TF Sync)");
    Print("   Timeframes: ", tfList);
    Print("   GMT+7 Now: ", TimeToString(nowGmt7, TIME_DATE|TIME_SECONDS));
    Print("   Direct EA GV: ", PublishToDirectEA_GV ? "ON" : "OFF");
@@ -1934,11 +1854,6 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
    datetime currentBarTimeForTrack = iTime(sym, tf, 0);
    double spreadVal = GetCurrentSpreadPrice(sym);
 
-   bool bearRegValid = false;
-   bool bearHidValid = false;
-   bool bullRegValid = false;
-   bool bullHidValid = false;
-
    // REALTIME BEARISH
    if(lastHighPrice > 0 && lastHighShift >= 0)
    {
@@ -1969,9 +1884,8 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
             if(CheckMiddleValid(sym, tf, rtMaxHighShift, lastHighShift, lastHighTime, true))
             {
                double peakVolRatio = GetVolumeRatioAtShift(sym, rtMaxHighShift, tf);
-               if(peakVolRatio >= VolumeAutoRatio && !IsBearRTInvalidatedByBreakHigh(sym, tf, timeAtMaxHigh, lastHighPrice, rtMaxHigh))
+               if(peakVolRatio >= VolumeAutoRatio)
                {
-                  bearRegValid = true;
                   datetime gmt7Time = ServerTimeToGMT7(timeAtMaxHigh);
                   string timeStr = TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES);
 
@@ -2037,6 +1951,10 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
             }
          }
       }
+      else
+      {
+         arrSymTF[idx].pendingBearRegStrong = false;
+      }
 
       if(rtMaxRSI > lastHighRSI && priceAtMaxRSI < lastHighPrice && rtMaxRSIShift != lastHighShift)
       {
@@ -2045,9 +1963,8 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
             if(CheckMiddleValid(sym, tf, rtMaxRSIShift, lastHighShift, lastHighTime, true))
             {
                double peakVolRatio = GetVolumeRatioAtShift(sym, rtMaxRSIShift, tf);
-               if(peakVolRatio >= VolumeAutoRatio && !IsBearRTInvalidatedByBreakHigh(sym, tf, timeAtMaxRSI, lastHighPrice, priceAtMaxRSI))
+               if(peakVolRatio >= VolumeAutoRatio)
                {
-                  bearHidValid = true;
                   datetime gmt7Time = ServerTimeToGMT7(timeAtMaxRSI);
                   string timeStr = TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES);
 
@@ -2117,12 +2034,16 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
             }
          }
       }
+      else
+      {
+         arrSymTF[idx].pendingBearHidStrong = false;
+      }
    }
-
-   if(!bearRegValid) arrSymTF[idx].pendingBearRegStrong = false;
-   if(!bearHidValid) arrSymTF[idx].pendingBearHidStrong = false;
-   if(!bearRegValid && !bearHidValid)
-      DeactivateRTDivergenceFlag(sym, tfStr, "BEAR");
+   else
+   {
+      arrSymTF[idx].pendingBearRegStrong = false;
+      arrSymTF[idx].pendingBearHidStrong = false;
+   }
 
    // REALTIME BULLISH
    if(lastLowPrice > 0 && lastLowShift >= 0)
@@ -2154,9 +2075,8 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
             if(CheckMiddleValid(sym, tf, rtMinLowShift, lastLowShift, lastLowTime, false))
             {
                double troughVolRatio = GetVolumeRatioAtShift(sym, rtMinLowShift, tf);
-               if(troughVolRatio >= VolumeAutoRatio && !IsBullRTInvalidatedByBreakLow(sym, tf, timeAtMinLow, lastLowPrice, rtMinLow))
+               if(troughVolRatio >= VolumeAutoRatio)
                {
-                  bullRegValid = true;
                   datetime gmt7Time = ServerTimeToGMT7(timeAtMinLow);
                   string timeStr = TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES);
 
@@ -2220,6 +2140,10 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
             }
          }
       }
+      else
+      {
+         arrSymTF[idx].pendingBullRegStrong = false;
+      }
 
       if(rtMinRSI < lastLowRSI && priceAtMinRSI > lastLowPrice && rtMinRSIShift != lastLowShift)
       {
@@ -2228,9 +2152,8 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
             if(CheckMiddleValid(sym, tf, rtMinRSIShift, lastLowShift, lastLowTime, false))
             {
                double troughVolRatio = GetVolumeRatioAtShift(sym, rtMinRSIShift, tf);
-               if(troughVolRatio >= VolumeAutoRatio && !IsBullRTInvalidatedByBreakLow(sym, tf, timeAtMinRSI, lastLowPrice, priceAtMinRSI))
+               if(troughVolRatio >= VolumeAutoRatio)
                {
-                  bullHidValid = true;
                   datetime gmt7Time = ServerTimeToGMT7(timeAtMinRSI);
                   string timeStr = TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES);
 
@@ -2299,12 +2222,16 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
             }
          }
       }
+      else
+      {
+         arrSymTF[idx].pendingBullHidStrong = false;
+      }
    }
-
-   if(!bullRegValid) arrSymTF[idx].pendingBullRegStrong = false;
-   if(!bullHidValid) arrSymTF[idx].pendingBullHidStrong = false;
-   if(!bullRegValid && !bullHidValid)
-      DeactivateRTDivergenceFlag(sym, tfStr, "BULL");
+   else
+   {
+      arrSymTF[idx].pendingBullRegStrong = false;
+      arrSymTF[idx].pendingBullHidStrong = false;
+   }
 }
 
 //+------------------------------------------------------------------+
