@@ -1,10 +1,10 @@
 //+------------------------------------------------------------------+
 //| ServerConnector_Demo.mq5                                         |
-//| Polls Python server, syncs candles/signals/history.              |
-//| Chart feed only (no trade execution). Complements TRADE_V9.      |
+//| Polls Python server, syncs account/candles/signals/history.      |
+//| Chart & account feed only (no trade execution).                  |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.15"
+#property version "1.20"
 
 #include <Trade\Trade.mqh>
 
@@ -13,6 +13,10 @@ input string ApiKey = "SET_A_LONG_RANDOM_API_KEY";
 input string ConsumerId = "mt5-demo-vps";
 input int PollSeconds = 3;
 input int HeartbeatSeconds = 15;
+
+// Account info sync (balance, equity, margin, account metadata)
+input bool EnableAccountSync = true;
+input int AccountSyncSeconds = 5;
 
 // Legacy divergence import (AI OOP V8 writes to COMMON files)
 input bool EnableLegacyDivergenceImport = false;
@@ -27,7 +31,7 @@ input int ChartFeedSeconds = 10;
 input int ChartBarsToSend = 500;
 input string FallbackSymbols = "EURUSD,GBPUSD,USDJPY,XAUUSD,BTCUSD,USDCAD,NZDUSD,USDCHF";
 input string FallbackTimeframes = "M15,H1";
- 
+
 // Commission snapshot sync (reads MT5 deal history directly; no separate indicator required)
 input bool EnableCommissionSync = true;
 input int CommissionSyncSeconds = 60;
@@ -40,6 +44,7 @@ input int HistoryLookbackDays = 7;
 
 datetime g_lastHeartbeat = 0;
 datetime g_lastPoll = 0;
+datetime g_lastAccountPost = 0;
 string g_lastLegacySignature = "";
 datetime g_lastScanPost = 0;
 datetime g_lastCandlePost = 0;
@@ -49,6 +54,7 @@ string g_queueCursorName = "DIVSERVER_QUEUE_CURSOR";
 string g_lastHistoryDigest = "";
 string g_lastChartFeedState = "";
 string g_lastCommissionState = "";
+string g_lastAccountState = "";
 
 string JsonEscape(string s)
 {
@@ -152,6 +158,74 @@ bool HttpRequest(string method,string path,string body,string &response,int &sta
    }
    response=CharArrayToString(result,0,-1,CP_UTF8);
    return (status>=200 && status<300);
+}
+
+string GetAccountModeText()
+{
+   ENUM_ACCOUNT_TRADE_MODE mode = (ENUM_ACCOUNT_TRADE_MODE)AccountInfoInteger(ACCOUNT_TRADE_MODE);
+   if(mode == ACCOUNT_TRADE_MODE_REAL) return "REAL";
+   if(mode == ACCOUNT_TRADE_MODE_CONTEST) return "CONTEST";
+   return "DEMO";
+}
+
+void PublishAccountInfo()
+{
+   if(!EnableAccountSync) return;
+
+   long   login         = (long)AccountInfoInteger(ACCOUNT_LOGIN);
+   long   leverage      = (long)AccountInfoInteger(ACCOUNT_LEVERAGE);
+   bool   tradeAllowed  = (bool)AccountInfoInteger(ACCOUNT_TRADE_ALLOWED);
+   bool   expertAllowed = (bool)AccountInfoInteger(ACCOUNT_TRADE_EXPERT);
+   string name          = AccountInfoString(ACCOUNT_NAME);
+   string server        = AccountInfoString(ACCOUNT_SERVER);
+   string company       = AccountInfoString(ACCOUNT_COMPANY);
+   string currency      = AccountInfoString(ACCOUNT_CURRENCY);
+   string modeText      = GetAccountModeText();
+
+   double balance       = AccountInfoDouble(ACCOUNT_BALANCE);
+   double equity        = AccountInfoDouble(ACCOUNT_EQUITY);
+   double margin        = AccountInfoDouble(ACCOUNT_MARGIN);
+   double freeMargin    = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+   double marginLevel   = AccountInfoDouble(ACCOUNT_MARGIN_LEVEL);
+   double profit        = AccountInfoDouble(ACCOUNT_PROFIT);
+   int    posCount      = PositionsTotal();
+   int    ordersCount   = OrdersTotal();
+
+   string stateSig = StringFormat("%I64d|%.2f|%.2f|%.2f|%.2f|%.2f|%d|%d|%s",
+                                  login, balance, equity, margin, freeMargin, profit,
+                                  posCount, ordersCount, modeText);
+   if(stateSig == g_lastAccountState) return;
+
+   string body = StringFormat(
+      "{\"account_id\":\"%I64d\",\"login\":%I64d,\"name\":\"%s\",\"server\":\"%s\","
+      "\"broker\":\"%s\",\"currency\":\"%s\",\"leverage\":%I64d,\"account_mode\":\"%s\","
+      "\"trade_allowed\":%s,\"expert_allowed\":%s,"
+      "\"balance\":%.2f,\"equity\":%.2f,\"margin\":%.2f,\"free_margin\":%.2f,"
+      "\"margin_level\":%.2f,\"profit\":%.2f,\"positions_count\":%d,\"orders_count\":%d,"
+      "\"timestamp\":%d}",
+      login, login, JsonEscape(name), JsonEscape(server),
+      JsonEscape(company), JsonEscape(currency), leverage, JsonEscape(modeText),
+      tradeAllowed ? "true" : "false", expertAllowed ? "true" : "false",
+      balance, equity, margin, freeMargin,
+      marginLevel, profit, posCount, ordersCount,
+      (int)TimeCurrent()
+   );
+
+   string response;
+   int status = 0;
+   if(HttpRequest("POST", "/api/mt5/account-info", body, response, status))
+   {
+      g_lastAccountState = stateSig;
+   }
+   else
+   {
+      string errSig = "ERR|" + IntegerToString(status) + "|" + response;
+      if(errSig != g_lastAccountState)
+      {
+         g_lastAccountState = errSig;
+         Print("[ACCOUNT] Sync failed. HTTP=", status, " response=", response);
+      }
+   }
 }
 
 // Read commission directly from MT5 deal history; no separate commission indicator/GV required.
@@ -279,7 +353,17 @@ void PublishCommissionSnapshot()
 void SendHeartbeat()
 {
    string response; int status;
-   string body="{\"component\":\"MT5-Connector\",\"status\":\"online\",\"details\":\"Connector active; candle/history feed only\"}";
+   long   login      = (long)AccountInfoInteger(ACCOUNT_LOGIN);
+   string currency   = AccountInfoString(ACCOUNT_CURRENCY);
+   double balance    = AccountInfoDouble(ACCOUNT_BALANCE);
+   double equity     = AccountInfoDouble(ACCOUNT_EQUITY);
+   double freeMargin = AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+
+   string details = StringFormat(
+      "acc=%I64d (%s); bal=%.2f %s; eq=%.2f %s; free=%.2f %s",
+      login, GetAccountModeText(), balance, currency, equity, currency, freeMargin, currency
+   );
+   string body = "{\"component\":\"MT5-Connector\",\"status\":\"online\",\"details\":\"" + JsonEscape(details) + "\"}";
    if(HttpRequest("POST","/api/heartbeat",body,response,status))
       g_lastHeartbeat=TimeCurrent();
    else
@@ -552,7 +636,6 @@ bool PublishCandleBatch(string symbol, string tfText, ENUM_TIMEFRAMES period)
 
    if(!SeriesInfoInteger(symbol, period, SERIES_SYNCHRONIZED))
    {
-      // Trigger history load; next call will succeed
       MqlRates warmup[];
       CopyRates(symbol, period, 0, 10, warmup);
       return false;
@@ -614,7 +697,6 @@ bool PublishCandleBatch(string symbol, string tfText, ENUM_TIMEFRAMES period)
    return true;
 }
 
-// Chỉ log khi danh sách symbol/TF thay đổi hoặc trạng thái kết nối/gửi (ok/fail) thay đổi; bỏ qua nến/giá mới.
 void PublishChartCandles()
 {
    string symbols[];
@@ -763,7 +845,7 @@ int OnInit()
       return INIT_PARAMETERS_INCORRECT;
    }
    EventSetTimer(1);
-   Print("ServerConnector v1.15 initialized. Chart feed + AI OOP V8 sync only. ",
+   Print("ServerConnector v1.20 initialized. Account + Chart feed + AI OOP V8 sync only. ",
          "Add ",ServerBaseURL," to MT5 WebRequest allowlist.");
    return INIT_SUCCEEDED;
 }
@@ -775,6 +857,12 @@ void OnTick() {}
 void OnTimer()
 {
    if(TimeCurrent()-g_lastHeartbeat>=HeartbeatSeconds) SendHeartbeat();
+
+   if(EnableAccountSync && TimeCurrent()-g_lastAccountPost>=MathMax(1,AccountSyncSeconds))
+   {
+      g_lastAccountPost=TimeCurrent();
+      PublishAccountInfo();
+   }
 
    if(EnableCommissionSync && TimeCurrent()-g_lastCommissionPost>=MathMax(60,CommissionSyncSeconds))
    {
