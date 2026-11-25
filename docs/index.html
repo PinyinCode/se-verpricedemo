@@ -3868,7 +3868,7 @@ function renderStats(data) {
   ].join('|'));
   const rawHistory = Array.isArray(data.real_history) ? data.real_history : [];
   const history = uniqueBy(rawHistory, p => {
-    const stableId = p.id ?? p.ticket ?? p.deal_ticket ?? p.position_id;
+    const stableId = p.ticket ?? p.deal_ticket ?? p.id ?? p.position_id;
     if (stableId !== undefined && stableId !== null && String(stableId).trim()) {
       return 'trade:' + String(stableId).trim();
     }
