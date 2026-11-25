@@ -47,24 +47,42 @@ jobs:
         with:
           script: |
             const runId = context.runId;
-            for (let attempt = 1; attempt <= 12; attempt++) {
+            const listArtifacts = async () => {
               const response = await github.rest.actions.listWorkflowRunArtifacts({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 run_id: runId,
                 per_page: 100
               });
-              const artifact = response.data.artifacts.find(item =>
+              return response.data.artifacts.find(item =>
                 item.name === "github-pages" && !item.expired
               );
-              if (artifact) {
-                core.info(`Pages artifact visible: ${artifact.id}`);
-                return;
-              }
+            };
+
+            let artifact = null;
+            for (let attempt = 1; attempt <= 12; attempt++) {
+              artifact = await listArtifacts();
+              if (artifact) break;
               core.info(`Pages artifact not visible yet (attempt ${attempt}/12); waiting 3 seconds`);
               await new Promise(resolve => setTimeout(resolve, 3000));
             }
-            throw new Error("Artifact github-pages was not visible after 36 seconds.");
+            if (!artifact) {
+              throw new Error("Artifact github-pages was not visible after 36 seconds.");
+            }
+
+            core.info(`Pages artifact visible: ${artifact.id}; waiting 20 seconds for Pages metadata propagation.`);
+            await new Promise(resolve => setTimeout(resolve, 20000));
+
+            for (let attempt = 1; attempt <= 4; attempt++) {
+              artifact = await listArtifacts();
+              if (artifact) {
+                core.info(`Pages artifact confirmed after propagation: ${artifact.id}`);
+                return;
+              }
+              core.info(`Artifact metadata not stable yet (check ${attempt}/4); waiting 5 seconds`);
+              await new Promise(resolve => setTimeout(resolve, 5000));
+            }
+            throw new Error("Pages artifact disappeared or remained unavailable after the propagation wait.");
 
       - name: Deploy to GitHub Pages
         id: deployment
