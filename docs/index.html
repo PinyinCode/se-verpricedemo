@@ -3382,7 +3382,7 @@ async function load(forceNetwork = false) {
     }
 
     if (!data) {
-      const res = await apiFetch(API_BASE + '/api/chart/data?symbol=' + encodeURIComponent(symbol) + '&timeframe=' + encodeURIComponent(tf) + '&limit=1000', { cache: 'no-store' });
+      const res = await apiFetch(API_BASE + '/api/chart/data?symbol=' + encodeURIComponent(symbol) + '&timeframe=' + encodeURIComponent(tf) + '&limit=500', { cache: 'no-store' });
       if (!res.ok) throw new Error('HTTP ' + res.status);
       data = await res.json();
       if (!data || !Array.isArray(data.candles)) {
@@ -4581,48 +4581,45 @@ document.addEventListener('pointercancel', stopResize);
 function tickGMT7() {
   $('clockGMT7').textContent = new Date().toLocaleTimeString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour12: false }) + ' GMT+7';
 }
-tickGMT7();
-setInterval(tickGMT7, 1000);
-
 async function checkServerStatus() {
   if (!apiAccessGranted) return;
   const el = $('serverState');
-  if (!el) return;
   try {
     const r = await apiFetch(API_BASE + '/api/health', { cache: 'no-store' });
-    if (r.ok) {
-      el.className = 'server-state online';
-      el.querySelector('span').textContent = 'ONLINE';
-      el.title = 'Server online';
-    } else {
-      el.className = 'server-state offline';
-      el.querySelector('span').textContent = 'OFFLINE';
-      el.title = 'HTTP ' + r.status;
-    }
+    if (!r.ok) throw new Error();
+    const d = await r.json().catch(() => ({}));
+    const age = d.mt5_snapshot_updated_at ? Math.max(0, Math.round((Date.now() - Date.parse(d.mt5_snapshot_updated_at)) / 1000)) : null;
+    el.className = 'server-state online';
+    el.title = age === null ? 'Server online · Chưa nhận MT5' : 'Server online · MT5 ' + age + 's';
+    el.querySelector('span').textContent = age === null ? 'Online' : 'Online · MT5 ' + age + 's';
   } catch (_) {
     el.className = 'server-state offline';
-    el.querySelector('span').textContent = 'OFFLINE';
-    el.title = 'Không kết nối được';
+    el.title = 'Server offline';
+    el.querySelector('span').textContent = 'Offline';
   }
 }
+tickGMT7();
+setInterval(tickGMT7, 1000);
 
 $('apiKeyToggle').addEventListener('click', () => {
   const inp = $('apiKeyInput');
-  const next = inp.type === 'password' ? 'text' : 'password';
-  inp.type = next;
-  $('apiKeyToggle').textContent = next === 'password' ? '👁' : '🙈';
+  inp.type = inp.type === 'password' ? 'text' : 'password';
 });
 $('apiKeySave').addEventListener('click', () => {
   saveApiKey($('apiKeyInput').value);
-  $('apiKeyInput').type = 'password';
-  $('apiKeyToggle').textContent = '👁';
-  void validateApiAccess();
+  void validateApiAccess().then(() => {
+    if (!apiAccessGranted) return;
+    lastBarsSignature = '';
+    load(true);
+    refreshChartPositions();
+    if ($('statsDialog').open) refreshStats();
+    refreshCommissionInfo();
+  });
 });
-$('apiKeyInput').addEventListener('keydown', e => {
-  if (e.key === 'Enter') { e.preventDefault(); $('apiKeySave').click(); }
+$('commissionRefresh').addEventListener('click', () => {
+  void syncEaSettings();
+  refreshCommissionInfo();
 });
-$('commissionRefresh').addEventListener('click', refreshCommissionInfo);
-
 refreshApiKeyBox();
 syncRealLayerToggles();
 bindRealLayerToggles();
@@ -4630,18 +4627,23 @@ syncAskLineToggle();
 bindAskLineToggle();
 applyLockState();
 syncPresetButtons();
-calcLot();
-applyChartDimensions();
-</script>
-<script type="module" src="./auth.js"></script>
-<script>
-window.addEventListener('account-auth-changed', event => {
-  if (event && event.detail && event.detail.granted) {
-    void validateApiAccess();
-  } else {
+window.addEventListener('account-auth-changed', (ev) => {
+  if (!ev.detail || !ev.detail.authenticated) {
     stopAuthorizedPolling();
+    return;
   }
+  void validateApiAccess();
+});
+if (window.accountAuthGranted) {
+  void validateApiAccess();
+}
+requestAnimationFrame(() => {
+  applyChartDimensions();
+  setLevelLines();
+  renderRealLines();
+  renderAskLine();
 });
 </script>
+<script src="./auth.js"></script>
 </body>
 </html>
