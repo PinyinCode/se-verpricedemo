@@ -66,6 +66,12 @@ def db():
             raise
 
 
+def _ensure_candles_ask_column(conn: sqlite3.Connection) -> None:
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(candles)").fetchall()}
+    if "ask" not in cols:
+        conn.execute("ALTER TABLE candles ADD COLUMN ask REAL")
+
+
 def init_db() -> None:
     with db() as conn:
         conn.execute("""
@@ -297,9 +303,11 @@ def init_db() -> None:
             volume_min REAL NOT NULL DEFAULT 0,
             volume_max REAL NOT NULL DEFAULT 0,
             volume_step REAL NOT NULL DEFAULT 0,
+            ask REAL,
             PRIMARY KEY (symbol, timeframe, candle_time)
         )
         """)
+        _ensure_candles_ask_column(conn)
 
         conn.execute("""
         CREATE TABLE IF NOT EXISTS symbol_commissions (
@@ -464,7 +472,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Forex AI Server",
-    version="0.6.0",
+    version="0.6.1",
     description="Signal analysis and MT5 real-order bridge with runtime control panel.",
     lifespan=lifespan,
 )
@@ -769,12 +777,22 @@ class CandleBatchIn(BaseModel):
     volume_min: float = Field(default=0, ge=0)
     volume_max: float = Field(default=0, ge=0)
     volume_step: float = Field(default=0, ge=0)
+    ask: float | None = Field(default=None, ge=0)
+    ask_price: float | None = Field(default=None, ge=0)
     candles: list[CandleItem] = Field(min_length=1, max_length=1000)
 
     @field_validator("symbol")
     @classmethod
     def normalize_candle_symbol(cls, value: str) -> str:
         return value.strip().upper()
+
+    @property
+    def resolved_ask(self) -> float | None:
+        if self.ask is not None and self.ask > 0:
+            return float(self.ask)
+        if self.ask_price is not None and self.ask_price > 0:
+            return float(self.ask_price)
+        return None
 
 
 class TodaySignalsIn(BaseModel):
@@ -1027,6 +1045,27 @@ def _get_latest_market_price(
         (symbol,),
     ).fetchone()
     return float(row["close"]) if row is not None else None
+
+
+def _get_latest_symbol_ask(
+    conn: sqlite3.Connection,
+    symbol: str,
+    timeframe: str | None = None,
+) -> float | None:
+    if timeframe:
+        row = conn.execute(
+            "SELECT ask FROM candles WHERE symbol=? AND timeframe=? AND ask IS NOT NULL AND ask > 0 "
+            "ORDER BY candle_time DESC LIMIT 1",
+            (symbol, timeframe),
+        ).fetchone()
+        if row is not None:
+            return float(row["ask"])
+    row = conn.execute(
+        "SELECT ask FROM candles WHERE symbol=? AND ask IS NOT NULL AND ask > 0 "
+        "ORDER BY candle_time DESC LIMIT 1",
+        (symbol,),
+    ).fetchone()
+    return float(row["ask"]) if row is not None else None
 
 
 def _validate_limit_against_market(conn: sqlite3.Connection, payload: SignalIn) -> None:
@@ -1912,29 +1951,48 @@ def update_today_signals(payload: TodaySignalsIn):
 @app.post("/api/mt5/candles", dependencies=[Depends(require_key)])
 def update_candles(payload: CandleBatchIn):
     now = utc_now()
+    ask_val = payload.resolved_ask
     rows = []
     for candle in payload.candles:
         if candle.high < max(candle.open, candle.close, candle.low) or candle.low > min(candle.open, candle.close, candle.high):
             raise HTTPException(status_code=422, detail="OHLC không hợp lệ")
-        rows.append((payload.symbol, payload.timeframe, candle.time, candle.open,
-                     candle.high, candle.low, candle.close, candle.volume, payload.digits, payload.tick_size, payload.tick_value,
-                     payload.volume_min, payload.volume_max, payload.volume_step))
+        rows.append((
+            payload.symbol, payload.timeframe, candle.time, candle.open,
+            candle.high, candle.low, candle.close, candle.volume,
+            payload.digits, payload.tick_size, payload.tick_value,
+            payload.volume_min, payload.volume_max, payload.volume_step,
+            ask_val,
+        ))
     with db() as conn:
+        _ensure_candles_ask_column(conn)
         conn.executemany(
-            "INSERT INTO candles(symbol,timeframe,candle_time,open,high,low,close,volume,digits,tick_size,tick_value,volume_min,volume_max,volume_step) "
-            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(symbol,timeframe,candle_time) DO UPDATE SET "
+            "INSERT INTO candles(symbol,timeframe,candle_time,open,high,low,close,volume,digits,tick_size,tick_value,volume_min,volume_max,volume_step,ask) "
+            "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(symbol,timeframe,candle_time) DO UPDATE SET "
             "open=excluded.open,high=excluded.high,low=excluded.low,close=excluded.close,volume=excluded.volume,"
             "digits=excluded.digits,tick_size=excluded.tick_size,tick_value=excluded.tick_value,"
-            "volume_min=excluded.volume_min,volume_max=excluded.volume_max,volume_step=excluded.volume_step",
+            "volume_min=excluded.volume_min,volume_max=excluded.volume_max,volume_step=excluded.volume_step,"
+            "ask=COALESCE(excluded.ask, candles.ask)",
             rows,
         )
+        if ask_val is not None:
+            conn.execute(
+                "UPDATE candles SET ask=? WHERE symbol=? AND timeframe=?",
+                (ask_val, payload.symbol, payload.timeframe),
+            )
         conn.execute(
             "DELETE FROM candles WHERE symbol=? AND timeframe=? AND candle_time NOT IN "
             "(SELECT candle_time FROM candles WHERE symbol=? AND timeframe=? ORDER BY candle_time DESC LIMIT 2000)",
             (payload.symbol, payload.timeframe, payload.symbol, payload.timeframe),
         )
-    return {"ok": True, "symbol": payload.symbol, "timeframe": payload.timeframe,
-            "received": len(rows), "updated_at": now}
+    return {
+        "ok": True,
+        "symbol": payload.symbol,
+        "timeframe": payload.timeframe,
+        "ask": ask_val,
+        "ask_price": ask_val,
+        "received": len(rows),
+        "updated_at": now,
+    }
 
 
 @app.post("/api/mt5/commissions", dependencies=[Depends(require_key)])
@@ -1986,9 +2044,10 @@ def chart_data(
 ):
     symbol = symbol.strip().upper()
     with db() as conn:
+        _ensure_candles_ask_column(conn)
         candles = [dict(r) for r in conn.execute(
-            "SELECT candle_time AS time,open,high,low,close,volume,digits,tick_size,tick_value,volume_min,volume_max,volume_step FROM candles "
-            "WHERE symbol=? AND timeframe=? ORDER BY candle_time DESC LIMIT ?",
+            "SELECT candle_time AS time,open,high,low,close,volume,digits,tick_size,tick_value,volume_min,volume_max,volume_step,ask "
+            "FROM candles WHERE symbol=? AND timeframe=? ORDER BY candle_time DESC LIMIT ?",
             (symbol, timeframe, limit),
         ).fetchall()]
         candles.reverse()
@@ -1997,6 +2056,7 @@ def chart_data(
             "FROM today_signals WHERE symbol=? AND timeframe=? ORDER BY signal_time DESC LIMIT 200",
             (symbol, timeframe),
         ).fetchall()]
+        ask_val = _get_latest_symbol_ask(conn, symbol, timeframe)
     meta = {
         "digits": candles[-1]["digits"],
         "tick_size": candles[-1]["tick_size"],
@@ -2013,6 +2073,8 @@ def chart_data(
         "symbol": symbol,
         "timeframe": timeframe,
         **meta,
+        "ask": ask_val,
+        "ask_price": ask_val,
         "candles": candles,
         "signals": signals,
         "server_time": utc_now(),
