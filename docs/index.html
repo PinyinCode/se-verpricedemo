@@ -124,7 +124,7 @@ body.trade-fullscreen .chart-actions-tools{margin-left:auto}
 body.trade-fullscreen .chart-actions button{flex:0 0 auto;min-width:25px;padding:5px 6px;font-size:clamp(9px,2.3vw,12px)}
 body.trade-fullscreen .chart-actions .primary-chart-action{min-width:72px;min-height:30px;padding:5px 8px;font-size:11px}
 body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clamp(48px,8vw,76px);padding-inline:4px}
-.chart-actions #feedState{max-width:190px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chart-actions #feedState{max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 
 .status-strip{
   display:inline-flex;
@@ -1020,13 +1020,8 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
                   <option>USDCHF</option>
                 </select>
                 <select id="tf">
-                  <option>M1</option>
-                  <option>M5</option>
-                  <option selected>M15</option>
-                  <option>M30</option>
+                  <option>M15</option>
                   <option>H1</option>
-                  <option>H4</option>
-                  <option>D1</option>
                 </select>
               </div>
               <div class="chart-actions">
@@ -1321,7 +1316,6 @@ while (API_BASE.endsWith('/')) API_BASE = API_BASE.slice(0, -1);
 const $ = id => document.getElementById(id);
 
 const COMMISSION_IS_ROUND_TURN = false;
-const TF_SECONDS = { M1: 60, M5: 300, M15: 900, M30: 1800, H1: 3600, H4: 14400, D1: 86400 };
 
 let mt5Digits = 5, mt5TickSize = 0.00001, mt5TickValue = 0, mt5VolumeMin = 0, mt5VolumeMax = 0, mt5VolumeStep = 0, latestMarketPrice = 0, serverAskPrice = 0;
 let chartMt5Accounts = [];
@@ -1376,16 +1370,12 @@ function fmtMoney(val, ccy = 'USD') {
 function extractAskFromPayload(payload, symbol) {
   if (!payload || typeof payload !== 'object') return 0;
   const sym = String(symbol || '').trim().toUpperCase();
-  if (payload.tick && typeof payload.tick === 'object') {
-    const tAsk = Number(payload.tick.ask ?? payload.tick.ask_price);
-    if (Number.isFinite(tAsk) && tAsk > 0) return tAsk;
-  }
   const directKeys = ['ask', 'ask_price', 'latest_ask', 'current_ask', 'mt5_ask'];
   for (const key of directKeys) {
     const val = Number(payload[key]);
     if (Number.isFinite(val) && val > 0) return val;
   }
-  const mapContainers = ['latest_ticks', 'mt5_ticks', 'mt5_quotes', 'mt5_prices', 'quotes', 'ticks', 'prices'];
+  const mapContainers = ['mt5_ticks', 'mt5_quotes', 'mt5_prices', 'quotes', 'ticks', 'prices'];
   for (const containerKey of mapContainers) {
     const container = payload[containerKey];
     if (!container) continue;
@@ -1405,74 +1395,6 @@ function extractAskFromPayload(payload, symbol) {
     }
   }
   return 0;
-}
-
-function extractBidOrLastFromTick(tickObj) {
-  if (!tickObj || typeof tickObj !== 'object') return 0;
-  const bid = Number(tickObj.bid);
-  if (Number.isFinite(bid) && bid > 0) return bid;
-  const last = Number(tickObj.last ?? tickObj.price);
-  if (Number.isFinite(last) && last > 0) return last;
-  return 0;
-}
-
-function applyLiveTickToView(tickObj) {
-  if (!tickObj || typeof tickObj !== 'object') return;
-  const sym = String(tickObj.symbol || '').trim().toUpperCase();
-  if (sym && sym !== String($('symbol').value || '').trim().toUpperCase()) return;
-
-  const askVal = Number(tickObj.ask ?? tickObj.ask_price);
-  if (Number.isFinite(askVal) && askVal > 0) {
-    serverAskPrice = askVal;
-  }
-
-  const bidOrLast = extractBidOrLastFromTick(tickObj);
-  if (bidOrLast > 0) {
-    latestMarketPrice = bidOrLast;
-    if ($('orderMode').value === 'MARKET' && activeFormDragKey !== 'entry') {
-      $('entryPrice').value = bidOrLast.toFixed(mt5Digits);
-    }
-    const bars = typeof candleSeries.data === 'function' ? (candleSeries.data() || []) : [];
-    if (bars.length) {
-      const lastBar = bars[bars.length - 1];
-      const tfSec = TF_SECONDS[String($('tf').value || 'M15').toUpperCase()] || 900;
-      const tickSec = Number(tickObj.time_msc) > 0
-        ? Math.floor(Number(tickObj.time_msc) / 1000)
-        : Math.floor(Date.now() / 1000);
-      const bucketStart = Math.floor(tickSec / tfSec) * tfSec;
-      if (bucketStart === Number(lastBar.time)) {
-        const updatedBar = {
-          time: Number(lastBar.time),
-          open: Number(lastBar.open),
-          high: Math.max(Number(lastBar.high), bidOrLast),
-          low: Math.min(Number(lastBar.low), bidOrLast),
-          close: bidOrLast,
-        };
-        candleSeries.update(updatedBar);
-      }
-    }
-    calcLot();
-  }
-
-  renderAskLine();
-  if (!isAnyLineDragging()) {
-    setLevelLines();
-    renderRealLines();
-  }
-}
-
-async function pollLatestTick() {
-  if (!apiAccessGranted) return;
-  const sym = String($('symbol').value || '').trim().toUpperCase();
-  if (!sym) return;
-  try {
-    const r = await apiFetch(API_BASE + '/api/mt5/ticks?symbol=' + encodeURIComponent(sym), { cache: 'no-store' });
-    if (!r.ok) return;
-    const d = await r.json().catch(() => ({}));
-    if (d && d.tick) {
-      applyLiveTickToView(d.tick);
-    }
-  } catch (_) {}
 }
 
 function getRealServerAskPrice() {
@@ -1592,10 +1514,8 @@ function startAuthorizedPolling() {
   void refreshEmergencyModalWarning();
   void checkServerStatus();
   void load();
-  void pollLatestTick();
   void refreshChartPositions();
   authorizedTimers = [
-    setInterval(() => { if (apiAccessGranted) void pollLatestTick(); }, 1500),
     setInterval(() => { if (apiAccessGranted) void syncEaSettings(); }, 30000),
     setInterval(() => { if (apiAccessGranted) void refreshCommissionInfo(); }, 60000),
     setInterval(() => { if (apiAccessGranted) void refreshEmergencyModalWarning(); }, 30000),
@@ -1989,6 +1909,7 @@ function renderRsiDivergences(signals, bars) {
   const list = Array.isArray(signals) ? signals : [];
   const rsiData = typeof rsiSeries.data === 'function' ? (rsiSeries.data() || []) : [];
 
+  // Sắp xếp để tín hiệu RT được vẽ cuối cùng (nổi bật lên trên)
   const ordered = [...list].slice(0, 80).sort((a, b) => {
     const aRt = a.signal_type === 'RT' ? 1 : 0;
     const bRt = b.signal_type === 'RT' ? 1 : 0;
@@ -2037,6 +1958,7 @@ function renderRsiDivergences(signals, bars) {
       ]);
       priceDivergenceSeries.push(priceLine);
     } else if (isRealtime) {
+      // Line phân kỳ realtime dự phòng khi chỉ có mốc signal_time / price2
       const sigTs = Number(s.signal_time || t2 || 0);
       if (sigTs > 0) {
         const snappedTs = nearestTime(sigTs, bars);
@@ -3505,12 +3427,7 @@ async function load(forceNetwork = false) {
     const bars = (data.candles || []).map(c => ({
       time: Number(c.time), open: Number(c.open), high: Number(c.high), low: Number(c.low), close: Number(c.close), volume: Number(c.volume ?? 0),
     }));
-    const tickBid = Number(data.bid);
-    if (Number.isFinite(tickBid) && tickBid > 0) {
-      latestMarketPrice = tickBid;
-    } else if (bars.length) {
-      latestMarketPrice = bars[bars.length - 1].close;
-    }
+    if (bars.length) latestMarketPrice = bars[bars.length - 1].close;
 
     const oldRange = firstLoad ? null : priceChart.timeScale().getVisibleLogicalRange();
     const signature = JSON.stringify(bars);
@@ -3530,7 +3447,7 @@ async function load(forceNetwork = false) {
     if (bars.length) {
       const symbolChanged = lastLoadedSymbol !== symbol;
       const slVal = Number($('slPrice').value);
-      const base = Number(latestMarketPrice > 0 ? latestMarketPrice : bars[bars.length - 1].close), gap = defaultGap(base);
+      const base = Number(bars[bars.length - 1].close), gap = defaultGap(base);
       const slInvalidForMarket = activePreset === 'MARKET' && $('orderMode').value === 'MARKET' && (!(slVal > 0) || (autoDirection === 'BUY' && slVal >= base) || (autoDirection === 'SELL' && slVal <= base));
       if (symbolChanged || slInvalidForMarket) {
         latestMarketPrice = base;
@@ -3549,7 +3466,7 @@ async function load(forceNetwork = false) {
         lastLoadedSymbol = symbol;
       }
       if ($('orderMode').value === 'MARKET' && activeFormDragKey !== 'entry') {
-        $('entryPrice').value = Number(base).toFixed(mt5Digits);
+        $('entryPrice').value = Number(bars[bars.length - 1].close).toFixed(mt5Digits);
       }
       const resetChartView = firstLoad || symbolChanged;
       if (resetChartView) {
@@ -3785,19 +3702,11 @@ async function refreshChartPositions() {
     const openList = Array.isArray(d.mt5_positions) ? d.mt5_positions : [];
     const pendingList = Array.isArray(d.mt5_pending_orders) ? d.mt5_pending_orders : [];
     const snapshotAge = d.mt5_snapshot_updated_at ? Math.max(0, Math.round((Date.now() - Date.parse(d.mt5_snapshot_updated_at)) / 1000)) : null;
-
-    const curSym = String($('symbol').value || '').trim().toUpperCase();
-    const symTick = d.latest_ticks && typeof d.latest_ticks === 'object' ? d.latest_ticks[curSym] : null;
-    if (symTick) {
-      applyLiveTickToView(symTick);
-    } else {
-      const parsedAsk = extractAskFromPayload(d, curSym);
-      if (parsedAsk > 0) {
-        serverAskPrice = parsedAsk;
-        renderAskLine();
-      }
+    const parsedAsk = extractAskFromPayload(d, $('symbol').value);
+    if (parsedAsk > 0) {
+      serverAskPrice = parsedAsk;
+      renderAskLine();
     }
-
     chartMt5Accounts = Array.isArray(d.mt5_accounts) ? d.mt5_accounts : [];
     renderChartPositions(openList, pendingList);
     if (!closingIds.size && !cancelingIds.size) {
@@ -3941,6 +3850,8 @@ const localDateTime = ts => {
 };
 
 function renderStats(data) {
+  // API có thể trả lại cùng một bản ghi ở nhiều lần đồng bộ; khử trùng trước
+  // khi tính KPI và render để số liệu và bảng luôn khớp nhau.
   const uniqueBy = (items, getKey) => {
     const seen = new Set();
     return items.filter(item => {
@@ -4407,7 +4318,7 @@ chartResizeObserver.observe($('rsiChart'));
 document.addEventListener('keydown', e => {
   const tag = (e.target && e.target.tagName || '').toLowerCase();
   if (['input', 'textarea', 'select'].includes(tag) || e.target.isContentEditable) return;
-  if (e.key.toLowerCase() === 'r') { e.preventDefault(); lastBarsSignature = ''; load(true); void pollLatestTick(); }
+  if (e.key.toLowerCase() === 'r') { e.preventDefault(); lastBarsSignature = ''; load(true); }
   if (e.key === '0') { e.preventDefault(); priceChart.timeScale().fitContent(); priceChart.timeScale().applyOptions({ rightOffset: 10 }); }
   if (e.key.toLowerCase() === 'l') { e.preventDefault(); toggleLock(); }
 });
@@ -4423,7 +4334,6 @@ async function sendOrder(direction) {
   }
   await syncEaSettings();
   await syncSymbolCommission($('symbol').value);
-  await pollLatestTick();
   const c = calcLot();
   if (!c) return;
   const mode = $('orderMode').value;
@@ -4506,9 +4416,9 @@ async function sendOrder(direction) {
 
 $('sendBuy').addEventListener('click', () => sendOrder('BUY'));
 $('sendSell').addEventListener('click', () => sendOrder('SELL'));
-$('symbol').addEventListener('change', () => { serverAskPrice = 0; renderAskLine(); firstLoad = true; lastBarsSignature = ''; load(); void pollLatestTick(); void syncSymbolCommission($('symbol').value); refreshCommissionInfo(); syncRealtimeReopenButton(); });
-$('tf').addEventListener('change', () => { firstLoad = true; lastBarsSignature = ''; load(); void pollLatestTick(); syncRealtimeReopenButton(); });
-$('refresh').addEventListener('click', () => { lastBarsSignature = ''; load(true); void pollLatestTick(); void syncEaSettings(); void syncSymbolCommission($('symbol').value); });
+$('symbol').addEventListener('change', () => { serverAskPrice = 0; renderAskLine(); firstLoad = true; lastBarsSignature = ''; load(); void syncSymbolCommission($('symbol').value); refreshCommissionInfo(); syncRealtimeReopenButton(); });
+$('tf').addEventListener('change', () => { firstLoad = true; lastBarsSignature = ''; load(); syncRealtimeReopenButton(); });
+$('refresh').addEventListener('click', () => { lastBarsSignature = ''; load(true); void syncEaSettings(); void syncSymbolCommission($('symbol').value); });
 
 const rsiResizeHandle = $('rsiResizeHandle');
 const lotResizeHandle = $('lotResizeHandle');
@@ -4539,116 +4449,121 @@ function setLotHeight(height) {
   overlayBottom.style.setProperty('flex', `0 0 ${next}px`, 'important');
   applyChartDimensions();
 }
-function startResize(type, clientY) {
-  activeResize = type; resizeStartY = clientY;
-  resizeStartHeight = type === 'rsi'
-    ? $('rsiChart').getBoundingClientRect().height
-    : document.querySelector('.chart-overlay-bottom').getBoundingClientRect().height;
-  document.body.style.userSelect = 'none';
-  document.body.style.cursor = 'row-resize';
-}
-function moveResize(clientY) {
-  if (!activeResize) return;
-  const delta = clientY - resizeStartY;
-  if (activeResize === 'rsi') setRsiHeight(resizeStartHeight - delta);
-  else setLotHeight(resizeStartHeight - delta);
-}
-function endResize() {
-  if (!activeResize) return;
-  activeResize = null;
-  document.body.style.userSelect = '';
-  document.body.style.cursor = '';
-  applyChartDimensions();
-}
-
-rsiResizeHandle.addEventListener('pointerdown', e => { e.preventDefault(); e.stopPropagation(); try { rsiResizeHandle.setPointerCapture(e.pointerId); } catch (_) {} startResize('rsi', e.clientY); });
-rsiResizeHandle.addEventListener('pointermove', e => { if (activeResize === 'rsi') moveResize(e.clientY); });
-rsiResizeHandle.addEventListener('pointerup', e => { if (activeResize === 'rsi') { try { rsiResizeHandle.releasePointerCapture(e.pointerId); } catch (_) {} endResize(); } });
-rsiResizeHandle.addEventListener('pointercancel', () => { if (activeResize === 'rsi') endResize(); });
-rsiResizeHandle.addEventListener('mousedown', e => { if (e.button !== 0) return; e.preventDefault(); startResize('rsi', e.clientY); });
-
-lotResizeHandle.addEventListener('pointerdown', e => { e.preventDefault(); e.stopPropagation(); try { lotResizeHandle.setPointerCapture(e.pointerId); } catch (_) {} startResize('lot', e.clientY); });
-lotResizeHandle.addEventListener('pointermove', e => { if (activeResize === 'lot') moveResize(e.clientY); });
-lotResizeHandle.addEventListener('pointerup', e => { if (activeResize === 'lot') { try { lotResizeHandle.releasePointerCapture(e.pointerId); } catch (_) {} endResize(); } });
-lotResizeHandle.addEventListener('pointercancel', () => { if (activeResize === 'lot') endResize(); });
-lotResizeHandle.addEventListener('mousedown', e => { if (e.button !== 0) return; e.preventDefault(); startResize('lot', e.clientY); });
-
-document.addEventListener('mousemove', e => { if (activeResize) moveResize(e.clientY); });
-document.addEventListener('mouseup', () => { if (activeResize) endResize(); });
 
 try {
   const savedRsi = Number(localStorage.getItem('chartRsiHeight'));
   if (Number.isFinite(savedRsi) && savedRsi >= 0) setRsiHeight(savedRsi);
-  else setRsiHeight(64);
-} catch (_) { setRsiHeight(64); }
-
-try {
   const savedLot = Number(localStorage.getItem('chartLotPanelHeight'));
   if (Number.isFinite(savedLot) && savedLot >= 84) setLotHeight(savedLot);
 } catch (_) {}
 
-function tickGmt7Clock() {
-  const el = $('clockGMT7');
-  if (el) el.textContent = new Date().toLocaleTimeString('vi-VN', { timeZone: 'Asia/Ho_Chi_Minh', hour12: false });
+function startResize(kind, e) {
+  e.preventDefault();
+  const handle = kind === 'rsi' ? rsiResizeHandle : lotResizeHandle;
+  activeResize = kind;
+  resizeStartY = e.clientY;
+  resizeStartHeight = kind === 'rsi'
+    ? $('rsiChart').getBoundingClientRect().height
+    : document.querySelector('.chart-overlay-bottom').getBoundingClientRect().height;
+  try { handle.setPointerCapture(e.pointerId); } catch (_) {}
+  document.body.style.setProperty('user-select', 'none');
+  document.body.style.setProperty('-webkit-user-select', 'none');
 }
-tickGmt7Clock();
-setInterval(tickGmt7Clock, 1000);
+rsiResizeHandle.addEventListener('pointerdown', e => startResize('rsi', e));
+lotResizeHandle.addEventListener('pointerdown', e => startResize('lot', e));
+document.addEventListener('pointermove', e => {
+  if (!activeResize) return;
+  e.preventDefault();
+  const next = resizeStartHeight + resizeStartY - e.clientY;
+  if (activeResize === 'rsi') setRsiHeight(next);
+  else setLotHeight(next);
+}, { passive: false });
 
+function stopResize(e) {
+  if (!activeResize) return;
+  const handle = activeResize === 'rsi' ? rsiResizeHandle : lotResizeHandle;
+  if (e && e.pointerId != null) { try { handle.releasePointerCapture(e.pointerId); } catch (_) {} }
+  activeResize = null;
+  document.body.style.removeProperty('user-select');
+  document.body.style.removeProperty('-webkit-user-select');
+  requestAnimationFrame(applyChartDimensions);
+}
+document.addEventListener('pointerup', stopResize);
+document.addEventListener('pointercancel', stopResize);
+
+function updateGMT7Clock() {
+  $('clockGMT7').textContent = new Intl.DateTimeFormat('vi-VN', {
+    timeZone: 'Asia/Ho_Chi_Minh', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  }).format(new Date());
+}
+const formatLatency = ms => {
+  const n = Math.max(0, Math.round(ms));
+  return n >= 1000 ? (n / 1000).toFixed(1) + 's' : n + 'ms';
+};
 async function checkServerStatus() {
   if (!apiAccessGranted) return;
-  const el = $('serverState');
-  if (!el) return;
-  const setStatus = (cls, text, title) => {
-    el.className = 'server-state' + (cls ? ' ' + cls : '');
-    el.title = title || text;
-    const span = el.querySelector('span');
-    if (span) span.textContent = text;
-  };
+  const t0 = performance.now();
   try {
-    const r = await apiFetch(API_BASE + '/api/health', { cache: 'no-store' });
-    if (!r.ok) { setStatus('offline', 'Offline', 'HTTP ' + r.status); return; }
-    const d = await r.json().catch(() => ({}));
-    const age = Number.isFinite(Number(d.mt5_age_sec)) ? Math.round(Number(d.mt5_age_sec)) : null;
-    if (d.mt5_online === true) {
-      setStatus('online', age !== null ? 'MT5 ' + age + 's' : 'Online', 'MT5 online' + (age !== null ? ' · ' + age + 's' : ''));
-    } else if (d.mt5_online === false) {
-      setStatus('offline', 'MT5 off', 'MT5 chưa có dữ liệu mới' + (age !== null ? ' · ' + age + 's' : ''));
-    } else {
-      setStatus('online', 'Online', 'Server phản hồi OK');
-    }
-  } catch (_) { setStatus('offline', 'Offline', 'Không kết nối được server'); }
+    const res = await fetch(API_BASE + '/api/health', { cache: 'no-store' });
+    const speed = formatLatency(performance.now() - t0);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const d = await res.json();
+    const ok = d.status === 'ok' && d.database === 'ok';
+    $('serverState').classList.toggle('online', ok);
+    $('serverState').classList.toggle('offline', !ok);
+    $('serverState').innerHTML = '<i></i><span>' + speed + '</span>';
+    $('serverState').title = 'API: ' + d.status + ' · DB: ' + d.database + ' · ' + speed + (d.mode ? ' · ' + d.mode : '');
+  } catch (e) {
+    const speed = formatLatency(performance.now() - t0);
+    $('serverState').classList.remove('online');
+    $('serverState').classList.add('offline');
+    $('serverState').innerHTML = '<i></i><span>' + speed + '</span>';
+    $('serverState').title = String(e.message || e);
+  }
 }
 
+function triggerInitialAuthCheck() {
+  if (window.accountAuthGranted && chartApiKey) {
+    void validateApiAccess();
+  }
+}
+
+ensureApiAuthWarnings();
+refreshApiKeyBox();
+renderMt5AccountInfo([]);
+window.addEventListener('forex-auth-ready', triggerInitialAuthCheck);
+window.addEventListener('forex-auth-locked', stopAuthorizedPolling);
+stopAuthorizedPolling();
+syncRealLayerToggles();
+bindRealLayerToggles();
+bindAskLineToggle();
+applyLockState();
+syncPresetButtons();
+
+$('apiKeySave').addEventListener('click', () => {
+  saveApiKey($('apiKeyInput').value);
+  stopAuthorizedPolling();
+  $('requestState').textContent = 'Đang xác thực API key (' + maskKey(chartApiKey) + ')...';
+  void validateApiAccess();
+});
+$('apiKeyInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') {
+    saveApiKey($('apiKeyInput').value);
+    stopAuthorizedPolling();
+    $('apiKeyInput').blur();
+    $('requestState').textContent = 'Đang xác thực API key (' + maskKey(chartApiKey) + ')...';
+    void validateApiAccess();
+  }
+});
 $('apiKeyToggle').addEventListener('click', () => {
   const inp = $('apiKeyInput');
-  if (!inp) return;
-  const hidden = inp.type === 'password';
-  inp.type = hidden ? 'text' : 'password';
-  $('apiKeyToggle').textContent = hidden ? '🙈' : '👁';
-});
-$('apiKeySave').addEventListener('click', async () => {
-  saveApiKey($('apiKeyInput').value);
-  await validateApiAccess();
-});
-$('apiKeyInput').addEventListener('keydown', async e => {
-  if (e.key === 'Enter') {
-    e.preventDefault();
-    saveApiKey($('apiKeyInput').value);
-    await validateApiAccess();
-  }
+  inp.type = inp.type === 'password' ? 'text' : 'password';
 });
 $('commissionRefresh').addEventListener('click', refreshCommissionInfo);
 
-refreshApiKeyBox();
-bindRealLayerToggles();
-syncRealLayerToggles();
-bindAskLineToggle();
-syncAskLineToggle();
-applyLockState();
-syncPresetButtons();
-setLevelLines();
-calcLot();
+updateGMT7Clock();
+setInterval(updateGMT7Clock, 1000);
 </script>
-<script type="module" src="./auth.js"></script>
+<script src="./auth.js"></script>
 </body>
 </html>
