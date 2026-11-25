@@ -1326,6 +1326,41 @@ let showAskLine = (() => {
   try { return localStorage.getItem(ASK_LINE_STORAGE) === '1'; } catch { return false; }
 })();
 
+const GMT7_TZ = 'Asia/Ho_Chi_Minh';
+function normalizeTimeSec(time) {
+  if (typeof time === 'number') return time > 1e12 ? time / 1000 : time;
+  if (time && typeof time === 'object' && time.year && time.month && time.day) {
+    return Date.UTC(time.year, time.month - 1, time.day) / 1000;
+  }
+  const n = Number(time);
+  if (Number.isFinite(n) && n > 0) return n > 1e12 ? n / 1000 : n;
+  return NaN;
+}
+function formatGmt7TickLabel(time) {
+  const sec = normalizeTimeSec(time);
+  if (!Number.isFinite(sec)) return '';
+  const d = new Date(sec * 1000);
+  const tfVal = ($('tf') && $('tf').value) || 'M15';
+  if (tfVal === 'D1') {
+    return new Intl.DateTimeFormat('vi-VN', {
+      timeZone: GMT7_TZ, day: '2-digit', month: '2-digit',
+    }).format(d);
+  }
+  return new Intl.DateTimeFormat('vi-VN', {
+    timeZone: GMT7_TZ, day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(d);
+}
+function formatGmt7FullTime(time) {
+  const sec = normalizeTimeSec(time);
+  if (!Number.isFinite(sec)) return '';
+  const d = new Date(sec * 1000);
+  const txt = new Intl.DateTimeFormat('vi-VN', {
+    timeZone: GMT7_TZ, day: '2-digit', month: '2-digit', year: 'numeric',
+    hour: '2-digit', minute: '2-digit', hour12: false,
+  }).format(d);
+  return txt + ' GMT+7';
+}
+
 function fmtMoney(val, ccy = 'USD') {
   const n = Number(val);
   if (!Number.isFinite(n)) return '—';
@@ -1757,7 +1792,18 @@ const priceChart = LightweightCharts.createChart($('priceChart'), {
   layout: { background: { color: '#111c2e' }, textColor: '#a9b8ca' },
   grid: { vertLines: { color: '#1c2a3e' }, horzLines: { color: '#1c2a3e' } },
   rightPriceScale: { borderColor: '#34445c' },
-  timeScale: { borderColor: '#34445c', timeVisible: true, secondsVisible: false, rightOffset: 10, barSpacing: 8, minBarSpacing: 2 },
+  timeScale: {
+    borderColor: '#34445c',
+    timeVisible: true,
+    secondsVisible: false,
+    rightOffset: 10,
+    barSpacing: 8,
+    minBarSpacing: 2,
+    tickMarkFormatter: formatGmt7TickLabel,
+  },
+  localization: {
+    timeFormatter: formatGmt7FullTime,
+  },
   crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
   handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: true },
   handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true },
@@ -1781,7 +1827,19 @@ const rsiChart = LightweightCharts.createChart($('rsiChart'), {
   layout: { background: { color: '#111c2e' }, textColor: '#a9b8ca' },
   grid: { vertLines: { color: '#1c2a3e' }, horzLines: { color: '#1c2a3e' } },
   rightPriceScale: { borderColor: '#34445c', scaleMargins: { top: 0.04, bottom: 0.04 }, autoScale: true },
-  timeScale: { visible: false, borderVisible: false, ticksVisible: false, borderColor: 'transparent', rightOffset: 10, barSpacing: 8, minBarSpacing: 2 },
+  timeScale: {
+    visible: false,
+    borderVisible: false,
+    ticksVisible: false,
+    borderColor: 'transparent',
+    rightOffset: 10,
+    barSpacing: 8,
+    minBarSpacing: 2,
+    tickMarkFormatter: formatGmt7TickLabel,
+  },
+  localization: {
+    timeFormatter: formatGmt7FullTime,
+  },
   crosshair: {
     mode: LightweightCharts.CrosshairMode.Normal,
     vertLine: { visible: false, labelVisible: false },
@@ -1827,24 +1885,112 @@ function nearestTime(t, bars) {
   for (const b of bars) { const d = Math.abs(b.time - t); if (d < delta) { delta = d; best = b.time; } }
   return best;
 }
+function findRsiAtTime(targetTime, rsiData) {
+  if (!Array.isArray(rsiData) || !rsiData.length) return 50;
+  let best = rsiData[0], delta = Math.abs(Number(best.time) - targetTime);
+  for (const pt of rsiData) {
+    const d = Math.abs(Number(pt.time) - targetTime);
+    if (d < delta) { delta = d; best = pt; }
+  }
+  return Number(best.value);
+}
+function findBarAtTime(targetTime, bars) {
+  if (!Array.isArray(bars) || !bars.length) return null;
+  let best = bars[0], delta = Math.abs(Number(best.time) - targetTime);
+  for (const b of bars) {
+    const d = Math.abs(Number(b.time) - targetTime);
+    if (d < delta) { delta = d; best = b; }
+  }
+  return best;
+}
 function renderRsiDivergences(signals, bars) {
   clearDivergenceLines();
   if (!bars.length) return;
-  (signals || []).slice(0, 60).forEach(s => {
-    const t1 = Number(s.time1), t2 = Number(s.time2), v1 = Number(s.rsi1), v2 = Number(s.rsi2), p1 = Number(s.price1), p2 = Number(s.price2);
-    if (!(t1 > 0 && t2 > t1 && v1 >= 0 && v1 <= 100 && v2 >= 0 && v2 <= 100)) return;
-    const isBull = s.direction === 'BUY';
-    const isRegular = ['REG', 'REGULAR'].includes(String(s.divergence).toUpperCase());
-    const isRealtime = s.signal_type === 'RT';
-    const color = isBull ? '#22c58b' : '#ec4899';
-    const lineStyle = isRegular ? 0 : 2;
-    const series = rsiChart.addLineSeries({ color, lineWidth: isRealtime ? 3 : 2, lineStyle, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, pointMarkersVisible: true });
-    series.setData([{ time: t1, value: v1 }, { time: t2, value: v2 }]);
-    divergenceSeries.push(series);
-    if (Number.isFinite(p1) && Number.isFinite(p2) && p1 > 0 && p2 > 0) {
-      const priceLine = priceChart.addLineSeries({ color, lineWidth: isRealtime ? 3 : 2, lineStyle, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, pointMarkersVisible: true });
-      priceLine.setData([{ time: nearestTime(t1, bars), value: p1 }, { time: nearestTime(t2, bars), value: p2 }]);
+  const list = Array.isArray(signals) ? signals : [];
+  const rsiData = typeof rsiSeries.data === 'function' ? (rsiSeries.data() || []) : [];
+
+  // Sắp xếp để tín hiệu RT được vẽ cuối cùng (nổi bật lên trên)
+  const ordered = [...list].slice(0, 80).sort((a, b) => {
+    const aRt = a.signal_type === 'RT' ? 1 : 0;
+    const bRt = b.signal_type === 'RT' ? 1 : 0;
+    return aRt - bRt;
+  });
+
+  ordered.forEach(s => {
+    const isBull = String(s.direction || '').toUpperCase() === 'BUY';
+    const isRegular = ['REG', 'REGULAR'].includes(String(s.divergence || '').toUpperCase());
+    const isRealtime = String(s.signal_type || '').toUpperCase() === 'RT';
+    const color = isRealtime
+      ? (isBull ? '#34d399' : '#fb7185')
+      : (isBull ? '#22c58b' : '#ec4899');
+    const lineStyle = isRealtime ? 0 : (isRegular ? 0 : 2);
+    const width = isRealtime ? 3 : 2;
+
+    const t1 = Number(s.time1);
+    const t2 = Number(s.time2);
+    const v1 = Number(s.rsi1);
+    const v2 = Number(s.rsi2);
+    const p1 = Number(s.price1);
+    const p2 = Number(s.price2);
+
+    const hasFullPivot = t1 > 0 && t2 > t1 && Number.isFinite(v1) && Number.isFinite(v2) && v1 >= 0 && v1 <= 100 && v2 >= 0 && v2 <= 100;
+    if (hasFullPivot) {
+      const series = rsiChart.addLineSeries({
+        color, lineWidth: width, lineStyle,
+        priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, pointMarkersVisible: true,
+      });
+      series.setData([
+        { time: nearestTime(t1, bars), value: v1 },
+        { time: nearestTime(t2, bars), value: v2 },
+      ]);
+      divergenceSeries.push(series);
+    }
+
+    const hasFullPricePivot = t1 > 0 && t2 > t1 && Number.isFinite(p1) && Number.isFinite(p2) && p1 > 0 && p2 > 0;
+    if (hasFullPricePivot) {
+      const priceLine = priceChart.addLineSeries({
+        color, lineWidth: width, lineStyle,
+        priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, pointMarkersVisible: true,
+      });
+      priceLine.setData([
+        { time: nearestTime(t1, bars), value: p1 },
+        { time: nearestTime(t2, bars), value: p2 },
+      ]);
       priceDivergenceSeries.push(priceLine);
+    } else if (isRealtime) {
+      // Line phân kỳ realtime dự phòng khi chỉ có mốc signal_time / price2
+      const sigTs = Number(s.signal_time || t2 || 0);
+      if (sigTs > 0) {
+        const snappedTs = nearestTime(sigTs, bars);
+        const anchorBar = findBarAtTime(snappedTs, bars);
+        const rtPrice = Number.isFinite(p2) && p2 > 0
+          ? p2
+          : (anchorBar ? Number(anchorBar.close) : 0);
+        if (rtPrice > 0) {
+          const prevBar = bars[Math.max(0, bars.findIndex(b => b.time === snappedTs) - 1)];
+          const rtPriceLine = priceChart.addLineSeries({
+            color: '#fbbf24', lineWidth: 3, lineStyle: 0,
+            priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, pointMarkersVisible: true,
+          });
+          const pts = prevBar && prevBar.time !== snappedTs
+            ? [{ time: prevBar.time, value: rtPrice }, { time: snappedTs, value: rtPrice }]
+            : [{ time: snappedTs, value: rtPrice }];
+          rtPriceLine.setData(pts);
+          priceDivergenceSeries.push(rtPriceLine);
+        }
+
+        const rtRsiVal = Number.isFinite(v2) && v2 >= 0 && v2 <= 100
+          ? v2
+          : findRsiAtTime(snappedTs, rsiData);
+        if (Number.isFinite(rtRsiVal)) {
+          const rtRsiLine = rsiChart.addLineSeries({
+            color: '#fbbf24', lineWidth: 3, lineStyle: 0,
+            priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false, pointMarkersVisible: true,
+          });
+          rtRsiLine.setData([{ time: snappedTs, value: rtRsiVal }]);
+          divergenceSeries.push(rtRsiLine);
+        }
+      }
     }
   });
 }
@@ -4383,19 +4529,14 @@ $('apiKeyInput').addEventListener('keydown', e => {
     void validateApiAccess();
   }
 });
-$('commissionRefresh').addEventListener('click', refreshCommissionInfo);
-$('apiKeyInput').addEventListener('input', () => {
-  $('apiKeyStatus').classList.remove('err');
-});
 $('apiKeyToggle').addEventListener('click', () => {
   const inp = $('apiKeyInput');
   inp.type = inp.type === 'password' ? 'text' : 'password';
-  $('apiKeyToggle').textContent = inp.type === 'password' ? '👁' : '🙈';
 });
+$('commissionRefresh').addEventListener('click', refreshCommissionInfo);
 
 updateGMT7Clock();
 setInterval(updateGMT7Clock, 1000);
-setTimeout(triggerInitialAuthCheck, 300);
 </script>
 <script src="./auth.js"></script>
 </body>
