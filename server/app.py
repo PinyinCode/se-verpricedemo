@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import math
 import os
 import secrets
 import sqlite3
@@ -12,9 +11,9 @@ import threading
 import time
 from contextlib import asynccontextmanager, contextmanager
 from datetime import datetime, timezone, timedelta
-from urllib.request import Request, urlopen
 from pathlib import Path
 from typing import Literal
+from urllib.request import Request, urlopen
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,6 +40,291 @@ _GMT7 = timezone(timedelta(hours=7))
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _get_conn() -> sqlite3.Connection:
+    global _conn
+    if _conn is None:
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        conn = sqlite3.connect(str(DB_PATH), check_same_thread=False, timeout=30.0)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        _conn = conn
+    return _conn
+
+
+@contextmanager
+def db():
+    with _db_lock:
+        conn = _get_conn()
+        try:
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def init_db() -> None:
+    with db() as conn:
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS settings (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            auto_trade_enabled INTEGER NOT NULL DEFAULT 1,
+            trailing_enabled INTEGER NOT NULL DEFAULT 1,
+            breakeven_enabled INTEGER NOT NULL DEFAULT 1,
+            news_filter_enabled INTEGER NOT NULL DEFAULT 1,
+            news_block_before_min INTEGER NOT NULL DEFAULT 3,
+            news_block_after_min INTEGER NOT NULL DEFAULT 3,
+            news_events_json TEXT NOT NULL DEFAULT '[]',
+            time_filter_enabled INTEGER NOT NULL DEFAULT 1,
+            emergency_stop INTEGER NOT NULL DEFAULT 0,
+            emergency_close_all INTEGER NOT NULL DEFAULT 0,
+            telegram_notifications_enabled INTEGER NOT NULL DEFAULT 1,
+            risk_money REAL NOT NULL DEFAULT 25,
+            max_positions INTEGER NOT NULL DEFAULT 5,
+            reward_risk_ratio REAL NOT NULL DEFAULT 2.0,
+            risk_tolerance_pct REAL NOT NULL DEFAULT 0.25,
+            commission_fallback REAL NOT NULL DEFAULT 0,
+            spread_buffer_points INTEGER NOT NULL DEFAULT 0,
+            trailing_trigger_rr REAL NOT NULL DEFAULT 1.0,
+            trailing_lock_rr REAL NOT NULL DEFAULT 0.5,
+            breakeven_trigger_rr REAL NOT NULL DEFAULT 1.0,
+            trailing_mode TEXT NOT NULL DEFAULT 'dynamic',
+            trading_start_hour INTEGER NOT NULL DEFAULT 7,
+            trading_end_hour INTEGER NOT NULL DEFAULT 23,
+            updated_at TEXT,
+            updated_by TEXT
+        )
+        """)
+        conn.execute("INSERT OR IGNORE INTO settings(id, updated_at, updated_by) VALUES(1, ?, 'system')", (utc_now(),))
+
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS signals (
+            id TEXT PRIMARY KEY,
+            symbol TEXT NOT NULL,
+            timeframe TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            order_type TEXT NOT NULL DEFAULT 'MARKET',
+            entry REAL NOT NULL,
+            sl REAL NOT NULL,
+            tp REAL NOT NULL DEFAULT 0,
+            score REAL NOT NULL DEFAULT 0,
+            risk_money REAL NOT NULL DEFAULT 25,
+            requested_lot REAL NOT NULL DEFAULT 0,
+            source TEXT NOT NULL DEFAULT 'api',
+            status TEXT NOT NULL DEFAULT 'logged',
+            created_at TEXT NOT NULL,
+            claimed_by TEXT,
+            claimed_at TEXT,
+            ack_at TEXT,
+            ack_status TEXT,
+            ack_message TEXT
+        )
+        """)
+
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS mt5_account_items (
+            id TEXT PRIMARY KEY,
+            ticket TEXT,
+            symbol TEXT NOT NULL,
+            timeframe TEXT NOT NULL DEFAULT 'MT5',
+            direction TEXT NOT NULL,
+            entry REAL NOT NULL,
+            sl REAL NOT NULL DEFAULT 0,
+            tp REAL NOT NULL DEFAULT 0,
+            volume REAL NOT NULL,
+            profit REAL NOT NULL DEFAULT 0,
+            opened_at REAL NOT NULL DEFAULT 0,
+            is_pending INTEGER NOT NULL DEFAULT 0,
+            order_type TEXT NOT NULL DEFAULT '',
+            magic INTEGER NOT NULL DEFAULT 0,
+            comment TEXT NOT NULL DEFAULT '',
+            source TEXT NOT NULL DEFAULT 'MT5_EXTERNAL',
+            updated_at TEXT NOT NULL
+        )
+        """)
+
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS mt5_account_info (
+            account_id TEXT PRIMARY KEY,
+            login INTEGER NOT NULL,
+            name TEXT NOT NULL DEFAULT '',
+            server TEXT NOT NULL DEFAULT '',
+            broker TEXT NOT NULL DEFAULT '',
+            currency TEXT NOT NULL DEFAULT 'USD',
+            leverage INTEGER NOT NULL DEFAULT 0,
+            account_mode TEXT NOT NULL DEFAULT 'DEMO',
+            trade_allowed INTEGER NOT NULL DEFAULT 1,
+            expert_allowed INTEGER NOT NULL DEFAULT 1,
+            balance REAL NOT NULL DEFAULT 0,
+            equity REAL NOT NULL DEFAULT 0,
+            margin REAL NOT NULL DEFAULT 0,
+            free_margin REAL NOT NULL DEFAULT 0,
+            margin_level REAL NOT NULL DEFAULT 0,
+            profit REAL NOT NULL DEFAULT 0,
+            positions_count INTEGER NOT NULL DEFAULT 0,
+            orders_count INTEGER NOT NULL DEFAULT 0,
+            source_timestamp INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        )
+        """)
+
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS close_requests (
+            request_id TEXT PRIMARY KEY,
+            position_id TEXT,
+            ticket TEXT,
+            symbol TEXT,
+            direction TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            acked_at TEXT,
+            ok INTEGER,
+            message TEXT,
+            kind TEXT NOT NULL DEFAULT 'close',
+            is_pending INTEGER NOT NULL DEFAULT 0,
+            order_type TEXT NOT NULL DEFAULT 'MARKET'
+        )
+        """)
+
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS sltp_requests (
+            request_id TEXT PRIMARY KEY,
+            ticket TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            old_sl REAL NOT NULL DEFAULT 0,
+            old_tp REAL NOT NULL DEFAULT 0,
+            new_sl REAL NOT NULL DEFAULT 0,
+            new_tp REAL NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            acked_at TEXT,
+            ok INTEGER,
+            message TEXT
+        )
+        """)
+
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS pending_modify_requests (
+            request_id TEXT PRIMARY KEY,
+            ticket TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            order_type TEXT NOT NULL DEFAULT '',
+            old_entry REAL NOT NULL DEFAULT 0,
+            old_sl REAL NOT NULL DEFAULT 0,
+            old_tp REAL NOT NULL DEFAULT 0,
+            new_entry REAL NOT NULL DEFAULT 0,
+            new_sl REAL NOT NULL DEFAULT 0,
+            new_tp REAL NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            acked_at TEXT,
+            ok INTEGER,
+            message TEXT
+        )
+        """)
+
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS real_history (
+            id TEXT PRIMARY KEY,
+            ticket TEXT,
+            symbol TEXT NOT NULL,
+            timeframe TEXT NOT NULL DEFAULT '—',
+            direction TEXT NOT NULL,
+            entry REAL NOT NULL DEFAULT 0,
+            sl REAL NOT NULL DEFAULT 0,
+            tp REAL NOT NULL DEFAULT 0,
+            volume REAL NOT NULL,
+            profit REAL NOT NULL,
+            outcome TEXT NOT NULL DEFAULT 'CLOSED',
+            opened_at REAL NOT NULL DEFAULT 0,
+            closed_at REAL NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        """)
+
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS heartbeats (
+            component TEXT PRIMARY KEY,
+            status TEXT NOT NULL,
+            details TEXT NOT NULL DEFAULT '',
+            updated_at TEXT NOT NULL
+        )
+        """)
+
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS scan_status (
+            component TEXT PRIMARY KEY,
+            symbols_json TEXT NOT NULL DEFAULT '[]',
+            updated_at TEXT NOT NULL
+        )
+        """)
+
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS today_signals (
+            signal_key TEXT PRIMARY KEY,
+            symbol TEXT NOT NULL,
+            timeframe TEXT NOT NULL,
+            direction TEXT NOT NULL,
+            divergence TEXT NOT NULL,
+            signal_type TEXT NOT NULL,
+            signal_time INTEGER NOT NULL,
+            price1 REAL NOT NULL DEFAULT 0,
+            price2 REAL NOT NULL DEFAULT 0,
+            rsi1 REAL NOT NULL DEFAULT 0,
+            rsi2 REAL NOT NULL DEFAULT 0,
+            time1 INTEGER NOT NULL DEFAULT 0,
+            time2 INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        )
+        """)
+
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS candles (
+            symbol TEXT NOT NULL,
+            timeframe TEXT NOT NULL,
+            candle_time INTEGER NOT NULL,
+            open REAL NOT NULL,
+            high REAL NOT NULL,
+            low REAL NOT NULL,
+            close REAL NOT NULL,
+            volume REAL NOT NULL DEFAULT 0,
+            digits INTEGER NOT NULL DEFAULT 5,
+            tick_size REAL NOT NULL DEFAULT 0.00001,
+            tick_value REAL NOT NULL DEFAULT 0,
+            volume_min REAL NOT NULL DEFAULT 0,
+            volume_max REAL NOT NULL DEFAULT 0,
+            volume_step REAL NOT NULL DEFAULT 0,
+            PRIMARY KEY (symbol, timeframe, candle_time)
+        )
+        """)
+
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS symbol_commissions (
+            account_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            commission_per_lot REAL NOT NULL DEFAULT 0,
+            swap_long REAL NOT NULL DEFAULT 0,
+            swap_short REAL NOT NULL DEFAULT 0,
+            contract_size REAL NOT NULL DEFAULT 0,
+            tick_value REAL NOT NULL DEFAULT 0,
+            point_size REAL NOT NULL DEFAULT 0.00001,
+            source_updated_at INTEGER NOT NULL DEFAULT 0,
+            received_at TEXT NOT NULL,
+            PRIMARY KEY (account_id, symbol)
+        )
+        """)
+
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type TEXT NOT NULL,
+            message TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """)
 
 
 def _parse_news_timestamp(raw_time: object) -> float | None:
@@ -180,7 +464,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Forex AI Server",
-    version="0.5.2",
+    version="0.6.0",
     description="Signal analysis and MT5 real-order bridge with runtime control panel.",
     lifespan=lifespan,
 )
@@ -252,6 +536,33 @@ class SignalIn(BaseModel):
                 if self.direction == "SELL" and self.tp >= self.entry:
                     raise ValueError("SELL yêu cầu TP < Entry")
         return self
+
+
+class Mt5AccountInfoIn(BaseModel):
+    account_id: str = Field(min_length=1, max_length=32)
+    login: int = Field(ge=0)
+    name: str = Field(default="", max_length=120)
+    server: str = Field(default="", max_length=120)
+    broker: str = Field(default="", max_length=120)
+    currency: str = Field(default="USD", max_length=16)
+    leverage: int = Field(default=0, ge=0)
+    account_mode: str = Field(default="DEMO", max_length=24)
+    trade_allowed: bool = True
+    expert_allowed: bool = True
+    balance: float = 0.0
+    equity: float = 0.0
+    margin: float = 0.0
+    free_margin: float = 0.0
+    margin_level: float = 0.0
+    profit: float = 0.0
+    positions_count: int = Field(default=0, ge=0)
+    orders_count: int = Field(default=0, ge=0)
+    timestamp: int = Field(default=0, ge=0)
+
+    @field_validator("currency", "account_mode")
+    @classmethod
+    def normalize_upper_str(cls, value: str) -> str:
+        return value.strip().upper()
 
 
 class Mt5AccountItemIn(BaseModel):
@@ -570,8 +881,6 @@ def health():
         raise HTTPException(status_code=503, detail=f"database_error: {type(exc).__name__}")
 
 
-# ---- SETTINGS & NEWS endpoints ----
-
 def _settings_row_to_dict(row: sqlite3.Row) -> dict:
     d = dict(row)
     for k in (
@@ -588,9 +897,25 @@ def _settings_row_to_dict(row: sqlite3.Row) -> dict:
     return d
 
 
+def _format_account_rows(rows: list[sqlite3.Row]) -> list[dict]:
+    now_utc = datetime.now(timezone.utc)
+    result: list[dict] = []
+    for r in rows:
+        item = dict(r)
+        item["trade_allowed"] = bool(item.get("trade_allowed"))
+        item["expert_allowed"] = bool(item.get("expert_allowed"))
+        try:
+            age = (now_utc - datetime.fromisoformat(item["updated_at"])).total_seconds()
+        except Exception:
+            age = 0.0
+        item["age_seconds"] = int(max(0, age))
+        item["stale"] = age > 30
+        result.append(item)
+    return result
+
+
 @app.get("/api/settings", dependencies=[Depends(require_key)])
 def get_settings():
-    """Public read: dashboard và EA cần đọc cấu hình đồng bộ."""
     with db() as conn:
         row = conn.execute("SELECT * FROM settings WHERE id=1").fetchone()
         if row is None:
@@ -645,7 +970,6 @@ def get_news_status():
 def get_commission_for_symbol(
     symbol: str = Query(min_length=3, max_length=32),
 ):
-    """Helper cho TRADE_V9: trả commission_per_lot mới nhất cho 1 symbol."""
     sym = symbol.strip().upper()
     with db() as conn:
         row = conn.execute(
@@ -685,8 +1009,6 @@ def get_commission_for_symbol(
         "source": "server_cache",
     }
 
-
-# ---- Signal endpoints (2-path: GV direct trade + Manual web-chart queue) ----
 
 def _get_latest_market_price(
     conn: sqlite3.Connection,
@@ -764,7 +1086,6 @@ def create_signal(payload: SignalIn):
 
 @app.post("/api/signals/realtime", dependencies=[Depends(require_key)])
 def create_realtime_signal(payload: SignalIn):
-    """Nhận tín hiệu realtime để hiển thị lên Dashboard; việc vào lệnh do EA đọc trực tiếp từ GV."""
     now_dt = datetime.now(timezone.utc).astimezone(_GMT7)
     now_ts = now_dt.timestamp()
     with db() as conn:
@@ -839,7 +1160,6 @@ def chart_order(payload: SignalIn):
 
 @app.get("/api/mt5/next", dependencies=[Depends(require_key)])
 def next_signal(consumer: str = Query(default="mt5", min_length=2, max_length=40)):
-    """Chỉ cấp lệnh đặt tay (source='web-chart') cho EA; tín hiệu indicator đi qua GV."""
     now_dt = datetime.now(timezone.utc).astimezone(_GMT7)
     now_ts = now_dt.timestamp()
     stale_cutoff = (datetime.now(timezone.utc) - timedelta(seconds=STALE_SECONDS)).isoformat()
@@ -935,6 +1255,80 @@ def _cleanup_recently_acked():
     expired = [k for k, t in _recently_acked.items() if now - t > _ACK_COOLDOWN]
     for k in expired:
         _recently_acked.pop(k, None)
+
+
+@app.post("/api/mt5/account-info", dependencies=[Depends(require_key)])
+def update_mt5_account_info(payload: Mt5AccountInfoIn):
+    now = utc_now()
+    acc_id = payload.account_id.strip()
+    with db() as conn:
+        conn.execute(
+            """
+            INSERT INTO mt5_account_info(
+                account_id, login, name, server, broker, currency, leverage, account_mode,
+                trade_allowed, expert_allowed, balance, equity, margin, free_margin,
+                margin_level, profit, positions_count, orders_count, source_timestamp, updated_at
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(account_id) DO UPDATE SET
+                login=excluded.login,
+                name=excluded.name,
+                server=excluded.server,
+                broker=excluded.broker,
+                currency=excluded.currency,
+                leverage=excluded.leverage,
+                account_mode=excluded.account_mode,
+                trade_allowed=excluded.trade_allowed,
+                expert_allowed=excluded.expert_allowed,
+                balance=excluded.balance,
+                equity=excluded.equity,
+                margin=excluded.margin,
+                free_margin=excluded.free_margin,
+                margin_level=excluded.margin_level,
+                profit=excluded.profit,
+                positions_count=excluded.positions_count,
+                orders_count=excluded.orders_count,
+                source_timestamp=excluded.source_timestamp,
+                updated_at=excluded.updated_at
+            """,
+            (
+                acc_id,
+                payload.login,
+                payload.name,
+                payload.server,
+                payload.broker,
+                payload.currency,
+                payload.leverage,
+                payload.account_mode,
+                1 if payload.trade_allowed else 0,
+                1 if payload.expert_allowed else 0,
+                payload.balance,
+                payload.equity,
+                payload.margin,
+                payload.free_margin,
+                payload.margin_level,
+                payload.profit,
+                payload.positions_count,
+                payload.orders_count,
+                payload.timestamp,
+                now,
+            ),
+        )
+    return {"ok": True, "account_id": acc_id, "updated_at": now}
+
+
+@app.get("/api/mt5/account-info", dependencies=[Depends(require_key)])
+def get_mt5_account_info(account_id: str | None = Query(default=None, max_length=32)):
+    with db() as conn:
+        if account_id:
+            rows = conn.execute(
+                "SELECT * FROM mt5_account_info WHERE account_id=?",
+                (account_id.strip(),),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM mt5_account_info ORDER BY updated_at DESC"
+            ).fetchall()
+    return {"ok": True, "accounts": _format_account_rows(rows), "server_time": utc_now()}
 
 
 @app.post("/api/mt5/account-snapshot", dependencies=[Depends(require_key)])
@@ -1630,6 +2024,9 @@ def dashboard_data():
     _cleanup_recently_acked()
     with db() as conn:
         _expire_stale_pending_modifies(conn)
+        mt5_accounts = _format_account_rows(conn.execute(
+            "SELECT * FROM mt5_account_info ORDER BY updated_at DESC"
+        ).fetchall())
         signals = [dict(r) for r in conn.execute(
             "SELECT id,symbol,timeframe,direction,order_type,entry,sl,tp,score,source,status,created_at,ack_status,ack_message "
             "FROM signals ORDER BY created_at DESC LIMIT 100").fetchall()]
@@ -1707,6 +2104,7 @@ def dashboard_data():
         news_status = evaluate_news_filter(settings_dict)
     return {
         "mode": "REAL_ONLY",
+        "mt5_accounts": mt5_accounts,
         "signals": signals,
         "today_signals": today_signals,
         "mt5_positions": mt5_positions,
