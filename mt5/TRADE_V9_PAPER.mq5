@@ -6,7 +6,7 @@
 //| Vào lệnh độc lập với WebRequest tại thời điểm có tín hiệu.        |
 //+------------------------------------------------------------------+
 #property strict
-#property version "3.22"
+#property version "3.23"
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
@@ -141,6 +141,7 @@ void     SyncDashboardGlobalVariables();
 void     PollCommissions();
 void     ManageTrailing();
 void     CheckEmergencyStop();
+bool     IsEmergencyStopActive();
 SRiskBreakdown ComputeRiskBreakdown(string symbol, double slDistance, double volume);
 ushort   json_safe_idx(string s, int idx);
 string   JsonValue(string json, string key);
@@ -920,7 +921,7 @@ void PruneTrailStates()
 void ManageTrailing()
 {
    if(!g_settings.trailing_enabled && !g_settings.breakeven_enabled) return;
-   if(g_settings.emergency_stop) return;
+   if(IsEmergencyStopActive()) return;
 
    PruneTrailStates();
 
@@ -1054,6 +1055,12 @@ void ManageTrailing()
 }
 
 //--- Emergency stop -------------------------------------------------
+bool IsEmergencyStopActive()
+{
+   bool dashStop = (GlobalVariableCheck("GV_Dash_EmergencyStop") && GlobalVariableGet("GV_Dash_EmergencyStop") >= 0.5);
+   return (g_settings.emergency_stop || dashStop);
+}
+
 void CloseAllMagicPositions()
 {
    Print("[V9 EMERGENCY] Closing all positions magic=", MagicNumber);
@@ -1097,7 +1104,7 @@ void CancelAllMagicPending()
 
 void CheckEmergencyStop()
 {
-   if(!g_settings.emergency_stop)
+   if(!IsEmergencyStopActive())
    {
       g_emergencyClosedOnce = false;
       return;
@@ -1117,7 +1124,7 @@ void SendHeartbeat()
    int openCount = CountRealExposure();
    string body = StringFormat(
       "{\"component\":\"TRADE-V9-REAL\",\"status\":\"online\",\"details\":\"ONTIMER-GMT7 DIRECT-IND+MANUAL; positions=%d; emergency=%s; news_block=%s; gmt7=%d\"}",
-      openCount, g_settings.emergency_stop ? "ON" : "OFF", IsNewsBlocked() ? "ON" : "OFF", (long)TimeGMT7());
+      openCount, IsEmergencyStopActive() ? "ON" : "OFF", IsNewsBlocked() ? "ON" : "OFF", (long)TimeGMT7());
    string response; int status;
    if(Request("POST", "/api/heartbeat", body, response, status))
       lastHeartbeatMs = GetTickCount();
@@ -1337,13 +1344,19 @@ void CheckIndicatorSymbolSignal(string symbol)
    if(seq <= 0) return;
 
    long sigTime = (long)GlobalVariableGet(pfx + "TIME");
+   long updatedTime = GlobalVariableCheck(pfx + "UPDATED") ? (long)GlobalVariableGet(pfx + "UPDATED") : 0;
    double dirVal = GlobalVariableGet(pfx + "DIR");
    int otCode = (int)MathRound(GlobalVariableGet(pfx + "ORDER_TYPE"));
    double entry = GlobalVariableGet(pfx + "ENTRY");
    double sl = GlobalVariableGet(pfx + "SL");
 
-   string sigKey = symUp + ":" + IntegerToString(seq) + ":" + IntegerToString(sigTime);
-   if(HasProcessedSignalKey(sigKey)) return;
+   string direction = (dirVal > 0) ? "BUY" : ((dirVal < 0) ? "SELL" : "");
+   if(direction == "" || sl <= 0)
+      return;
+
+   string sigKey = symUp + ":" + IntegerToString(seq) + ":" + IntegerToString(sigTime) + ":" + IntegerToString(updatedTime);
+   string barSignalKey = symUp + ":BAR:" + direction + ":" + IntegerToString(sigTime);
+   if(HasProcessedSignalKey(sigKey) || HasProcessedSignalKey(barSignalKey)) return;
 
    // Đồng bộ tuổi tín hiệu qua TimeGMT7()
    datetime nowGmt7 = TimeGMT7();
@@ -1359,14 +1372,7 @@ void CheckIndicatorSymbolSignal(string symbol)
       }
    }
 
-   string direction = (dirVal > 0) ? "BUY" : ((dirVal < 0) ? "SELL" : "");
-   if(direction == "" || sl <= 0)
-   {
-      MarkProcessedSignalKey(sigKey);
-      return;
-   }
-
-   if(g_settings.emergency_stop)
+   if(IsEmergencyStopActive())
    {
       MarkProcessedSignalKey(sigKey);
       Print("[V9 IND BLOCK] ", sigKey, " Emergency Stop ON");
@@ -1401,7 +1407,10 @@ void CheckIndicatorSymbolSignal(string symbol)
 
    MarkProcessedSignalKey(sigKey);
    if(ExecuteIndicatorSignal(sigKey, symUp, direction, otCode, entry, sl))
+   {
+      MarkProcessedSignalKey(barSignalKey);
       SendAccountSnapshot();
+   }
 }
 
 void PollIndicatorSignals()
@@ -1456,7 +1465,7 @@ void ExecuteManualSignalJson(string sigJson)
 
    MarkProcessedSignalKey("manual:" + sigId);
 
-   if(g_settings.emergency_stop)
+   if(IsEmergencyStopActive())
    {
       AckManualSignal(sigId, "REJECTED", "Emergency Stop ON");
       return;
@@ -2065,7 +2074,7 @@ int OnInit()
    PollCommissions();
 
    EventSetTimer(1);
-   Print("[V9] Started v3.22 (OnTimer-only + TimeGMT7). magic=", MagicNumber,
+   Print("[V9] Started v3.23 (OnTimer-only + TimeGMT7). magic=", MagicNumber,
          " | GMT+7=", TimeToString(TimeGMT7(), TIME_DATE|TIME_SECONDS),
          " | AutoTrade=", g_settings.auto_trade_enabled ? "ON" : "OFF",
          " | Trailing=", g_settings.trailing_enabled ? "ON" : "OFF",
