@@ -210,8 +210,6 @@ int PostJsonToServer(string url, string jsonPayload, string &outResponse)
 {
    outResponse = "";
    if(url == "") return -1;
-   if(!TerminalInfoInteger(TERMINAL_DLLS_ALLOWED) && !MQLInfoInteger(MQL_TRADE_ALLOWED))
-      return -1;
 
    char postData[];
    int bodyLen = StringToCharArray(jsonPayload, postData, 0, WHOLE_ARRAY, CP_UTF8);
@@ -444,15 +442,6 @@ void EmitRealtimeSignal(int idx, string sym, string tfStr, string side, string d
    if(httpCode >= 200 && httpCode < 300)
    {
       Print("SERVER RT SIGNAL SENT [HTTP ", httpCode, "]: ", signalKey, " (", side, " ", divType, ") src=", dedupSource);
-   }
-   else
-   {
-      static datetime lastErrLogTime = 0;
-      if(nowGmt7 - lastErrLogTime >= 30)
-      {
-         lastErrLogTime = nowGmt7;
-         Print("SERVER RT SIGNAL SKIP/ERR [HTTP ", httpCode, ", err=", GetLastError(), "] (GV already written): ", signalKey);
-      }
    }
 }
 
