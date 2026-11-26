@@ -2914,25 +2914,37 @@ function syncRealtimeReopenButton() {
   const btn = $('rtReopenBtn');
   const toast = $('rtSignalToast');
   if (!btn) return;
-  const toastVisible = !!(toast && toast.classList.contains('show'));
-  if (toastVisible) {
+
+  // Chỉ hiện nút khi có tín hiệu RT hợp lệ của đúng symbol/timeframe đang xem.
+  const signal = latestRealtimeSignal;
+  const currentSymbol = String($('symbol').value || '').toUpperCase();
+  const currentTimeframe = String($('tf').value || '').toUpperCase();
+  const hasCurrentSignal = !!(
+    signal &&
+    isTodaySignal(signal) &&
+    String(signal.symbol || '').toUpperCase() === currentSymbol &&
+    String(signal.timeframe || '').toUpperCase() === currentTimeframe
+  );
+
+  if (!hasCurrentSignal) {
+    btn.classList.remove('show', 'sell-mode');
+    if (toast) toast.classList.remove('show');
+    return;
+  }
+
+  if (toast && toast.classList.contains('show')) {
     btn.classList.remove('show');
     return;
   }
-  if (!latestRealtimeSignal) {
-    btn.classList.remove('sell-mode');
-    $('rtReopenText').textContent = 'RT · ' + $('symbol').value + ' · ' + $('tf').value;
-    btn.classList.add('show');
-    return;
-  }
-  const isBuy = latestRealtimeSignal.direction === 'BUY';
+
+  const isBuy = String(signal.direction || '').toUpperCase() === 'BUY';
   btn.classList.toggle('sell-mode', !isBuy);
   $('rtReopenText').textContent =
     (isBuy ? '▲ BUY' : '▼ SELL') +
     ' · ' +
-    latestRealtimeSignal.symbol +
+    signal.symbol +
     ' · ' +
-    latestRealtimeSignal.timeframe +
+    signal.timeframe +
     (latestRealtimeCount > 1 ? ' (+' + (latestRealtimeCount - 1) + ')' : '');
   btn.classList.add('show');
 }
