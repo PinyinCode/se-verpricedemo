@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.request import Request, urlopen
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -461,7 +461,7 @@ def send_telegram_rt_signal(item: "TodaySignalItem") -> bool:
     return False
 
 
-# ============ Fast In-Memory Tick Cache ============
+# ============ Fast Tick Cache & Helpers ============
 
 def _set_latest_tick(
     symbol: str,
@@ -518,6 +518,10 @@ def _get_all_cached_ticks() -> dict[str, dict]:
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     init_db()
+    with db() as conn:
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_queue ON signals(status, source, created_at)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_source ON signals(source)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_today_signals_time ON today_signals(signal_time)")
     try:
         yield
     finally:
@@ -530,7 +534,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Forex AI Server",
-    version="0.6.3-fast-ticks",
+    version="0.6.2-fast",
     description="Signal analysis and MT5 real-order bridge with runtime control panel.",
     lifespan=lifespan,
 )
@@ -588,6 +592,7 @@ class SignalIn(BaseModel):
     source: str = Field(default="api", max_length=40)
     risk_money: float = Field(default=25, gt=0, le=1000000)
     requested_lot: float = Field(default=0, ge=0, le=1000000)
+    client_order_id: str | None = Field(default=None, min_length=8, max_length=64)
 
     @field_validator("symbol")
     @classmethod
@@ -1154,7 +1159,11 @@ def _get_latest_symbol_ask(
 def _validate_limit_against_market(conn: sqlite3.Connection, payload: SignalIn) -> None:
     if payload.order_type not in ("BUY_LIMIT", "SELL_LIMIT"):
         return
-    market_price = _get_latest_market_price(conn, payload.symbol, payload.timeframe)
+    if payload.order_type == "BUY_LIMIT":
+        market_price = (_get_latest_symbol_ask(conn, payload.symbol, payload.timeframe)
+                        or _get_latest_market_price(conn, payload.symbol, payload.timeframe))
+    else:
+        market_price = _get_latest_market_price(conn, payload.symbol, payload.timeframe)
     if market_price is None:
         return
     if payload.order_type == "BUY_LIMIT" and payload.entry >= market_price:
@@ -1168,9 +1177,10 @@ def _insert_signal(
     payload: SignalIn,
     source: str,
     status: str = "logged",
+    signal_id: str | None = None,
 ) -> dict:
     created = utc_now()
-    signal_id = secrets.token_hex(12)
+    signal_id = signal_id or secrets.token_hex(12)
     conn.execute(
         "INSERT INTO signals(id,symbol,timeframe,direction,order_type,entry,sl,tp,score,risk_money,requested_lot,source,status,created_at) "
         "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -1309,45 +1319,72 @@ def create_realtime_signal(payload: SignalIn):
         }
 
 
+def _trade_block_reason(s: dict, now_dt: datetime) -> str | None:
+    """Lý do đang chặn lệnh (emergency / tin / giờ giao dịch), None nếu được phép."""
+    if s.get("emergency_stop"):
+        return "emergency_stop"
+    news_status = evaluate_news_filter(s, now_ts=now_dt.timestamp())
+    if news_status["blocked"]:
+        return news_status.get("reason") or "news_blocked"
+    if s.get("time_filter_enabled", True):
+        start_h = int(s.get("trading_start_hour", 7))
+        end_h = int(s.get("trading_end_hour", 23))
+        cur_h = now_dt.hour
+        in_hours = (start_h <= cur_h < end_h) if start_h <= end_h else (cur_h >= start_h or cur_h < end_h)
+        if not in_hours:
+            return "outside_trading_hours"
+    return None
+
+
 @app.post("/api/chart/order", dependencies=[Depends(require_key)])
 def chart_order(payload: SignalIn):
     if payload.requested_lot <= 0:
         raise HTTPException(status_code=422, detail="Thiếu lot đã tính từ Risk và khoảng Entry-SL")
+    signal_id = (hashlib.sha256(payload.client_order_id.encode()).hexdigest()[:24]
+                 if payload.client_order_id else None)
     with db() as conn:
+        if signal_id:
+            existing = conn.execute(
+                "SELECT status, created_at, order_type FROM signals WHERE id=?", (signal_id,)
+            ).fetchone()
+            if existing:
+                return {"ok": True, "duplicate": True, "signal_id": signal_id,
+                        "order_type": existing["order_type"], "status": existing["status"],
+                        "created_at": existing["created_at"]}
+        settings_row = conn.execute("SELECT * FROM settings WHERE id=1").fetchone()
+        s = _settings_row_to_dict(settings_row) if settings_row else {}
+        reason = _trade_block_reason(s, datetime.now(timezone.utc).astimezone(_GMT7))
+        if reason:
+            raise HTTPException(status_code=409, detail=f"Đang chặn giao dịch: {reason}")
         _validate_limit_against_market(conn, payload)
-        return _insert_signal(conn, payload, "web-chart", status="pending")
+        return _insert_signal(conn, payload, "web-chart", status="pending", signal_id=signal_id)
 
 
 @app.get("/api/mt5/next", dependencies=[Depends(require_key)])
 def next_signal(consumer: str = Query(default="mt5", min_length=2, max_length=40)):
     now_dt = datetime.now(timezone.utc).astimezone(_GMT7)
-    now_ts = now_dt.timestamp()
     stale_cutoff = (datetime.now(timezone.utc) - timedelta(seconds=STALE_SECONDS)).isoformat()
 
     with db() as conn:
         settings_row = conn.execute("SELECT * FROM settings WHERE id=1").fetchone()
         s = _settings_row_to_dict(settings_row) if settings_row else {}
 
-        if s.get("emergency_stop"):
-            return {"ok": True, "signal": None, "reason": "emergency_stop", "consumer": consumer}
+        reason = _trade_block_reason(s, now_dt)
+        if reason:
+            # Hủy lệnh đang chờ để không bị gửi trễ khi hết chặn
+            conn.execute(
+                "UPDATE signals SET status='expired', ack_status='REJECTED', ack_message=? "
+                "WHERE status='pending' AND source='web-chart'",
+                (f"Bị chặn: {reason}",),
+            )
+            return {"ok": True, "signal": None, "reason": reason, "consumer": consumer}
 
-        news_status = evaluate_news_filter(s, now_ts=now_ts)
-        if news_status["blocked"]:
-            return {
-                "ok": True,
-                "signal": None,
-                "reason": news_status.get("reason") or "news_window_3m",
-                "news": news_status,
-                "consumer": consumer,
-            }
-
-        if s.get("time_filter_enabled", True):
-            start_h = int(s.get("trading_start_hour", 7))
-            end_h = int(s.get("trading_end_hour", 23))
-            cur_h = now_dt.hour
-            in_hours = (cur_h >= start_h and cur_h < end_h) if start_h <= end_h else (cur_h >= start_h or cur_h < end_h)
-            if not in_hours:
-                return {"ok": True, "signal": None, "reason": "outside_trading_hours", "consumer": consumer}
+        conn.execute(
+            "UPDATE signals SET status='expired', ack_status='ERROR', "
+            "ack_message='Không nhận được ACK - kiểm tra MT5' "
+            "WHERE status='claimed' AND source='web-chart' AND claimed_at < ?",
+            (stale_cutoff,),
+        )
 
         conn.execute(
             "UPDATE signals SET status='expired', ack_status='ERROR', ack_message='Hết hạn chờ MT5' "
@@ -1400,7 +1437,7 @@ def acknowledge(payload: AckIn):
     with db() as conn:
         cur = conn.execute(
             "UPDATE signals SET status='completed',ack_at=?,ack_status=?,ack_message=? "
-            "WHERE id=? AND status IN ('claimed','pending','displayed','logged')",
+            "WHERE id=? AND status IN ('claimed','pending','displayed','logged','expired')",
             (now, payload.status, payload.message, payload.signal_id),
         )
         if cur.rowcount != 1:
@@ -1602,12 +1639,11 @@ def _enqueue_close_position(payload: ClosePositionIn, kind: Literal["close", "ca
             ("BUY_LIMIT" if resolved_dir == "BUY" else "SELL_LIMIT") if resolved_pending else "MARKET"
         )).strip().upper()
 
+        # Chỉ coi là trùng khi đúng cùng một vị thế/ticket
         existing = conn.execute(
             "SELECT request_id FROM close_requests WHERE status='pending' AND kind=? "
-            "AND ((? != '' AND position_id=?) OR (? != '' AND ticket=?) "
-            "OR (? != '' AND symbol=? AND (? = '' OR direction=?)))",
-            (resolved_kind, resolved_id, resolved_id, resolved_ticket, resolved_ticket,
-             resolved_sym, resolved_sym, resolved_dir, resolved_dir),
+            "AND (position_id=? OR ticket=?)",
+            (resolved_kind, resolved_id, resolved_ticket),
         ).fetchone()
         if existing:
             return {
@@ -1691,11 +1727,11 @@ def ack_close_request(payload: CloseRequestAckIn):
         pos_target = (payload.position_id or (req_row["position_id"] if req_row else "") or "").strip()
         ticket_target = ((req_row["ticket"] if req_row and req_row["ticket"] else "") or "").strip()
         if payload.ok:
-            expire = time.time() + _ACK_COOLDOWN
+            acked_time = time.time()
             if pos_target:
-                _recently_acked[pos_target] = expire
+                _recently_acked[pos_target] = acked_time
             if ticket_target:
-                _recently_acked[ticket_target] = expire
+                _recently_acked[ticket_target] = acked_time
             if pos_target and ticket_target:
                 conn.execute(
                     "DELETE FROM mt5_account_items WHERE id=? OR ticket=? OR id=? OR ticket=?",
@@ -1732,16 +1768,23 @@ def modify_sltp(payload: ModifySltpIn):
         sym = row["symbol"]
         entry = float(row["entry"])
         direction = row["direction"]
-        if payload.new_sl > 0:
-            if direction == "BUY" and payload.new_sl >= entry:
-                raise HTTPException(status_code=422, detail="SL BUY phải < Entry")
-            if direction == "SELL" and payload.new_sl <= entry:
-                raise HTTPException(status_code=422, detail="SL SELL phải > Entry")
-        if payload.new_tp > 0:
-            if direction == "BUY" and payload.new_tp <= entry:
-                raise HTTPException(status_code=422, detail="TP BUY phải > Entry")
-            if direction == "SELL" and payload.new_tp >= entry:
-                raise HTTPException(status_code=422, detail="TP SELL phải < Entry")
+        # So với giá thị trường (không phải Entry) để cho phép hòa vốn / khóa lãi
+        if direction == "BUY":
+            ref = _get_latest_market_price(conn, sym) or entry
+        else:
+            ref = _get_latest_symbol_ask(conn, sym) or entry
+        sl_changed = payload.new_sl > 0 and abs(payload.new_sl - float(row["sl"] or 0)) > 1e-10
+        tp_changed = payload.new_tp > 0 and abs(payload.new_tp - float(row["tp"] or 0)) > 1e-10
+        if sl_changed:
+            if direction == "BUY" and payload.new_sl >= ref:
+                raise HTTPException(status_code=422, detail="SL BUY phải thấp hơn giá hiện tại")
+            if direction == "SELL" and payload.new_sl <= ref:
+                raise HTTPException(status_code=422, detail="SL SELL phải cao hơn giá hiện tại")
+        if tp_changed:
+            if direction == "BUY" and payload.new_tp <= ref:
+                raise HTTPException(status_code=422, detail="TP BUY phải cao hơn giá hiện tại")
+            if direction == "SELL" and payload.new_tp >= ref:
+                raise HTTPException(status_code=422, detail="TP SELL phải thấp hơn giá hiện tại")
 
         existing = conn.execute(
             "SELECT request_id FROM sltp_requests WHERE status='pending' AND ticket=?",
@@ -2031,7 +2074,7 @@ def update_scans(payload: ScanUpdateIn):
 
 
 @app.post("/api/today-signals", dependencies=[Depends(require_key)])
-def update_today_signals(payload: TodaySignalsIn):
+def update_today_signals(payload: TodaySignalsIn, background_tasks: BackgroundTasks):
     now = utc_now()
     new_rt_signals = []
     with db() as conn:
@@ -2054,15 +2097,17 @@ def update_today_signals(payload: TodaySignalsIn):
         ).fetchone()
         telegram_enabled = bool(telegram_enabled_row["telegram_notifications_enabled"]) if telegram_enabled_row else True
 
-    telegram_sent = (
-        sum(1 for item in new_rt_signals if send_telegram_rt_signal(item))
-        if telegram_enabled else 0
-    )
+    # Gửi Telegram sau khi đã trả phản hồi cho EA
+    telegram_queued = 0
+    if telegram_enabled:
+        for item in new_rt_signals:
+            background_tasks.add_task(send_telegram_rt_signal, item)
+            telegram_queued += 1
     return {
         "ok": True,
         "count": len(payload.signals),
         "new_realtime": len(new_rt_signals),
-        "telegram_sent": telegram_sent,
+        "telegram_queued": telegram_queued,
         "telegram_configured": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
         "telegram_enabled": telegram_enabled,
         "updated_at": now,
@@ -2074,11 +2119,9 @@ def update_candles(payload: CandleBatchIn):
     now = utc_now()
     ask_val = payload.resolved_ask
     rows = []
-    last_close = 0.0
     for candle in payload.candles:
         if candle.high < max(candle.open, candle.close, candle.low) or candle.low > min(candle.open, candle.close, candle.high):
             raise HTTPException(status_code=422, detail="OHLC không hợp lệ")
-        last_close = candle.close
         rows.append((
             payload.symbol, payload.timeframe, candle.time, candle.open,
             candle.high, candle.low, candle.close, candle.volume,
@@ -2086,15 +2129,6 @@ def update_candles(payload: CandleBatchIn):
             payload.volume_min, payload.volume_max, payload.volume_step,
             ask_val,
         ))
-
-    if last_close > 0 or ask_val is not None:
-        _set_latest_tick(
-            symbol=payload.symbol,
-            bid=last_close if last_close > 0 else None,
-            ask=ask_val,
-            last=last_close,
-            source=f"candles:{payload.timeframe}",
-        )
 
     prune_key = (payload.symbol, payload.timeframe)
     now_mono = time.monotonic()
