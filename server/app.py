@@ -17,7 +17,7 @@ from urllib.request import Request, urlopen
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -886,6 +886,8 @@ class CandleBatchIn(BaseModel):
 
 class TodaySignalsIn(BaseModel):
     signals: list[TodaySignalItem] = Field(default_factory=list, max_length=200)
+    # Độ lệch giờ server broker so với UTC (giây), do ServerConnector gửi
+    broker_offset_sec: int | None = Field(default=None, ge=-50400, le=50400)
 
 
 class CommissionItemIn(BaseModel):
@@ -957,6 +959,24 @@ class SettingsIn(BaseModel):
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
     return FileResponse(BASE_DIR / "dashboard" / "index.html")
+
+
+@app.get("/index.html", response_class=HTMLResponse)
+def index_page():
+    return FileResponse(BASE_DIR / "dashboard" / "index.html")
+
+
+@app.get("/settings.html", response_class=HTMLResponse)
+def settings_page():
+    return FileResponse(BASE_DIR / "dashboard" / "settings.html")
+
+
+@app.get("/config.js")
+def config_js():
+    path = BASE_DIR / "dashboard" / "config.js"
+    if path.is_file():
+        return FileResponse(path, media_type="application/javascript")
+    return Response("// Không có config.js: dùng cùng địa chỉ với trang\n", media_type="application/javascript")
 
 
 @app.get("/chart", response_class=HTMLResponse)
@@ -2080,8 +2100,21 @@ def update_scans(payload: ScanUpdateIn):
             "updated_at": now}
 
 
+_broker_offset_sec = 0
+
+
+def _today_signal_cutoff() -> int:
+    """Mốc 00:00 hôm nay (GMT+7) quy về hệ giờ broker dùng cho signal_time."""
+    start = datetime.now(_GMT7).replace(hour=0, minute=0, second=0, microsecond=0)
+    return int(start.timestamp()) + _broker_offset_sec
+
+
 @app.post("/api/today-signals", dependencies=[Depends(require_key)])
 def update_today_signals(payload: TodaySignalsIn, background_tasks: BackgroundTasks):
+    global _broker_offset_sec
+    if payload.broker_offset_sec is not None:
+        _broker_offset_sec = payload.broker_offset_sec
+    cutoff = _today_signal_cutoff()
     now = utc_now()
     new_rt_signals = []
     with db() as conn:
@@ -2095,7 +2128,7 @@ def update_today_signals(payload: TodaySignalsIn, background_tasks: BackgroundTa
                  item.signal_type, item.signal_time, item.price1, item.price2,
                  item.rsi1, item.rsi2, item.time1, item.time2, now),
             )
-            if cur.rowcount == 1 and item.signal_type == "RT":
+            if cur.rowcount == 1 and item.signal_type == "RT" and item.signal_time >= cutoff:
                 new_rt_signals.append(item)
 
     with db() as conn:
@@ -2227,8 +2260,9 @@ def chart_data(
         candles.reverse()
         signals = [dict(r) for r in conn.execute(
             "SELECT symbol,timeframe,direction,divergence,signal_type,signal_time,price1,price2,rsi1,rsi2,time1,time2 "
-            "FROM today_signals WHERE symbol=? AND timeframe=? ORDER BY signal_time DESC LIMIT 200",
-            (symbol, timeframe),
+            "FROM today_signals WHERE symbol=? AND timeframe=? AND signal_time>=? "
+            "ORDER BY signal_time DESC LIMIT 200",
+            (symbol, timeframe, _today_signal_cutoff()),
         ).fetchall()]
         ask_val = _get_latest_symbol_ask(conn, symbol, timeframe)
     cached_tick = _get_cached_tick(symbol, max_age_sec=30.0)
@@ -2258,6 +2292,7 @@ def chart_data(
         "ask_price": ask_val,
         "candles": candles,
         "signals": signals,
+        "broker_offset_sec": _broker_offset_sec,
         "server_time": utc_now(),
     }
 
@@ -2341,7 +2376,8 @@ def dashboard_data():
             "SELECT event_type,message,created_at FROM events ORDER BY id DESC LIMIT 30").fetchall()]
         today_signals = [dict(r) for r in conn.execute(
             "SELECT symbol,timeframe,direction,divergence,signal_type,signal_time,price1,price2,rsi1,rsi2,time1,time2 "
-            "FROM today_signals ORDER BY signal_time DESC LIMIT 200").fetchall()]
+            "FROM today_signals WHERE signal_time>=? ORDER BY signal_time DESC LIMIT 200",
+            (_today_signal_cutoff(),)).fetchall()]
         settings_row = conn.execute("SELECT * FROM settings WHERE id=1").fetchone()
         settings_dict = _settings_row_to_dict(settings_row) if settings_row else {}
         news_status = evaluate_news_filter(settings_dict)
@@ -2351,6 +2387,7 @@ def dashboard_data():
         "latest_ticks": _get_all_cached_ticks(),
         "signals": signals,
         "today_signals": today_signals,
+        "broker_offset_sec": _broker_offset_sec,
         "mt5_positions": mt5_positions,
         "mt5_pending_orders": mt5_pending_orders,
         "recent_pending_modifies": recent_pending_modifies,
