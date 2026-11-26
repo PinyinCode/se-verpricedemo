@@ -154,6 +154,7 @@ bool     JsonBoolValue(string json, string key, bool defaultValue);
 int      JsonIntValue(string json, string key, int defaultValue);
 double   JsonDoubleValue(string json, string key, double defaultValue);
 void     ExtractTopLevelObjects(string arrJson, string &outObjects[]);
+bool     IsTradeRetcodeOk();
 
 //--- Unified TimeGMT7() & News helpers ------------------------------
 void SyncBrokerGMTOffset(bool force)
@@ -991,8 +992,18 @@ void ManageTrailing()
          ns.sym = sym;
          ns.entryPrice = entryPrice;
          ns.initialSL = currentSL;
-         ns.oneR = MathAbs(entryPrice - currentSL);
-         if(ns.oneR <= point) ns.oneR = 10 * point;
+         // 1R goc duoc luu lai de khong bi tinh sai sau khi khoi dong lai
+         string gvR = "V9R_" + IntegerToString((long)ticket);
+         bool slOnLossSide = currentSL > 0 && (isBuy ? currentSL < entryPrice : currentSL > entryPrice);
+         ns.oneR = 0;
+         if(GlobalVariableCheck(gvR))
+            ns.oneR = GlobalVariableGet(gvR);
+         else if(slOnLossSide)
+            ns.oneR = MathAbs(entryPrice - currentSL);
+         else if(currentTP > 0 && g_settings.reward_risk_ratio > 0)
+            ns.oneR = MathAbs(currentTP - entryPrice) / g_settings.reward_risk_ratio;
+         if(ns.oneR <= point) continue; // khong xac dinh duoc 1R: khong tu doi SL
+         GlobalVariableSet(gvR, ns.oneR);
          ns.lockedSL = 0;
          ns.breakEvenDone = false;
          ns.trailingActivated = false;
@@ -1148,13 +1159,24 @@ void CheckEmergencyStop()
       g_emergencyClosedOnce = false;
       return;
    }
-   if(g_settings.emergency_close_all && !g_emergencyClosedOnce)
+   if(!g_settings.emergency_close_all) return;
+
+   // Con vi the / lenh cho thi thu lai moi 5 giay
+   int remaining = CountRealPositions();
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
-      g_emergencyClosedOnce = true;
-      CloseAllMagicPositions();
-      CancelAllMagicPending();
-      SendAccountSnapshot();
+      ulong tk = OrderGetTicket(i);
+      if(tk != 0 && OrderGetInteger(ORDER_MAGIC) == MagicNumber) remaining++;
    }
+   if(remaining == 0) return;
+
+   static ulong lastAttemptMs = 0;
+   if(g_emergencyClosedOnce && GetTickCount64() - lastAttemptMs < 5000) return;
+   g_emergencyClosedOnce = true;
+   lastAttemptMs = GetTickCount64();
+   CloseAllMagicPositions();
+   CancelAllMagicPending();
+   SendAccountSnapshot();
 }
 
 //--- Heartbeat ------------------------------------------------------
@@ -1350,7 +1372,7 @@ bool ExecuteIndicatorSignal(string sigKey, string symbol, string direction, int 
          ? trade.Buy(volume, symbol, 0.0, sl, tp, OrderComment)
          : trade.Sell(volume, symbol, 0.0, sl, tp, OrderComment);
 
-   if(!ok || trade.ResultRetcode() != TRADE_RETCODE_DONE)
+   if(!ok || !IsTradeRetcodeOk())
    {
       Print("[V9 IND ERR] ", sigKey, " OrderSend failed retcode=", trade.ResultRetcode(),
             " (", trade.ResultRetcodeDescription(), ")");
@@ -1395,7 +1417,9 @@ void CheckIndicatorSymbolSignal(string symbol)
 
    string sigKey = symUp + ":" + IntegerToString(seq) + ":" + IntegerToString(sigTime) + ":" + IntegerToString(updatedTime);
    string barSignalKey = symUp + ":BAR:" + direction + ":" + IntegerToString(sigTime);
+   string gvBar = "V9B_" + symUp + "_" + direction + "_" + IntegerToString(sigTime);
    if(HasProcessedSignalKey(sigKey) || HasProcessedSignalKey(barSignalKey)) return;
+   if(sigTime > 0 && GlobalVariableCheck(gvBar)) return;
 
    // Chỉ vào lệnh trong đúng cây nến vừa tạo tín hiệu; sang nến mới thì bỏ qua
    datetime nowGmt7 = TimeGMT7();
@@ -1442,6 +1466,11 @@ void CheckIndicatorSymbolSignal(string symbol)
    if(ExecuteIndicatorSignal(sigKey, symUp, direction, otCode, entry, sl))
    {
       MarkProcessedSignalKey(barSignalKey);
+      if(sigTime > 0)
+      {
+         GlobalVariableSet(gvBar, (double)TimeLocal());
+         GlobalVariablesFlush();
+      }
       SendAccountSnapshot();
    }
 }
@@ -1497,6 +1526,29 @@ void ExecuteManualSignalJson(string sigJson)
    double riskMoneyReq = StringToDouble(JsonValue(sigJson, "risk_money"));
 
    MarkProcessedSignalKey("manual:" + sigId);
+   // Chong thuc thi lap ke ca sau khi EA khoi dong lai
+   string gvManual = "V9M_" + sigId;
+   if(GlobalVariableCheck(gvManual)) return;
+   GlobalVariableSet(gvManual, (double)TimeLocal());
+   GlobalVariablesFlush();
+
+   if(direction != "BUY" && direction != "SELL")
+   {
+      AckManualSignal(sigId, "REJECTED", "Invalid direction");
+      return;
+   }
+   if((orderType != "MARKET" && orderType != "BUY_LIMIT" && orderType != "SELL_LIMIT") ||
+      (orderType == "BUY_LIMIT" && direction != "BUY") ||
+      (orderType == "SELL_LIMIT" && direction != "SELL"))
+   {
+      AckManualSignal(sigId, "REJECTED", "Invalid order_type/direction");
+      return;
+   }
+   if(CountRealExposure() >= g_settings.max_positions)
+   {
+      AckManualSignal(sigId, "REJECTED", "Max positions reached");
+      return;
+   }
 
    if(IsEmergencyStopActive())
    {
@@ -1528,7 +1580,8 @@ void ExecuteManualSignalJson(string sigJson)
       }
    }
 
-   if(orderType == "MARKET" && entry <= 0)
+   // Lenh Market: luon kiem tra SL/TP va rui ro theo gia hien tai
+   if(orderType == "MARKET")
       entry = (direction == "BUY") ? ask : bid;
 
    int otCode = 0;
@@ -1553,29 +1606,48 @@ void ExecuteManualSignalJson(string sigJson)
       return;
    }
 
+   double riskMoney = riskMoneyReq > 0 ? riskMoneyReq : g_settings.risk_money;
+   double budget = riskMoney * (1.0 + g_settings.risk_tolerance_pct / 100.0);
+   double vmin = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
+   double vmax = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
+   double step = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
+   if(step <= 0 || vmin <= 0 || vmax < vmin)
+   {
+      AckManualSignal(sigId, "REJECTED", "Invalid symbol volume settings");
+      return;
+   }
+   int stepDigits = VolumeStepDigits(symbol);
+
    double volume = 0;
    if(reqLot > 0)
+      volume = NormalizeDouble(MathFloor(MathMin(reqLot, vmax) / step + 1e-9) * step, stepDigits);
+   else
+      volume = CalculateLotWithCommission(symbol, slDist, riskMoney);
+
+   if(volume < vmin - 1e-9)
    {
-      double vmin = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MIN);
-      double vmax = SymbolInfoDouble(symbol, SYMBOL_VOLUME_MAX);
-      double step = SymbolInfoDouble(symbol, SYMBOL_VOLUME_STEP);
-      if(step > 0)
-      {
-         int stepDigits = VolumeStepDigits(symbol);
-         volume = NormalizeDouble(MathFloor((reqLot + 1e-9) / step) * step, stepDigits);
-         if(volume < vmin) volume = NormalizeDouble(vmin, stepDigits);
-         if(volume > vmax) volume = vmax;
-      }
-   }
-   if(volume <= 0)
-   {
-      double rm = riskMoneyReq > 0 ? riskMoneyReq : g_settings.risk_money;
-      volume = CalculateLotWithCommission(symbol, slDist, rm);
-   }
-   if(volume <= 0)
-   {
-      AckManualSignal(sigId, "REJECTED", "Cannot calculate valid lot");
+      AckManualSignal(sigId, "REJECTED", "Lot below symbol minimum");
       return;
+   }
+
+   SRiskBreakdown rb = ComputeRiskBreakdown(symbol, slDist, volume);
+   if(!rb.valid || rb.riskPerLot <= 0)
+   {
+      AckManualSignal(sigId, "REJECTED", "Cannot verify risk: " + rb.error);
+      return;
+   }
+   if(rb.total > budget + 1e-9)
+   {
+      double reduced = NormalizeDouble(MathFloor(budget / rb.riskPerLot / step + 1e-9) * step, stepDigits);
+      if(reduced >= vmin - 1e-9)
+         volume = MathMin(volume, reduced);
+      else if(g_settings.allow_min_lot_when_exceed_budget)
+         volume = NormalizeDouble(vmin, stepDigits);
+      else
+      {
+         AckManualSignal(sigId, "REJECTED", "Risk exceeds budget even at minimum lot");
+         return;
+      }
    }
 
    int digits = (int)SymbolInfoInteger(symbol, SYMBOL_DIGITS);
@@ -1612,7 +1684,7 @@ void ExecuteManualSignalJson(string sigJson)
          ? trade.Buy(volume, symbol, 0.0, normSl, normTp, OrderComment)
          : trade.Sell(volume, symbol, 0.0, normSl, normTp, OrderComment);
 
-   if(ok && trade.ResultRetcode() == TRADE_RETCODE_DONE)
+   if(ok && IsTradeRetcodeOk())
    {
       string msg = StringFormat("Manual %s %s %.4f @ %.*f ticket=%I64u",
                                 symbol, orderType, volume, digits, normEntry, trade.ResultOrder());
@@ -1639,6 +1711,12 @@ void PollManualChartOrders()
 }
 
 //--- Close / Cancel / SLTP / Pending Modify from Server Bridge ------
+bool IsTradeRetcodeOk()
+{
+   uint rc = trade.ResultRetcode();
+   return (rc == TRADE_RETCODE_DONE || rc == TRADE_RETCODE_PLACED || rc == TRADE_RETCODE_DONE_PARTIAL);
+}
+
 void AckCloseCommand(string requestId, string targetId, bool ok, string detail, string kind)
 {
    string body = StringFormat(
@@ -1664,15 +1742,6 @@ bool CloseRealPositionById(string targetId, string symbol, string &detailOut, bo
             if(tk == targetId) { targetTicket = posInfo.Ticket(); break; }
          }
       }
-      if(targetTicket == 0 && symbol != "")
-      {
-         for(int i = PositionsTotal()-1; i >= 0; i--)
-         {
-            if(!posInfo.SelectByIndex(i)) continue;
-            if(posInfo.Magic() != MagicNumber) continue;
-            if(posInfo.Symbol() == symbol) { targetTicket = posInfo.Ticket(); break; }
-         }
-      }
    }
 
    trade.SetExpertMagicNumber(MagicNumber);
@@ -1683,7 +1752,7 @@ bool CloseRealPositionById(string targetId, string symbol, string &detailOut, bo
    {
       if(!PositionSelectByTicket(targetTicket)) { detailOut = "Position disappeared"; return false; }
       trade.SetTypeFilling(PickFilling(PositionGetString(POSITION_SYMBOL)));
-      if(!trade.PositionClose(targetTicket))
+      if(!trade.PositionClose(targetTicket) || !IsTradeRetcodeOk())
       {
          detailOut = StringFormat("PositionClose failed retcode=%d", trade.ResultRetcode());
          return false;
@@ -1706,10 +1775,9 @@ bool CloseRealPositionById(string targetId, string symbol, string &detailOut, bo
       string ordSym = OrderGetString(ORDER_SYMBOL);
       string tkStr = IntegerToString((long)ordTicket);
       bool matchId = (targetId != "" && tkStr == targetId);
-      bool matchSym = (symbol != "" && ordSym == symbol);
-      if(matchId || matchSym)
+      if(matchId)
       {
-         if(trade.OrderDelete(ordTicket))
+         if(trade.OrderDelete(ordTicket) && IsTradeRetcodeOk())
          {
             detailOut = StringFormat("Deleted pending ticket=%I64u", ordTicket);
             return true;
@@ -1726,8 +1794,12 @@ bool CloseRealPositionById(string targetId, string symbol, string &detailOut, bo
 void ExecuteCloseCommand(string cmdJson)
 {
    string reqId = JsonValue(cmdJson, "request_id");
-   string targetId = JsonValue(cmdJson, "position_id");
-   if(targetId == "") targetId = JsonValue(cmdJson, "ticket");
+   string positionId = JsonValue(cmdJson, "position_id");
+   string targetId = JsonValue(cmdJson, "ticket");
+   if(targetId == "") targetId = positionId;
+   // Server co the gui ID dang P123 / O123: chi giu phan so cua ticket
+   if(StringFind(targetId, "P") == 0 || StringFind(targetId, "O") == 0)
+      targetId = StringSubstr(targetId, 1);
    string symbol = UpperTrim(JsonValue(cmdJson, "symbol"));
    string isPendingStr = JsonValue(cmdJson, "is_pending");
    bool isPendingReq = (isPendingStr == "1" || isPendingStr == "true");
@@ -1742,7 +1814,7 @@ void ExecuteCloseCommand(string cmdJson)
    bool closed = CloseRealPositionById(targetId, symbol, detail, preferPending);
 
    MarkProcessedSltp("close:" + reqId);
-   AckCloseCommand(reqId, targetId, closed, detail, kindStr);
+   AckCloseCommand(reqId, positionId != "" ? positionId : targetId, closed, detail, kindStr);
    if(closed)
    {
       SendAccountSnapshot();
@@ -2129,6 +2201,19 @@ void OnTimer()
 
    SyncBrokerGMTOffset(false);
 
+   CheckEmergencyStop();
+
+   // Uu tien lenh tay tu web truoc cac tac vu dong bo
+   if(lastSltpPollMs == 0 ||
+      (uint)(nowMs - lastSltpPollMs) >= (uint)(MathMax(1, g_settings.poll_seconds) * 1000))
+   {
+      lastSltpPollMs = nowMs;
+      PollManualChartOrders();
+      PollCloseCommands();
+      PollSltpRequests();
+      PollPendingModifyRequests();
+   }
+
    if(lastIndicatorPollMs == 0 ||
       (uint)(nowMs - lastIndicatorPollMs) >= (uint)(MathMax(1, g_settings.poll_seconds) * 1000))
    {
@@ -2162,16 +2247,6 @@ void OnTimer()
    if(lastHeartbeatMs == 0 ||
       (uint)(nowMs - lastHeartbeatMs) >= (uint)(MathMax(5, g_settings.heartbeat_seconds) * 1000))
       SendHeartbeat();
-
-   if(lastSltpPollMs == 0 ||
-      (uint)(nowMs - lastSltpPollMs) >= (uint)(MathMax(1, g_settings.poll_seconds) * 1000))
-   {
-      lastSltpPollMs = nowMs;
-      PollManualChartOrders();
-      PollCloseCommands();
-      PollSltpRequests();
-      PollPendingModifyRequests();
-   }
 
    if(lastPositionsSyncMs == 0 ||
       (uint)(nowMs - lastPositionsSyncMs) >= 3000)
