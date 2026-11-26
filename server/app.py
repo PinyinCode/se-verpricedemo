@@ -461,7 +461,7 @@ def send_telegram_rt_signal(item: "TodaySignalItem") -> bool:
     return False
 
 
-# ============ Fast Tick Cache & Helpers ============
+# ============ Fast In-Memory Tick Cache ============
 
 def _set_latest_tick(
     symbol: str,
@@ -530,7 +530,7 @@ async def lifespan(_app: FastAPI):
 
 app = FastAPI(
     title="Forex AI Server",
-    version="0.6.2-fast",
+    version="0.6.3-fast-ticks",
     description="Signal analysis and MT5 real-order bridge with runtime control panel.",
     lifespan=lifespan,
 )
