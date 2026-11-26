@@ -431,6 +431,10 @@ def evaluate_news_filter(settings_dict: dict, now_ts: float | None = None) -> di
     }
 
 
+# Digits của từng mã (MT5 gửi kèm nến)
+_symbol_digits: dict[str, int] = {}
+
+
 def send_telegram_rt_signal(item: "TodaySignalItem") -> bool:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
@@ -443,7 +447,7 @@ def send_telegram_rt_signal(item: "TodaySignalItem") -> bool:
         "🔔 AI OOP V8 · REALTIME\n"
         f"{item.symbol} · {item.timeframe}\n"
         f"{direction} · {div_name} Divergence\n"
-        f"Giá điểm phân kỳ: {item.price2:.8f}\n"
+        f"Giá điểm phân kỳ: {item.price2:.{_symbol_digits.get(item.symbol, 5)}f}\n"
         f"RSI: {item.rsi1:.1f} → {item.rsi2:.1f}\n"
         f"Thời gian: {local_time:%d/%m/%Y %H:%M} (GMT+7)"
     )
@@ -522,6 +526,9 @@ async def lifespan(_app: FastAPI):
         conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_queue ON signals(status, source, created_at)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_signals_source ON signals(source)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_today_signals_time ON today_signals(signal_time)")
+        for r in conn.execute("SELECT symbol, MAX(digits) AS digits FROM candles GROUP BY symbol"):
+            if r["digits"] is not None:
+                _symbol_digits[r["symbol"]] = int(r["digits"])
     try:
         yield
     finally:
@@ -2130,6 +2137,7 @@ def update_candles(payload: CandleBatchIn):
             ask_val,
         ))
 
+    _symbol_digits[payload.symbol] = payload.digits
     prune_key = (payload.symbol, payload.timeframe)
     now_mono = time.monotonic()
     should_prune = (now_mono - _last_candle_prune_ts.get(prune_key, 0.0)) >= 30.0
@@ -2351,6 +2359,7 @@ def dashboard_data():
         "mt5_history": real_history,
         "heartbeats": heartbeats,
         "scan_status": scans,
+        "symbol_digits": dict(_symbol_digits),
         "counts": counts,
         "events": events,
         "settings": settings_dict,
