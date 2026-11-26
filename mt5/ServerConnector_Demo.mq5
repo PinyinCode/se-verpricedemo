@@ -4,7 +4,7 @@
 //| Chart & account feed only (no trade execution).                  |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.41-ultra-ticks"
+#property version "1.50"
 
 #include <Trade\Trade.mqh>
 
@@ -16,9 +16,9 @@ input int HeartbeatSeconds = 15;
 
 // Fast tick buffer & flush controls
 input bool EnableFastTickPush = true;
-input int FastTickMinMs = 300;          // Min interval (ms) between tick flushes per symbol
-input int TickFlushIntervalMs = 250;    // Timer tick flush cadence (ms)
-input string FastTickSymbols = "";      // Empty = chart symbol only
+input int FastTickMinMs = 900;          // Min interval (ms) between tick flushes per symbol
+input int TickFlushIntervalMs = 900;    // Timer tick flush cadence (ms)
+input string FastTickSymbols = "EURUSD,GBPUSD,USDJPY,XAUUSD,BTCUSD,USDCAD,NZDUSD,USDCHF"; // Symbols pushed every ~1s (chart symbol always included)
 
 // Account info sync
 input bool EnableAccountSync = true;
@@ -28,12 +28,9 @@ input int AccountSyncSeconds = 5;
 input bool EnableLegacyDivergenceImport = false;
 input int MaxLegacySignalAgeSeconds = 300;
 
-// Signal polling
-input bool EnableSignalPolling = false;
-
 // Chart candle feed (smart incremental + full snapshot)
 input bool EnableChartCandleFeed = true;
-input int ChartFeedSeconds = 5;
+input int ChartItemsPerSecond = 2;      // Candle uploads per second (rotating)
 input int FullCandleSyncSeconds = 60;
 input int FastCandleBars = 25;
 input int ChartBarsToSend = 500;
@@ -50,17 +47,20 @@ input bool EnableRealHistorySync = false;
 input int HistorySyncSeconds = 15;
 input int HistoryLookbackDays = 7;
 
-datetime g_lastHeartbeat = 0;
-datetime g_lastPoll = 0;
-datetime g_lastAccountPost = 0;
+ulong g_lastHeartbeat = 0;
+ulong g_lastPoll = 0;
+ulong g_lastAccountPost = 0;
 string g_lastLegacySignature = "";
-datetime g_lastScanPost = 0;
+ulong g_lastScanPost = 0;
+ulong g_lastScanSent = 0;
+ulong g_lastTodaySent = 0;
+ulong g_lastAccountSent = 0;
+int   g_chartCursor = 0;
+ulong g_candleFullMs[];
 string g_lastScanPayload = "";
 string g_lastTodaySignalsPayload = "";
-datetime g_lastCandlePost = 0;
-datetime g_lastFullCandlePost = 0;
-datetime g_lastHistoryPost = 0;
-datetime g_lastCommissionPost = 0;
+ulong g_lastHistoryPost = 0;
+ulong g_lastCommissionPost = 0;
 string g_queueCursorName = "DIVSERVER_QUEUE_CURSOR";
 string g_lastHistoryDigest = "";
 string g_lastChartFeedState = "";
@@ -162,7 +162,7 @@ string JsonObjectValue(string json, string key)
    return "";
 }
 
-bool HttpRequest(string method,string path,string body,string &response,int &status,int timeoutMs=2200,bool allowWhenBusy=false)
+bool HttpRequest(string method,string path,string body,string &response,int &status,int timeoutMs=2500,bool allowWhenBusy=false)
 {
    if(g_netBusy && !allowWhenBusy) return false;
    g_netBusy = true;
@@ -193,6 +193,12 @@ bool HttpRequest(string method,string path,string body,string &response,int &sta
    }
    response=CharArrayToString(result,0,-1,CP_UTF8);
    return (status>=200 && status<300);
+}
+
+// Hen gio theo dong ho may, van chay khi thi truong khong co bao gia moi
+bool Due(ulong lastMs, int seconds)
+{
+   return lastMs == 0 || GetTickCount64() - lastMs >= (ulong)seconds * 1000;
 }
 
 int EnsureTickSlot(string sym)
@@ -247,7 +253,9 @@ void BufferTick(string sym)
    if(tick.bid <= 0.0 || tick.ask <= 0.0) return;
 
    int idx = EnsureTickSlot(sym);
-   if(tick.bid == g_bufBid[idx] && tick.ask == g_bufAsk[idx]) return;
+   // Gia khong doi van gui lai moi 10s de cache server khong het han
+   if(tick.bid == g_bufBid[idx] && tick.ask == g_bufAsk[idx] &&
+      GetTickCount64() - g_bufLastSentMs[idx] < 10000) return;
 
    g_bufBid[idx] = tick.bid;
    g_bufAsk[idx] = tick.ask;
@@ -256,18 +264,16 @@ void BufferTick(string sym)
    g_bufDirty[idx] = true;
 }
 
-void PollExtraTickSymbols()
+void BufferAllTicks()
 {
-   if(!EnableFastTickPush || FastTickSymbols == "") return;
+   BufferTick(_Symbol);
    string list[];
    int n = StringSplit(FastTickSymbols, ',', list);
    for(int i=0; i<n; i++)
    {
-      string sym = list[i];
-      StringTrimLeft(sym); StringTrimRight(sym); StringToUpper(sym);
-      if(sym == "" || sym == _Symbol) continue;
-      if(!SymbolSelect(sym, true)) continue;
-      BufferTick(sym);
+      string s = list[i];
+      StringTrimLeft(s); StringTrimRight(s); StringToUpper(s);
+      if(s != "" && s != _Symbol && SymbolSelect(s, true)) BufferTick(s);
    }
 }
 
@@ -275,13 +281,11 @@ void FlushBufferedTicks()
 {
    if(!EnableFastTickPush || g_netBusy) return;
 
-   PollExtraTickSymbols();
-
    ulong nowMs = GetTickCount64();
-   int flushCadence = MathMax(100, TickFlushIntervalMs);
+   int flushCadence = MathMax(50, TickFlushIntervalMs);
    if(nowMs - g_lastTickFlushMs < (ulong)flushCadence) return;
 
-   int minGap = MathMax(100, FastTickMinMs);
+   int minGap = MathMax(50, FastTickMinMs);
    string itemsJson = "";
    int chosenIndices[];
    ArrayResize(chosenIndices, 0);
@@ -314,7 +318,7 @@ void FlushBufferedTicks()
    string body = "{\"ticks\":[" + itemsJson + "]}";
    string resp;
    int status = 0;
-   if(HttpRequest("POST", "/api/mt5/ticks/batch", body, resp, status, 750, false))
+   if(HttpRequest("POST", "/api/mt5/ticks/batch", body, resp, status, 900, false))
    {
       for(int j=0; j<ArraySize(chosenIndices); j++)
       {
@@ -359,7 +363,7 @@ void PublishAccountInfo()
    string stateSig = StringFormat("%I64d|%.2f|%.2f|%.2f|%.2f|%.2f|%d|%d|%s",
                                   login, balance, equity, margin, freeMargin, profit,
                                   posCount, ordersCount, modeText);
-   if(stateSig == g_lastAccountState) return;
+   if(stateSig == g_lastAccountState && !Due(g_lastAccountSent, 10)) return;
 
    string body = StringFormat(
       "{\"account_id\":\"%I64d\",\"login\":%I64d,\"name\":\"%s\",\"server\":\"%s\","
@@ -381,6 +385,7 @@ void PublishAccountInfo()
    if(HttpRequest("POST", "/api/mt5/account-info", body, response, status))
    {
       g_lastAccountState = stateSig;
+      g_lastAccountSent = GetTickCount64();
    }
    else
    {
@@ -513,18 +518,9 @@ void SendHeartbeat()
    );
    string body = "{\"component\":\"MT5-Connector\",\"status\":\"online\",\"details\":\"" + JsonEscape(details) + "\"}";
    if(HttpRequest("POST","/api/heartbeat",body,response,status))
-      g_lastHeartbeat=TimeCurrent();
+      g_lastHeartbeat=GetTickCount64();
    else
       Print("[SERVER] Heartbeat failed. HTTP=",status," response=",response);
-}
-
-bool AckSignal(string id,string result,string message)
-{
-   string response; int status;
-   string body="{\"signal_id\":\""+JsonEscape(id)+"\",\"status\":\""+JsonEscape(result)+"\",\"message\":\""+JsonEscape(message)+"\"}";
-   bool ok=HttpRequest("POST","/api/mt5/ack",body,response,status,2200,true);
-   if(!ok) Print("[SERVER] Ack failed. HTTP=",status," response=",response);
-   return ok;
 }
 
 void ImportLegacyDivergenceSignal()
@@ -579,6 +575,11 @@ void ImportDivergenceQueue()
    if(file==INVALID_HANDLE) return;
    long cursor=0;
    if(GlobalVariableCheck(g_queueCursorName)) cursor=(long)GlobalVariableGet(g_queueCursorName);
+   // File bi xoa/ghi lai (it dong hon con tro) thi doc lai tu dau
+   long totalLines=0;
+   while(!FileIsEnding(file)) { FileReadString(file); totalLines++; }
+   if(totalLines<cursor) { cursor=0; GlobalVariableSet(g_queueCursorName,0); }
+   FileSeek(file,0,SEEK_SET);
    long lineNo=0;
    while(!FileIsEnding(file))
    {
@@ -625,8 +626,8 @@ void ImportDivergenceQueue()
 
 void PublishScanStatus()
 {
-   if(g_netBusy || TimeCurrent()-g_lastScanPost<3) return;
-   g_lastScanPost=TimeCurrent();
+   if(g_netBusy || !Due(g_lastScanPost,3)) return;
+   g_lastScanPost=GetTickCount64();
    string raw="";
    int file=FileOpen("DIVSCAN_SYMBOLS.txt",FILE_READ|FILE_TXT|FILE_COMMON);
    if(file!=INVALID_HANDLE)
@@ -656,11 +657,14 @@ void PublishScanStatus()
       symbolsJson="["+jsonItems+"]";
    }
    string body="{\"component\":\"AI-OOP-V8\",\"symbols\":"+symbolsJson+"}";
-   if(body == g_lastScanPayload) return;
+   if(body == g_lastScanPayload && !Due(g_lastScanSent,10)) return;
 
    string response; int status;
    if(HttpRequest("POST","/api/scans",body,response,status))
+   {
       g_lastScanPayload = body;
+      g_lastScanSent = GetTickCount64();
+   }
    else
       Print("[SERVER] Scan status upload failed. HTTP=",status," response=",response);
 }
@@ -698,11 +702,14 @@ void PublishTodaySignals()
       FileClose(file);
    }
    string body="{\"signals\":["+items+"]}";
-   if(body == g_lastTodaySignalsPayload) return;
+   if(body == g_lastTodaySignalsPayload && !Due(g_lastTodaySent,30)) return;
 
    string response; int status;
    if(HttpRequest("POST","/api/today-signals",body,response,status))
+   {
       g_lastTodaySignalsPayload = body;
+      g_lastTodaySent = GetTickCount64();
+   }
    else
       Print("[SERVER] Today signals upload failed. HTTP=",status," response=",response);
 }
@@ -804,6 +811,8 @@ int FindCandleCacheIndex(string key)
    int n = ArraySize(g_candleKeys);
    ArrayResize(g_candleKeys, n+1);
    ArrayResize(g_candleDigests, n+1);
+   ArrayResize(g_candleFullMs, n+1);
+   g_candleFullMs[n] = 0;
    g_candleKeys[n] = key;
    g_candleDigests[n] = "";
    return n;
@@ -891,6 +900,7 @@ bool PublishCandleBatch(string symbol, string tfText, ENUM_TIMEFRAMES period, bo
    return true;
 }
 
+// Moi lan chi gui vai cap symbol/timeframe de khong chan EA va khong don tai len server
 void PublishChartCandles()
 {
    if(g_netBusy) return;
@@ -899,37 +909,20 @@ void PublishChartCandles()
    int total = BuildChartTargets(symbols, timeframes);
    if(total<=0) return;
 
-   bool forceFull = (g_lastFullCandlePost == 0) ||
-                    (TimeCurrent() - g_lastFullCandlePost >= MathMax(15, FullCandleSyncSeconds));
-   if(forceFull) g_lastFullCandlePost = TimeCurrent();
-
-   int ok=0, fail=0;
-   string targetSig = "";
-   string perItemStatus = "";
-
-   for(int i=0;i<total;i++)
+   int batch = MathMin(total, MathMax(1, ChartItemsPerSecond));
+   for(int n=0;n<batch;n++)
    {
-      if(g_netBusy) break;
-      ENUM_TIMEFRAMES period=ChartTimeframeFromText(timeframes[i]);
-      bool sent = PublishCandleBatch(symbols[i], timeframes[i], period, forceFull);
-      if(sent) ok++;
-      else fail++;
+      int i = g_chartCursor % total;
+      g_chartCursor = (i + 1) % total;
+      int cacheIdx = FindCandleCacheIndex(symbols[i] + "|" + timeframes[i]);
+      bool forceFull = Due(g_candleFullMs[cacheIdx], MathMax(15, FullCandleSyncSeconds));
+      if(PublishCandleBatch(symbols[i], timeframes[i], ChartTimeframeFromText(timeframes[i]), forceFull) && forceFull)
+         g_candleFullMs[cacheIdx] = GetTickCount64();
 
-      targetSig += symbols[i] + "|" + timeframes[i] + ";";
-      perItemStatus += symbols[i] + "|" + timeframes[i] + ":" + (sent ? "OK" : "FAIL") + ";";
+      // Day tick xen ke de gia khong bi tre khi gui nen
+      BufferAllTicks();
+      FlushBufferedTicks();
    }
-
-   string stateSig = "targets=" + targetSig +
-                     "#ok=" + IntegerToString(ok) +
-                     "/fail=" + IntegerToString(fail) +
-                     "/total=" + IntegerToString(total) +
-                     "#items=" + perItemStatus;
-
-   if(stateSig == g_lastChartFeedState) return;
-
-   g_lastChartFeedState = stateSig;
-   if(ok>0 || fail>0)
-      Print("[CHART FEED] batch done: ok=",ok," skip=",fail," total=",total," | ",targetSig);
 }
 
 void PublishRealHistory()
@@ -980,57 +973,6 @@ void PublishRealHistory()
       Print("[HISTORY] Real history sync failed. HTTP=",status," response=",response);
 }
 
-void PollSignal()
-{
-   if(!EnableSignalPolling || g_netBusy) return;
-   string response; int status;
-   string path="/api/mt5/next?consumer="+ConsumerId;
-   if(!HttpRequest("GET",path,"",response,status))
-   {
-      Print("[SERVER] Poll failed. HTTP=",status," response=",response);
-      return;
-   }
-   if(StringFind(response,"\"signal\":null")>=0) return;
-   string signalJson=JsonObjectValue(response,"signal");
-   if(signalJson=="")
-   {
-      Print("[SERVER] Invalid response: missing signal object: ",response);
-      return;
-   }
-   string id=JsonValue(signalJson,"id");
-   string symbol=JsonValue(signalJson,"symbol");
-   string tf=JsonValue(signalJson,"timeframe");
-   string direction=JsonValue(signalJson,"direction");
-   string orderType=JsonValue(signalJson,"order_type");
-   if(orderType=="") orderType="MARKET";
-   string entry=JsonValue(signalJson,"entry");
-   string sl=JsonValue(signalJson,"sl");
-   string created=JsonValue(signalJson,"created_at");
-   if(id=="" || symbol=="" || (direction!="BUY" && direction!="SELL") || entry=="" || sl=="")
-   {
-      Print("[SERVER] Invalid signal payload: ",response);
-      return;
-   }
-   if(StringFind(orderType,"STOP")>=0 ||
-      (orderType!="MARKET" && orderType!="BUY_LIMIT" && orderType!="SELL_LIMIT"))
-   {
-      AckSignal(id,"REJECTED","Unsupported order_type (LIMIT/MARKET only)");
-      return;
-   }
-   double entryPrice=StringToDouble(entry), slPrice=StringToDouble(sl);
-   bool valid=(entryPrice>0 && slPrice>0 &&
-      ((direction=="BUY" && slPrice<entryPrice) || (direction=="SELL" && slPrice>entryPrice)));
-   if(!valid)
-   {
-      AckSignal(id,"REJECTED","Invalid entry/SL geometry");
-      return;
-   }
-   Print("[CONNECTOR SIGNAL] ",symbol," ",tf," ",orderType," ",direction,
-         " entry=",DoubleToString(entryPrice,8)," SL=",DoubleToString(slPrice,8),
-         " id=",id," created=",created);
-   AckSignal(id,"PLACED","Signal acknowledged by connector (no trade placed)");
-}
-
 int OnInit()
 {
    if(StringFind(ServerBaseURL,"http://127.0.0.1")!=0 && StringFind(ServerBaseURL,"https://")!=0)
@@ -1044,7 +986,7 @@ int OnInit()
       return INIT_PARAMETERS_INCORRECT;
    }
    EventSetTimer(1);
-   Print("ServerConnector v1.41-ultra-ticks initialized.");
+   Print("ServerConnector v1.50 initialized. Buffer OnTick + coalesced batch tick flush.");
    return INIT_SUCCEEDED;
 }
 
@@ -1057,41 +999,37 @@ void OnTick()
 
 void OnTimer()
 {
+   BufferAllTicks();
    FlushBufferedTicks();
 
-   if(TimeCurrent()-g_lastHeartbeat>=HeartbeatSeconds) SendHeartbeat();
+   if(Due(g_lastHeartbeat, MathMax(5,HeartbeatSeconds))) SendHeartbeat();
 
-   if(EnableAccountSync && TimeCurrent()-g_lastAccountPost>=MathMax(1,AccountSyncSeconds))
+   if(EnableAccountSync && Due(g_lastAccountPost, MathMax(1,AccountSyncSeconds)))
    {
-      g_lastAccountPost=TimeCurrent();
+      g_lastAccountPost=GetTickCount64();
       PublishAccountInfo();
    }
 
-   if(EnableCommissionSync && TimeCurrent()-g_lastCommissionPost>=MathMax(60,CommissionSyncSeconds))
+   if(EnableCommissionSync && Due(g_lastCommissionPost, MathMax(60,CommissionSyncSeconds)))
    {
-      g_lastCommissionPost=TimeCurrent();
+      g_lastCommissionPost=GetTickCount64();
       PublishCommissionSnapshot();
    }
 
-   if(EnableChartCandleFeed && TimeCurrent()-g_lastCandlePost>=MathMax(2,ChartFeedSeconds))
-   {
-      g_lastCandlePost=TimeCurrent();
-      PublishChartCandles();
-   }
+   if(EnableChartCandleFeed) PublishChartCandles();
 
-   if(EnableRealHistorySync && TimeCurrent()-g_lastHistoryPost>=MathMax(5,HistorySyncSeconds))
+   if(EnableRealHistorySync && Due(g_lastHistoryPost, MathMax(5,HistorySyncSeconds)))
    {
-      g_lastHistoryPost=TimeCurrent();
+      g_lastHistoryPost=GetTickCount64();
       PublishRealHistory();
    }
 
-   if(TimeCurrent()-g_lastPoll>=MathMax(1,PollSeconds))
+   if(Due(g_lastPoll, MathMax(1,PollSeconds)))
    {
-      g_lastPoll=TimeCurrent();
+      g_lastPoll=GetTickCount64();
       PublishScanStatus();
       PublishTodaySignals();
       ImportDivergenceQueue();
       ImportLegacyDivergenceSignal();
-      PollSignal();
    }
 }
