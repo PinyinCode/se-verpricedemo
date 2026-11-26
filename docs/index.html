@@ -2927,8 +2927,9 @@ function syncRealtimeReopenButton() {
   );
 
   if (!hasCurrentSignal) {
+    // Toast realtime là thông báo toàn cục: không ẩn khi đổi symbol/timeframe.
+    // Nút mở lại vẫn chỉ hiện khi biểu đồ hiện tại khớp tín hiệu.
     btn.classList.remove('show', 'sell-mode');
-    if (toast) toast.classList.remove('show');
     return;
   }
 
