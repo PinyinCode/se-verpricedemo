@@ -2821,6 +2821,44 @@ const knownRealtimeByView = new Map();
 const RT_DISMISSED_KEY_STORAGE = 'chartRtDismissedSignalKey';
 const RT_LATEST_SIGNAL_STORAGE = 'chartRtLatestSignal';
 
+// ===== Chỉ tín hiệu trong ngày (GMT+7) mới được coi là realtime =====
+// signal_time là giờ server broker; broker_offset_sec do ServerConnector gửi qua server.
+const RT_BROKER_OFFSET_STORAGE = 'chartBrokerOffsetSec';
+let brokerOffsetSec = 0;
+try { brokerOffsetSec = Number(localStorage.getItem(RT_BROKER_OFFSET_STORAGE)) || 0; } catch (_) {}
+
+function rememberBrokerOffset(value) {
+  const n = Number(value);
+  if (value === null || value === undefined || !Number.isFinite(n)) return;
+  brokerOffsetSec = n;
+  try { localStorage.setItem(RT_BROKER_OFFSET_STORAGE, String(n)); } catch (_) {}
+}
+function isTodaySignal(s) {
+  const t = Number(s && s.signal_time);
+  if (!(t > 0)) return false;
+  const gmt7 = 7 * 3600;
+  const dayStartUtc = Math.floor((Date.now() / 1000 + gmt7) / 86400) * 86400 - gmt7;
+  return t >= dayStartUtc + brokerOffsetSec;
+}
+function clearLatestRealtimeSignal() {
+  latestRealtimeSignal = null;
+  latestRealtimeCount = 1;
+  try {
+    sessionStorage.removeItem(RT_LATEST_SIGNAL_STORAGE);
+    localStorage.removeItem(RT_LATEST_SIGNAL_STORAGE);
+  } catch (_) {}
+  const toast = $('rtSignalToast');
+  if (toast) { toast.classList.remove('show'); toast.innerHTML = ''; }
+  syncRealtimeReopenButton();
+}
+function expireOldRealtimeSignal() {
+  if (latestModalSignalContext && !isTodaySignal(latestModalSignalContext.signal)) {
+    latestModalSignalContext = null;
+    if ($('rtSignalDialog').open) $('rtSignalDialog').close();
+  }
+  if (latestRealtimeSignal && !isTodaySignal(latestRealtimeSignal)) clearLatestRealtimeSignal();
+}
+
 function readStoredLatestRealtimeSignal() {
   try {
     const raw = sessionStorage.getItem(RT_LATEST_SIGNAL_STORAGE) || localStorage.getItem(RT_LATEST_SIGNAL_STORAGE);
@@ -2899,7 +2937,7 @@ function syncRealtimeReopenButton() {
   btn.classList.add('show');
 }
 function showRealtimeToast(s, count = 1, { forceOpen = false } = {}) {
-  if (!s) return;
+  if (!s || !isTodaySignal(s)) return;
   const prevKey = latestRealtimeSignal ? signalKey(latestRealtimeSignal) : '';
   const nextKey = signalKey(s);
   latestRealtimeSignal = s;
@@ -3181,6 +3219,7 @@ function openRealtimeDetails(s) {
 }
 
 $('rtReopenBtn').addEventListener('click', () => {
+  expireOldRealtimeSignal();
   if (latestRealtimeSignal) {
     showRealtimeToast(latestRealtimeSignal, latestRealtimeCount, { forceOpen: true });
   } else {
@@ -3203,8 +3242,16 @@ function renderSignals(signals, bars) {
   candleSeries.setMarkers(bars.length ? markers : []);
 
   const viewKey = $('symbol').value + '|' + $('tf').value;
-  const rtItems = list.filter(s => s.signal_type === 'RT').sort((a, b) => Number(b.signal_time) - Number(a.signal_time));
+  expireOldRealtimeSignal();
+  const rtItems = list.filter(s => s.signal_type === 'RT' && isTodaySignal(s)).sort((a, b) => Number(b.signal_time) - Number(a.signal_time));
   const currentKeys = new Set(rtItems.map(signalKey));
+  // Tín hiệu đã lưu của đúng mã/khung đang xem nhưng không còn trong danh sách thì bỏ
+  if (latestRealtimeSignal
+      && latestRealtimeSignal.symbol === $('symbol').value
+      && latestRealtimeSignal.timeframe === $('tf').value
+      && !currentKeys.has(signalKey(latestRealtimeSignal))) {
+    clearLatestRealtimeSignal();
+  }
   if (!knownRealtimeByView.has(viewKey)) {
     knownRealtimeByView.set(viewKey, currentKeys);
     if (rtItems.length) {
@@ -3223,9 +3270,11 @@ function renderSignals(signals, bars) {
   }
 }
 
+expireOldRealtimeSignal();
 if (latestRealtimeSignal) {
   showRealtimeToast(latestRealtimeSignal, 1, { forceOpen: false });
 }
+setInterval(expireOldRealtimeSignal, 15000); // qua 00:00 GMT+7 thì tự gỡ
 
 function defaultGap(ref) {
   const tick = mt5TickSize > 0 ? mt5TickSize : Math.pow(10, -mt5Digits);
@@ -3529,6 +3578,7 @@ async function load(forceNetwork = false) {
     // Chỉ cho đặt lệnh khi giá và thông số hợp đồng lấy từ server (không phải cache)
     if (!fromCache) loadedKey = cacheKey;
 
+    rememberBrokerOffset(data.broker_offset_sec);
     renderSignals(data.signals || [], bars);
     renderRsiDivergences(data.signals || [], bars);
 
@@ -3952,7 +4002,8 @@ function renderStats(data) {
     });
   };
   const rawSignals = Array.isArray(data.today_signals) ? data.today_signals : [];
-  const todaySignals = uniqueBy(rawSignals, x => [
+  rememberBrokerOffset(data.broker_offset_sec);
+  const todaySignals = uniqueBy(rawSignals.filter(isTodaySignal), x => [
     x.symbol, x.timeframe, x.direction, x.divergence, x.signal_type,
     x.signal_time ?? x.time ?? ''
   ].join('|'));
