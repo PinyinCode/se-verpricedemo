@@ -1020,18 +1020,13 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
                   <option>USDCHF</option>
                 </select>
                 <select id="tf">
-                  <option>M1</option>
-                  <option>M5</option>
-                  <option selected>M15</option>
-                  <option>M30</option>
+                  <option>M15</option>
                   <option>H1</option>
-                  <option>H4</option>
-                  <option>D1</option>
                 </select>
               </div>
               <div class="chart-actions">
                 <div class="chart-actions-primary">
-                  <a class="control-link primary-chart-action" href="./" aria-label="Mở Dashboard - điều khiển hệ thống" title="Mở Dashboard - điều khiển hệ thống">DASHBOARD</a>
+                  <a class="control-link primary-chart-action" href="./settings.html" aria-label="Mở Settings - điều khiển hệ thống" title="Mở Settings - điều khiển hệ thống">SETTINGS</a>
                 </div>
                 <div class="chart-actions-tools">
                   <span class="small" id="feedState">Đang kết nối dữ liệu...</span>
@@ -1153,7 +1148,7 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
   <div class="positions-dialog-body">
     <div id="emergencyModalWarning" class="emergency-modal-warning unknown show" role="status" aria-live="polite">
       <strong>ĐANG KIỂM TRA TRẠNG THÁI EMERGENCY</strong>
-      <span>Chưa xác nhận được trạng thái từ máy chủ. Hãy kiểm tra Dashboard trước khi tiếp tục.</span>
+      <span>Chưa xác nhận được trạng thái từ máy chủ. Hãy kiểm tra Settings trước khi tiếp tục.</span>
     </div>
     <div class="settings-fields">
       <label>API key
@@ -1215,7 +1210,7 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
   <div class="positions-dialog-body">
     <div id="positionsEmergencyWarning" class="emergency-modal-warning unknown show" role="status" aria-live="polite">
       <strong>ĐANG KIỂM TRA TRẠNG THÁI EMERGENCY</strong>
-      <span>Chưa xác nhận được trạng thái từ máy chủ. Hãy kiểm tra Dashboard.</span>
+      <span>Chưa xác nhận được trạng thái từ máy chủ. Hãy kiểm tra Settings.</span>
     </div>
     <section class="mt5-account-card" id="mt5AccountCard" aria-live="polite">
       <div class="mt5-account-card-head">
@@ -1380,7 +1375,7 @@ function extractAskFromPayload(payload, symbol) {
     const val = Number(payload[key]);
     if (Number.isFinite(val) && val > 0) return val;
   }
-  const mapContainers = ['latest_ticks', 'mt5_ticks', 'mt5_quotes', 'mt5_prices', 'quotes', 'ticks', 'prices'];
+  const mapContainers = ['mt5_ticks', 'mt5_quotes', 'mt5_prices', 'quotes', 'ticks', 'prices'];
   for (const containerKey of mapContainers) {
     const container = payload[containerKey];
     if (!container) continue;
@@ -1397,22 +1392,6 @@ function extractAskFromPayload(payload, symbol) {
         const val = Number(entry.ask ?? entry.ask_price ?? entry.price);
         if (Number.isFinite(val) && val > 0) return val;
       }
-    }
-  }
-  return 0;
-}
-
-function extractBidFromPayload(payload, symbol) {
-  if (!payload || typeof payload !== 'object') return 0;
-  const sym = String(symbol || '').trim().toUpperCase();
-  const directBid = Number(payload.bid);
-  if (Number.isFinite(directBid) && directBid > 0) return directBid;
-  const latestTicks = payload.latest_ticks;
-  if (latestTicks && typeof latestTicks === 'object') {
-    const entry = latestTicks[sym] || latestTicks[sym.toLowerCase()];
-    if (entry && typeof entry === 'object') {
-      const val = Number(entry.bid ?? entry.last);
-      if (Number.isFinite(val) && val > 0) return val;
     }
   }
   return 0;
@@ -1451,7 +1430,7 @@ function renderMt5AccountInfo(accounts) {
   const ageSec = Number.isFinite(Number(acc.age_seconds)) ? Number(acc.age_seconds) : null;
   const balText = fmtMoney(acc.balance, ccy);
   const eqText = fmtMoney(acc.equity, ccy);
-  const loginText = acc.login || acc.account || acc.account_id || acc.id || '—';
+  const loginText = acc.login || acc.account || acc.id || '—';
   const serverText = acc.server || acc.broker || 'MT5';
   const profitNum = Number(acc.profit ?? acc.floating_profit ?? (Number(acc.equity) - Number(acc.balance)));
 
@@ -1494,11 +1473,11 @@ const eaState = {
     emergency_stop: false,
     time_filter_enabled: true,
     risk_money: 25.0,
-    max_positions: 5,
+    max_positions: 3,
     reward_risk_ratio: 2.0,
-    risk_tolerance_pct: 0.25,
+    risk_tolerance_pct: 0.5,
     commission_fallback: 0.0,
-    spread_buffer_points: 0,
+    spread_buffer_points: 20,
     trading_start_hour: 7,
     trading_end_hour: 23,
   },
@@ -1541,8 +1520,8 @@ function startAuthorizedPolling() {
     setInterval(() => { if (apiAccessGranted) void refreshCommissionInfo(); }, 60000),
     setInterval(() => { if (apiAccessGranted) void refreshEmergencyModalWarning(); }, 30000),
     setInterval(() => { if (apiAccessGranted) void checkServerStatus(); }, 30000),
-    setInterval(() => { if (apiAccessGranted) void load(); }, 10000),
-    setInterval(() => { if (apiAccessGranted) void refreshChartPositions(); }, 5000)
+    setInterval(() => { if (apiAccessGranted && !document.hidden) void load(true); }, 10000),
+    setInterval(() => { if (apiAccessGranted && !document.hidden) void refreshChartPositions(); }, 5000)
   ];
 }
 async function validateApiAccess() {
@@ -1669,11 +1648,11 @@ async function syncEaSettings() {
     eaState.settings.emergency_stop = !!s.emergency_stop;
     eaState.settings.time_filter_enabled = s.time_filter_enabled !== false;
     eaState.settings.risk_money = riskMoney > 0 ? riskMoney : 25.0;
-    eaState.settings.max_positions = Number.isFinite(maxPos) && maxPos >= 0 ? Math.floor(maxPos) : 5;
+    eaState.settings.max_positions = Number.isFinite(maxPos) && maxPos >= 0 ? Math.floor(maxPos) : 3;
     eaState.settings.reward_risk_ratio = rr > 0 ? rr : 2.0;
-    eaState.settings.risk_tolerance_pct = Number.isFinite(tol) && tol >= 0 ? tol : 0.25;
+    eaState.settings.risk_tolerance_pct = Number.isFinite(tol) && tol >= 0 ? tol : 0.5;
     eaState.settings.commission_fallback = Number.isFinite(fallback) ? fallback : 0.0;
-    eaState.settings.spread_buffer_points = Number.isFinite(spreadBuf) && spreadBuf >= 0 ? Math.floor(spreadBuf) : 0;
+    eaState.settings.spread_buffer_points = Number.isFinite(spreadBuf) && spreadBuf >= 0 ? Math.floor(spreadBuf) : 20;
     eaState.settings.trading_start_hour = Number.isFinite(startH) ? Math.floor(startH) : 7;
     eaState.settings.trading_end_hour = Number.isFinite(endH) ? Math.floor(endH) : 23;
 
@@ -1698,23 +1677,26 @@ async function syncSymbolCommission(symbol) {
     return null;
   }
   try {
-    const response = await apiFetch(API_BASE + '/api/settings/commission?symbol=' + encodeURIComponent(sym), { cache: 'no-store' });
+    const response = await apiFetch(API_BASE + '/api/mt5/commissions?symbol=' + encodeURIComponent(sym), { cache: 'no-store' });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(data.detail || ('HTTP ' + response.status));
-    if (!data || !data.has_data) {
+    const rows = Array.isArray(data.items) ? data.items : [];
+    const item = rows.filter(row => String(row.symbol || '').toUpperCase() === sym)
+      .sort((a, b) => Date.parse(b.received_at || 0) - Date.parse(a.received_at || 0))[0];
+    if (!item) {
       eaState.commission.has_data = false;
-      eaState.commission.commission_per_lot = Number(data?.commission_per_lot ?? eaState.settings.commission_fallback) || 0;
+      eaState.commission.commission_per_lot = eaState.settings.commission_fallback;
       eaState.commission.point_size = 0;
       eaState.commission.tick_value = 0;
       calcLot();
       return null;
     }
     eaState.commission.has_data = true;
-    eaState.commission.commission_per_lot = Number(data.commission_per_lot) || 0;
-    eaState.commission.point_size = Number(data.point_size) || 0;
-    eaState.commission.tick_value = Number(data.tick_value) || 0;
+    eaState.commission.commission_per_lot = Number(item.commission_per_lot) || 0;
+    eaState.commission.point_size = Number(item.point_size) || 0;
+    eaState.commission.tick_value = Number(item.tick_value) || 0;
     calcLot();
-    return data;
+    return item;
   } catch (_) {
     eaState.commission.has_data = false;
     eaState.commission.commission_per_lot = eaState.settings.commission_fallback;
@@ -1771,7 +1753,6 @@ async function refreshCommissionInfo() {
       state.className = 'small ok';
     }
     meta.textContent = 'Symbol: ' + symbol
-      + (item.account_id ? ' · Acc: ' + item.account_id : '')
       + ' · Server nhận: ' + receivedLabel
       + ' · MT5 cập nhật: ' + sourceLabel
       + (ageMinutes > 15 ? ' · Cảnh báo: quá 15 phút chưa đồng bộ.' : '')
@@ -1928,9 +1909,10 @@ function renderRsiDivergences(signals, bars) {
   const list = Array.isArray(signals) ? signals : [];
   const rsiData = typeof rsiSeries.data === 'function' ? (rsiSeries.data() || []) : [];
 
+  // Sắp xếp để tín hiệu RT được vẽ cuối cùng (nổi bật lên trên)
   const ordered = [...list].slice(0, 80).sort((a, b) => {
-    const aRt = String(a.signal_type || '').toUpperCase() === 'RT' ? 1 : 0;
-    const bRt = String(b.signal_type || '').toUpperCase() === 'RT' ? 1 : 0;
+    const aRt = a.signal_type === 'RT' ? 1 : 0;
+    const bRt = b.signal_type === 'RT' ? 1 : 0;
     return aRt - bRt;
   });
 
@@ -1976,6 +1958,7 @@ function renderRsiDivergences(signals, bars) {
       ]);
       priceDivergenceSeries.push(priceLine);
     } else if (isRealtime) {
+      // Line phân kỳ realtime dự phòng khi chỉ có mốc signal_time / price2
       const sigTs = Number(s.signal_time || t2 || 0);
       if (sigTs > 0) {
         const snappedTs = nearestTime(sigTs, bars);
@@ -2233,6 +2216,7 @@ function rollbackPendingSltp() {
 
 $('cdCancel').addEventListener('click', () => { rollbackPendingSltp(); $('confirmSltpDialog').close(); });
 $('confirmSltpDialog').addEventListener('click', e => { if (e.target === $('confirmSltpDialog')) { rollbackPendingSltp(); $('confirmSltpDialog').close(); } });
+$('confirmSltpDialog').addEventListener('cancel', () => rollbackPendingSltp());
 $('cdOk').addEventListener('click', async () => {
   if (!pendingSltpChange) { $('confirmSltpDialog').close(); return; }
   if (!chartApiKey) {
@@ -2480,13 +2464,18 @@ function proposeRealLevelChange(payload, key, oldPrice, newPrice) {
   }
 
   const checkEntry = isPending ? desiredEntry : entry;
-  if (desiredSl > 0 && checkEntry > 0) {
-    if (dir === 'BUY' && desiredSl >= checkEntry) { $('requestState').textContent = 'SL BUY phải < Entry. Đã hoàn tác.'; renderRealLines(); return; }
-    if (dir === 'SELL' && desiredSl <= checkEntry) { $('requestState').textContent = 'SL SELL phải > Entry. Đã hoàn tác.'; renderRealLines(); return; }
+  // Lệnh chờ so với Entry; vị thế đang mở so với giá thị trường (cho phép hòa vốn / khóa lãi)
+  const market = dir === 'SELL' && serverAskPrice > 0 ? serverAskPrice : Number(latestMarketPrice);
+  const ref = !isPending && market > 0 ? market : checkEntry;
+  const refName = !isPending && market > 0 ? 'giá hiện tại' : 'Entry';
+  const reject = msg => { $('requestState').textContent = msg + ' ' + refName + '. Đã hoàn tác.'; renderRealLines(); };
+  if (key !== 'tp' && desiredSl > 0 && ref > 0) {
+    if (dir === 'BUY' && desiredSl >= ref) return reject('SL BUY phải <');
+    if (dir === 'SELL' && desiredSl <= ref) return reject('SL SELL phải >');
   }
-  if (desiredTp > 0 && checkEntry > 0) {
-    if (dir === 'BUY' && desiredTp <= checkEntry) { $('requestState').textContent = 'TP BUY phải > Entry. Đã hoàn tác.'; renderRealLines(); return; }
-    if (dir === 'SELL' && desiredTp >= checkEntry) { $('requestState').textContent = 'TP SELL phải < Entry. Đã hoàn tác.'; renderRealLines(); return; }
+  if (key !== 'sl' && desiredTp > 0 && ref > 0) {
+    if (dir === 'BUY' && desiredTp <= ref) return reject('TP BUY phải >');
+    if (dir === 'SELL' && desiredTp >= ref) return reject('TP SELL phải <');
   }
   if (isPending && key === 'entry') {
     if (dir === 'BUY' && desiredSl > 0 && desiredSl >= desiredEntry) { $('requestState').textContent = 'BUY LIMIT yêu cầu SL < Entry mới. Đã hoàn tác.'; renderRealLines(); return; }
@@ -2649,6 +2638,7 @@ $('cpCancel').addEventListener('click', () => {
   renderRealLines();
 });
 $('confirmPendingDialog').addEventListener('click', e => { if (e.target === $('confirmPendingDialog')) { pendingPendingChange = null; $('confirmPendingDialog').close(); renderRealLines(); } });
+$('confirmPendingDialog').addEventListener('cancel', () => { pendingPendingChange = null; renderRealLines(); });
 $('cpOk').addEventListener('click', async () => {
   if (!pendingPendingChange) { $('confirmPendingDialog').close(); return; }
   if (!chartApiKey) {
@@ -2998,7 +2988,13 @@ function computeCandleExtremeSl(target, refPrice, bufferPrice) {
   return Math.max(0, Number(sl.toFixed(mt5Digits)));
 }
 
-function applyRealtimeSignalToForm(s) {
+async function applyRealtimeSignalToForm(s) {
+  const state = await verifyEmergencyBeforeTradePanel();
+  if (state.enabled) { showTradeEmergencyWarning(state); return; }
+  applyRealtimeSignalToFormNow(s);
+}
+
+function applyRealtimeSignalToFormNow(s) {
   const target = s || latestModalSignalContext?.signal || latestRealtimeSignal;
   if (!target) return;
 
@@ -3020,6 +3016,7 @@ function applyRealtimeSignalToForm(s) {
     (targetSym && $('symbol').value !== targetSym) ||
     (targetTf && $('tf').value !== targetTf);
 
+  if (viewChanged) { latestMarketPrice = 0; serverAskPrice = 0; liveBar = null; loadedKey = ''; }
   if (targetSym && $('symbol').value !== targetSym) $('symbol').value = targetSym;
   if (targetTf && $('tf').value !== targetTf) $('tf').value = targetTf;
 
@@ -3174,7 +3171,7 @@ function renderSignals(signals, bars) {
   candleSeries.setMarkers(bars.length ? markers : []);
 
   const viewKey = $('symbol').value + '|' + $('tf').value;
-  const rtItems = list.filter(s => String(s.signal_type || '').toUpperCase() === 'RT').sort((a, b) => Number(b.signal_time) - Number(a.signal_time));
+  const rtItems = list.filter(s => s.signal_type === 'RT').sort((a, b) => Number(b.signal_time) - Number(a.signal_time));
   const currentKeys = new Set(rtItems.map(signalKey));
   if (!knownRealtimeByView.has(viewKey)) {
     knownRealtimeByView.set(viewKey, currentKeys);
@@ -3375,6 +3372,42 @@ async function writeChartCache(key, value) {
   } catch (_) {}
 }
 
+let liveTick = null, liveBar = null, loadedKey = '', loadSeq = 0, appliedSeq = 0;
+
+function applyLiveTick() {
+  const t = liveTick, symbol = $('symbol').value, tf = $('tf').value;
+  if (!t || !liveBar || t.symbol !== symbol || loadedKey !== symbol + '|' + tf) return;
+  if (!(t.bid > 0) || !(t.time_msc > 0)) return;
+  const sec = { M1: 60, M5: 300, M15: 900, M30: 1800, H1: 3600, H4: 14400, D1: 86400 }[tf];
+  if (!sec) return;
+  const time = Math.floor(t.time_msc / 1000 / sec) * sec;
+  if (time < liveBar.time) return;
+  const p = t.bid;
+  liveBar = time === liveBar.time
+    ? { time, open: liveBar.open, high: Math.max(liveBar.high, p), low: Math.min(liveBar.low, p), close: p }
+    : { time, open: p, high: p, low: p, close: p };
+  candleSeries.update(liveBar);
+  latestMarketPrice = p;
+  if (t.ask > 0) serverAskPrice = t.ask;
+  if ($('orderMode').value === 'MARKET' && activeFormDragKey !== 'entry') $('entryPrice').value = p.toFixed(mt5Digits);
+  if (!isAnyLineDragging()) syncChartPriceOverlays();
+}
+
+// Giá realtime: 1 request/giây từ cache RAM của server, dừng khi tab ẩn
+async function pollTick() {
+  try {
+    if (apiAccessGranted && !document.hidden) {
+      const r = await apiFetch(API_BASE + '/api/mt5/ticks?symbol=' + encodeURIComponent($('symbol').value),
+        { cache: 'no-store', signal: AbortSignal.timeout(3000) });
+      if (r.ok) {
+        const d = await r.json();
+        if (d.tick) { liveTick = d.tick; applyLiveTick(); }
+      }
+    }
+  } catch (_) {}
+  setTimeout(pollTick, 1000);
+}
+
 async function load(forceNetwork = false) {
   if (!apiAccessGranted) {
     $('feedState').textContent = 'Nhập API key để tải dữ liệu';
@@ -3383,6 +3416,7 @@ async function load(forceNetwork = false) {
   const symbol = $('symbol').value, tf = $('tf').value;
   $('chartTitle').textContent = symbol + ' · ' + tf;
   $('feedState').textContent = 'Đang tải...';
+  const seq = ++loadSeq;
   try {
     const cacheKey = symbol + '|' + tf;
     let data = null;
@@ -3415,7 +3449,8 @@ async function load(forceNetwork = false) {
         await deleteChartCache(cacheKey);
       }
     }
-    if ($('symbol').value !== symbol || $('tf').value !== tf) return;
+    if ($('symbol').value !== symbol || $('tf').value !== tf || seq < appliedSeq) return;
+    appliedSeq = seq;
     mt5Digits = Math.max(0, Math.min(10, Number(data.digits ?? 5)));
     mt5TickSize = Number(data.tick_size ?? 0.00001);
     mt5TickValue = Number(data.tick_value ?? 0);
@@ -3444,12 +3479,7 @@ async function load(forceNetwork = false) {
     const bars = (data.candles || []).map(c => ({
       time: Number(c.time), open: Number(c.open), high: Number(c.high), low: Number(c.low), close: Number(c.close), volume: Number(c.volume ?? 0),
     }));
-    const payloadBid = extractBidFromPayload(data, symbol);
-    if (payloadBid > 0) {
-      latestMarketPrice = payloadBid;
-    } else if (bars.length) {
-      latestMarketPrice = bars[bars.length - 1].close;
-    }
+    if (bars.length) latestMarketPrice = bars[bars.length - 1].close;
 
     const oldRange = firstLoad ? null : priceChart.timeScale().getVisibleLogicalRange();
     const signature = JSON.stringify(bars);
@@ -3461,7 +3491,10 @@ async function load(forceNetwork = false) {
       })));
       rsiSeries.setData(rsi(bars));
       lastBarsSignature = signature;
+      liveBar = bars.length ? { ...bars[bars.length - 1] } : null;
     }
+    // Chỉ cho đặt lệnh khi giá và thông số hợp đồng lấy từ server (không phải cache)
+    if (!fromCache) loadedKey = cacheKey;
 
     renderSignals(data.signals || [], bars);
     renderRsiDivergences(data.signals || [], bars);
@@ -3469,9 +3502,10 @@ async function load(forceNetwork = false) {
     if (bars.length) {
       const symbolChanged = lastLoadedSymbol !== symbol;
       const slVal = Number($('slPrice').value);
-      const base = Number(latestMarketPrice > 0 ? latestMarketPrice : bars[bars.length - 1].close), gap = defaultGap(base);
+      const base = Number(bars[bars.length - 1].close), gap = defaultGap(base);
       const slInvalidForMarket = activePreset === 'MARKET' && $('orderMode').value === 'MARKET' && (!(slVal > 0) || (autoDirection === 'BUY' && slVal >= base) || (autoDirection === 'SELL' && slVal <= base));
       if (symbolChanged || slInvalidForMarket) {
+        latestMarketPrice = base;
         if (activePreset === 'BUY_LIMIT' || activePreset === 'SELL_LIMIT') {
           applyLimitDefaults(base, activePreset);
         } else if (activePreset === 'MARKET') {
@@ -3486,8 +3520,8 @@ async function load(forceNetwork = false) {
         }
         lastLoadedSymbol = symbol;
       }
-      if ($('orderMode').value === 'MARKET' && activeFormDragKey !== 'entry' && base > 0) {
-        $('entryPrice').value = base.toFixed(mt5Digits);
+      if ($('orderMode').value === 'MARKET' && activeFormDragKey !== 'entry') {
+        $('entryPrice').value = Number(bars[bars.length - 1].close).toFixed(mt5Digits);
       }
       const resetChartView = firstLoad || symbolChanged;
       if (resetChartView) {
@@ -3510,6 +3544,7 @@ async function load(forceNetwork = false) {
       $('feedState').textContent += ' · cache, đang cập nhật';
       void load(true);
     }
+    applyLiveTick();
     renderRealLines();
     renderAskLine();
   } catch (e) {
@@ -3723,13 +3758,6 @@ async function refreshChartPositions() {
     const openList = Array.isArray(d.mt5_positions) ? d.mt5_positions : [];
     const pendingList = Array.isArray(d.mt5_pending_orders) ? d.mt5_pending_orders : [];
     const snapshotAge = d.mt5_snapshot_updated_at ? Math.max(0, Math.round((Date.now() - Date.parse(d.mt5_snapshot_updated_at)) / 1000)) : null;
-    const parsedBid = extractBidFromPayload(d, $('symbol').value);
-    if (parsedBid > 0) {
-      latestMarketPrice = parsedBid;
-      if ($('orderMode').value === 'MARKET' && activeFormDragKey !== 'entry') {
-        $('entryPrice').value = parsedBid.toFixed(mt5Digits);
-      }
-    }
     const parsedAsk = extractAskFromPayload(d, $('symbol').value);
     if (parsedAsk > 0) {
       serverAskPrice = parsedAsk;
@@ -3769,7 +3797,7 @@ async function refreshEmergencyModalWarning() {
     });
   } catch (e) {
     const detail = String(e.message || e).replace(/[<>&"]/g, '');
-    banners.forEach(banner => render(banner, 'unknown', '<strong>KHÔNG ĐỌC ĐƯỢC TRẠNG THÁI EMERGENCY</strong><span>Không thể xác minh trạng thái từ máy chủ (' + detail + '). Hãy kiểm tra Dashboard.</span>'));
+    banners.forEach(banner => render(banner, 'unknown', '<strong>KHÔNG ĐỌC ĐƯỢC TRẠNG THÁI EMERGENCY</strong><span>Không thể xác minh trạng thái từ máy chủ (' + detail + '). Hãy kiểm tra trang Settings.</span>'));
   }
 }
 $('settingsButton').addEventListener('click', () => { refreshApiKeyBox(); syncAskLineToggle(); calcLot(); $('tradeSettingsDialog').showModal(); refreshCommissionInfo(); refreshEmergencyModalWarning(); });
@@ -3815,10 +3843,10 @@ function showTradeEmergencyWarning(state) {
   const message = $('tradeEmergencyMessage');
   if (!state.known) {
     title.textContent = '⚠ KHÔNG XÁC MINH ĐƯỢC EMERGENCY';
-    message.textContent = 'Không đọc được trạng thái Emergency Stop từ máy chủ (' + state.detail + '). Vì chưa xác minh được hệ thống có cho phép giao dịch hay không, bảng giao dịch sẽ không mở. Hãy kiểm tra kết nối và Dashboard.';
+    message.textContent = 'Không đọc được trạng thái Emergency Stop từ máy chủ (' + state.detail + '). Vì chưa xác minh được hệ thống có cho phép giao dịch hay không, bảng giao dịch sẽ không mở. Hãy kiểm tra kết nối và Settings.';
   } else {
     title.textContent = '🚨 EMERGENCY STOP ĐANG BẬT';
-    message.textContent = 'Hệ thống đang bật chế độ dừng khẩn cấp. Bảng giao dịch không được mở và không thể gửi yêu cầu giao dịch. Hãy vào Dashboard kiểm tra trạng thái Emergency Stop. Lưu ý: trạng thái này không xác nhận MT5 đã đóng các vị thế hoặc lệnh chờ đang tồn tại.';
+    message.textContent = 'Hệ thống đang bật chế độ dừng khẩn cấp. Bảng giao dịch không được mở và không thể gửi yêu cầu giao dịch. Hãy vào Settings kiểm tra trạng thái Emergency Stop. Lưu ý: trạng thái này không xác nhận MT5 đã đóng các vị thế hoặc lệnh chờ đang tồn tại.';
   }
   if (!dialog.open) dialog.showModal();
 }
@@ -3878,6 +3906,8 @@ const localDateTime = ts => {
 };
 
 function renderStats(data) {
+  // API có thể trả lại cùng một bản ghi ở nhiều lần đồng bộ; khử trùng trước
+  // khi tính KPI và render để số liệu và bảng luôn khớp nhau.
   const uniqueBy = (items, getKey) => {
     const seen = new Set();
     return items.filter(item => {
@@ -3892,7 +3922,7 @@ function renderStats(data) {
     x.symbol, x.timeframe, x.direction, x.divergence, x.signal_type,
     x.signal_time ?? x.time ?? ''
   ].join('|'));
-  const rawHistory = Array.isArray(data.real_history ?? data.mt5_history) ? (data.real_history ?? data.mt5_history) : [];
+  const rawHistory = Array.isArray(data.real_history) ? data.real_history : [];
   const history = uniqueBy(rawHistory, p => {
     const stableId = p.ticket ?? p.deal_ticket ?? p.id ?? p.position_id;
     if (stableId !== undefined && stableId !== null && String(stableId).trim()) {
@@ -4054,12 +4084,13 @@ function updateDirectionFromSL() {
   $('sendSell').textContent = 'SELL';
   const sl = Number($('slPrice').value);
   const baseRef = Number(latestMarketPrice) > 0 ? Number(latestMarketPrice) : Number($('entryPrice').value);
+  const previousDirection = autoDirection;
   if (sl > 0 && baseRef > 0 && sl !== baseRef) autoDirection = sl > baseRef ? 'SELL' : 'BUY';
   $('sendBuy').classList.toggle('active', autoDirection === 'BUY');
   $('sendSell').classList.toggle('active', autoDirection === 'SELL');
   $('sendBuy').style.display = autoDirection === 'BUY' ? '' : 'none';
   $('sendSell').style.display = autoDirection === 'SELL' ? '' : 'none';
-  $('requestState').textContent = 'SL đang xác định hướng ' + autoDirection + '.';
+  if (previousDirection !== autoDirection) $('requestState').textContent = 'SL đang xác định hướng ' + autoDirection + '.';
 }
 
 function volumeDigits(step) {
@@ -4118,7 +4149,7 @@ function calculateEaLot(symbol, slDistance, targetRiskMoney) {
   const step = mt5VolumeStep;
   const stepDigits = volumeDigits(step);
   const rawLot = targetRiskMoney / baseProbe.riskPerLot;
-  let lot = Math.floor((rawLot + step * 0.5) / step) * step;
+  let lot = Math.floor(rawLot / step + 1e-9) * step;
   lot = Number(Math.min(lot, mt5VolumeMax).toFixed(stepDigits));
 
   if (lot < mt5VolumeMin) {
@@ -4137,7 +4168,7 @@ function calculateEaLot(symbol, slDistance, targetRiskMoney) {
 
   if (rb.total > budget) {
     const maxLotForBudget = budget / baseProbe.riskPerLot;
-    let reducedLot = Math.floor((maxLotForBudget + step * 0.5) / step) * step;
+    let reducedLot = Math.floor(maxLotForBudget / step + 1e-9) * step;
     reducedLot = Number(Math.min(reducedLot, mt5VolumeMax).toFixed(stepDigits));
     if (reducedLot < mt5VolumeMin) {
       return {
@@ -4349,7 +4380,30 @@ document.addEventListener('keydown', e => {
   if (e.key.toLowerCase() === 'l') { e.preventDefault(); toggleLock(); }
 });
 
+let sendingOrder = false, unconfirmedOrder = null;
+
+// Gửi lại cùng một lệnh (sau lỗi mạng) dùng lại ID để server không tạo lệnh thứ hai
+function withOrderId(payload) {
+  const key = [payload.symbol, payload.direction, payload.order_type, payload.sl, payload.tp, payload.requested_lot].join('|');
+  if (!unconfirmedOrder || unconfirmedOrder.key !== key || Date.now() - unconfirmedOrder.at > 60000) {
+    unconfirmedOrder = { key, at: Date.now(), id: Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 12) };
+  }
+  return { ...payload, client_order_id: unconfirmedOrder.id };
+}
+
 async function sendOrder(direction) {
+  if (sendingOrder) return;
+  sendingOrder = true;
+  try {
+    const state = await verifyEmergencyBeforeTradePanel();
+    if (state.enabled) { showTradeEmergencyWarning(state); return; }
+    await sendOrderNow(direction);
+  } finally {
+    sendingOrder = false;
+  }
+}
+
+async function sendOrderNow(direction) {
   if (!chartApiKey) {
     $('requestState').textContent = 'Chưa nhập API key — mở Cài đặt để nhập.';
     $('apiKeyStatus').textContent = 'Cần nhập API key trước khi gửi yêu cầu.';
@@ -4360,6 +4414,11 @@ async function sendOrder(direction) {
   }
   await syncEaSettings();
   await syncSymbolCommission($('symbol').value);
+  const viewKey = $('symbol').value + '|' + $('tf').value;
+  if (loadedKey !== viewKey) {
+    $('requestState').textContent = 'Dữ liệu của mã đang chọn chưa tải xong. Hãy thử lại sau giây lát.';
+    return;
+  }
   const c = calcLot();
   if (!c) return;
   const mode = $('orderMode').value;
@@ -4394,13 +4453,14 @@ async function sendOrder(direction) {
       + `Lot MT5: ${volStr}\n`
       + `Tổng Risk dự kiến: $${c.actualRisk.toFixed(2)} / $${c.risk.toFixed(2)} (SL $${c.slRisk.toFixed(2)} + Comm $${c.commission.toFixed(2)} + Buf $${c.spreadCost.toFixed(2)})\n\n`
       + `Gửi lệnh ${limitLabel} lên MT5 thật? Tiếp tục?`;
-    if (!window.confirm(summary)) return;
+    if (!window.confirm(summary) || loadedKey !== viewKey) return;
     const payload = { symbol: $('symbol').value, timeframe: $('tf').value, direction, order_type: requestedLimitType, entry, sl: c.s, tp, risk_money: c.risk, requested_lot: c.lot, score: 0, source: 'web-chart' };
     $('requestState').textContent = 'Đang gửi yêu cầu ' + limitLabel + '...';
     try {
-      const r = await apiFetch(API_BASE + '/api/chart/order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+      const r = await apiFetch(API_BASE + '/api/chart/order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(withOrderId(payload)) });
       const d = await r.json();
       if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+      unconfirmedOrder = null;
       $('requestState').textContent = 'Đã đưa ' + limitLabel + ' vào hàng đợi MT5 · ID ' + d.signal_id;
       $('apiKeyStatus').textContent = 'API key hợp lệ.'; $('apiKeyStatus').classList.add('ok');
     } catch (err) {
@@ -4425,13 +4485,14 @@ async function sendOrder(direction) {
     + `Lot MT5: ${volStr}\n`
     + `Tổng Risk dự kiến: $${c.actualRisk.toFixed(2)} / $${c.risk.toFixed(2)} (SL $${c.slRisk.toFixed(2)} + Comm $${c.commission.toFixed(2)} + Buf $${c.spreadCost.toFixed(2)})\n\n`
     + `Gửi lệnh ${direction} lên MT5 thật? Tiếp tục?`;
-  if (!window.confirm(summary)) return;
+  if (!window.confirm(summary) || loadedKey !== viewKey) return;
   const payload = { symbol: $('symbol').value, timeframe: $('tf').value, direction, order_type: 'MARKET', entry: refPrice, sl: c.s, tp, risk_money: c.risk, requested_lot: c.lot, score: 0, source: 'web-chart' };
   $('requestState').textContent = 'Đang gửi yêu cầu...';
   try {
-    const r = await apiFetch(API_BASE + '/api/chart/order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    const r = await apiFetch(API_BASE + '/api/chart/order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(withOrderId(payload)) });
     const d = await r.json();
     if (!r.ok) throw new Error(d.detail || ('HTTP ' + r.status));
+    unconfirmedOrder = null;
     $('requestState').textContent = 'Đã đưa ' + direction + ' vào hàng đợi MT5 · ID ' + d.signal_id;
     $('apiKeyStatus').textContent = 'API key hợp lệ.'; $('apiKeyStatus').classList.add('ok');
   } catch (err) {
@@ -4442,8 +4503,8 @@ async function sendOrder(direction) {
 
 $('sendBuy').addEventListener('click', () => sendOrder('BUY'));
 $('sendSell').addEventListener('click', () => sendOrder('SELL'));
-$('symbol').addEventListener('change', () => { serverAskPrice = 0; renderAskLine(); firstLoad = true; lastBarsSignature = ''; load(); void syncSymbolCommission($('symbol').value); refreshCommissionInfo(); syncRealtimeReopenButton(); });
-$('tf').addEventListener('change', () => { firstLoad = true; lastBarsSignature = ''; load(); syncRealtimeReopenButton(); });
+$('symbol').addEventListener('change', () => { serverAskPrice = 0; latestMarketPrice = 0; liveBar = null; loadedKey = ''; renderAskLine(); firstLoad = true; lastBarsSignature = ''; load(); void syncSymbolCommission($('symbol').value); refreshCommissionInfo(); syncRealtimeReopenButton(); });
+$('tf').addEventListener('change', () => { liveBar = null; loadedKey = ''; firstLoad = true; lastBarsSignature = ''; load(); syncRealtimeReopenButton(); });
 $('refresh').addEventListener('click', () => { lastBarsSignature = ''; load(true); void syncEaSettings(); void syncSymbolCommission($('symbol').value); });
 
 const rsiResizeHandle = $('rsiResizeHandle');
@@ -4518,3 +4579,79 @@ document.addEventListener('pointerup', stopResize);
 document.addEventListener('pointercancel', stopResize);
 
 function updateGMT7Clock() {
+  $('clockGMT7').textContent = new Intl.DateTimeFormat('vi-VN', {
+    timeZone: 'Asia/Ho_Chi_Minh', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  }).format(new Date());
+}
+const formatLatency = ms => {
+  const n = Math.max(0, Math.round(ms));
+  return n >= 1000 ? (n / 1000).toFixed(1) + 's' : n + 'ms';
+};
+async function checkServerStatus() {
+  if (!apiAccessGranted) return;
+  const t0 = performance.now();
+  try {
+    const res = await fetch(API_BASE + '/api/health', { cache: 'no-store' });
+    const speed = formatLatency(performance.now() - t0);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const d = await res.json();
+    const ok = d.status === 'ok' && d.database === 'ok';
+    $('serverState').classList.toggle('online', ok);
+    $('serverState').classList.toggle('offline', !ok);
+    $('serverState').innerHTML = '<i></i><span>' + speed + '</span>';
+    $('serverState').title = 'API: ' + d.status + ' · DB: ' + d.database + ' · ' + speed + (d.mode ? ' · ' + d.mode : '');
+  } catch (e) {
+    const speed = formatLatency(performance.now() - t0);
+    $('serverState').classList.remove('online');
+    $('serverState').classList.add('offline');
+    $('serverState').innerHTML = '<i></i><span>' + speed + '</span>';
+    $('serverState').title = String(e.message || e);
+  }
+}
+
+function triggerInitialAuthCheck() {
+  if (window.accountAuthGranted && chartApiKey) {
+    void validateApiAccess();
+  }
+}
+
+ensureApiAuthWarnings();
+refreshApiKeyBox();
+renderMt5AccountInfo([]);
+window.addEventListener('forex-auth-ready', triggerInitialAuthCheck);
+window.addEventListener('forex-auth-locked', stopAuthorizedPolling);
+stopAuthorizedPolling();
+syncRealLayerToggles();
+bindRealLayerToggles();
+bindAskLineToggle();
+applyLockState();
+syncPresetButtons();
+
+$('apiKeySave').addEventListener('click', () => {
+  saveApiKey($('apiKeyInput').value);
+  stopAuthorizedPolling();
+  $('requestState').textContent = 'Đang xác thực API key (' + maskKey(chartApiKey) + ')...';
+  void validateApiAccess();
+});
+$('apiKeyInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') {
+    saveApiKey($('apiKeyInput').value);
+    stopAuthorizedPolling();
+    $('apiKeyInput').blur();
+    $('requestState').textContent = 'Đang xác thực API key (' + maskKey(chartApiKey) + ')...';
+    void validateApiAccess();
+  }
+});
+$('apiKeyToggle').addEventListener('click', () => {
+  const inp = $('apiKeyInput');
+  inp.type = inp.type === 'password' ? 'text' : 'password';
+});
+$('commissionRefresh').addEventListener('click', refreshCommissionInfo);
+
+updateGMT7Clock();
+setInterval(updateGMT7Clock, 1000);
+pollTick();
+</script>
+<script src="./auth.js"></script>
+</body>
+</html>
