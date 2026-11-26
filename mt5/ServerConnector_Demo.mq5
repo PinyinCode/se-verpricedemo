@@ -4,7 +4,7 @@
 //| Chart & account feed only (no trade execution).                  |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.40-ultra"
+#property version "1.41-ultra-ticks"
 
 #include <Trade\Trade.mqh>
 
@@ -16,9 +16,9 @@ input int HeartbeatSeconds = 15;
 
 // Fast tick buffer & flush controls
 input bool EnableFastTickPush = true;
-input int FastTickMinMs = 200;          // Min interval (ms) between tick flushes per symbol
-input int TickFlushIntervalMs = 200;    // Timer tick flush cadence (ms)
-input string FastTickSymbols = "";      // Empty = chart symbol + active chart targets
+input int FastTickMinMs = 300;          // Min interval (ms) between tick flushes per symbol
+input int TickFlushIntervalMs = 250;    // Timer tick flush cadence (ms)
+input string FastTickSymbols = "";      // Empty = chart symbol only
 
 // Account info sync
 input bool EnableAccountSync = true;
@@ -162,7 +162,7 @@ string JsonObjectValue(string json, string key)
    return "";
 }
 
-bool HttpRequest(string method,string path,string body,string &response,int &status,int timeoutMs=2500,bool allowWhenBusy=false)
+bool HttpRequest(string method,string path,string body,string &response,int &status,int timeoutMs=2200,bool allowWhenBusy=false)
 {
    if(g_netBusy && !allowWhenBusy) return false;
    g_netBusy = true;
@@ -256,15 +256,32 @@ void BufferTick(string sym)
    g_bufDirty[idx] = true;
 }
 
+void PollExtraTickSymbols()
+{
+   if(!EnableFastTickPush || FastTickSymbols == "") return;
+   string list[];
+   int n = StringSplit(FastTickSymbols, ',', list);
+   for(int i=0; i<n; i++)
+   {
+      string sym = list[i];
+      StringTrimLeft(sym); StringTrimRight(sym); StringToUpper(sym);
+      if(sym == "" || sym == _Symbol) continue;
+      if(!SymbolSelect(sym, true)) continue;
+      BufferTick(sym);
+   }
+}
+
 void FlushBufferedTicks()
 {
    if(!EnableFastTickPush || g_netBusy) return;
 
+   PollExtraTickSymbols();
+
    ulong nowMs = GetTickCount64();
-   int flushCadence = MathMax(50, TickFlushIntervalMs);
+   int flushCadence = MathMax(100, TickFlushIntervalMs);
    if(nowMs - g_lastTickFlushMs < (ulong)flushCadence) return;
 
-   int minGap = MathMax(50, FastTickMinMs);
+   int minGap = MathMax(100, FastTickMinMs);
    string itemsJson = "";
    int chosenIndices[];
    ArrayResize(chosenIndices, 0);
@@ -297,7 +314,7 @@ void FlushBufferedTicks()
    string body = "{\"ticks\":[" + itemsJson + "]}";
    string resp;
    int status = 0;
-   if(HttpRequest("POST", "/api/mt5/ticks/batch", body, resp, status, 900, false))
+   if(HttpRequest("POST", "/api/mt5/ticks/batch", body, resp, status, 750, false))
    {
       for(int j=0; j<ArraySize(chosenIndices); j++)
       {
@@ -505,7 +522,7 @@ bool AckSignal(string id,string result,string message)
 {
    string response; int status;
    string body="{\"signal_id\":\""+JsonEscape(id)+"\",\"status\":\""+JsonEscape(result)+"\",\"message\":\""+JsonEscape(message)+"\"}";
-   bool ok=HttpRequest("POST","/api/mt5/ack",body,response,status,2500,true);
+   bool ok=HttpRequest("POST","/api/mt5/ack",body,response,status,2200,true);
    if(!ok) Print("[SERVER] Ack failed. HTTP=",status," response=",response);
    return ok;
 }
@@ -1027,7 +1044,7 @@ int OnInit()
       return INIT_PARAMETERS_INCORRECT;
    }
    EventSetTimer(1);
-   Print("ServerConnector v1.40-ultra initialized. Buffer OnTick + coalesced batch tick flush.");
+   Print("ServerConnector v1.41-ultra-ticks initialized.");
    return INIT_SUCCEEDED;
 }
 
