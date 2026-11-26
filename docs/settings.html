@@ -365,6 +365,25 @@ function getApiKey() {
   return key;
 }
 
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>"']/g, ch => (
+    { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]
+  ));
+}
+
+// detail của FastAPI có thể là chuỗi hoặc mảng lỗi validate (422)
+function errorText(err, status) {
+  const d = err && err.detail;
+  if (typeof d === "string" && d) return d;
+  if (Array.isArray(d) && d.length) {
+    return d.map(x => {
+      const field = Array.isArray(x.loc) ? x.loc[x.loc.length - 1] : "";
+      return (field ? field + ": " : "") + (x.msg || "không hợp lệ");
+    }).join("; ");
+  }
+  return `HTTP ${status}`;
+}
+
 function showToast(msg, isError = false) {
   const t = document.getElementById("toast");
   t.textContent = msg;
@@ -443,9 +462,9 @@ function renderNewsList() {
       return `
         <div class="news-item">
           <div class="news-item-main">
-            <span class="news-badge">${ev.currency}</span>
-            <strong>${ev.title}</strong>
-            <span class="news-window">${timeLabel}</span>
+            <span class="news-badge">${escapeHtml(ev.currency)}</span>
+            <strong>${escapeHtml(ev.title)}</strong>
+            <span class="news-window">${escapeHtml(timeLabel)}</span>
           </div>
           <button type="button" class="btn-del-news" data-idx="${idx}">Xóa</button>
         </div>
@@ -617,7 +636,7 @@ async function saveSettings() {
     }
     if (!r.ok) {
       const err = await r.json().catch(() => ({}));
-      throw new Error(err.detail || `HTTP ${r.status}`);
+      throw new Error(errorText(err, r.status));
     }
     const data = await r.json();
     isSaving = false;
@@ -727,7 +746,7 @@ document.getElementById("emergencyBtn").addEventListener("click", async () => {
     }
     if (!r.ok) {
       const err = await r.json().catch(() => ({}));
-      throw new Error(err.detail || `HTTP ${r.status}`);
+      throw new Error(errorText(err, r.status));
     }
     const data = await r.json();
     renderSettings(data.settings, { preserveDraft: false });
