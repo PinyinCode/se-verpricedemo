@@ -1,12 +1,11 @@
 //+------------------------------------------------------------------+
-//|                               RSI_Div_TickAndM1_Advisor_v10.mq5  |
-//|   Gop hoan chinh ban dau:                                        |
-//|   - Mac dinh doc hom nay GMT+7 -> Tu quy doi ServerTime          |
-//|   - Duong di gia thuc te (CopyTicksRange -> M1) + ATR nen dong   |
-//|   - Day du thong so Reject + Tu tim TP & Trailing toi uu         |
+//|                               RSI_Div_TickAndM1_Advisor_v11.mq5  |
+//|   Cap nhat mac dinh theo bo tham so dang dung tren dashboard:     |
+//|   Risk=25$, RR=2.0, BE=1.0, TrailTrig=1.0, TrailLock=0.5        |
+//|   Mo phong BE + Trailing + TP & doi chieu duong di gia thuc te  |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026"
-#property version   "10.00"
+#property version   "11.00"
 #property script_show_inputs
 
 input group "=== Khoang thoi gian (Mac dinh 0 = Hom nay GMT+7) ==="
@@ -22,17 +21,21 @@ input int             InpMaxTicksPerTrade   = 20000;              // Gioi han ti
 input bool            InpExportCsv          = true;               // Xuat duong di gia chi tiet ra CSV
 input bool            InpExportSummary      = true;               // Xuat bao cao tong hop ra TXT
 
-input group "=== Cai dat RR, Trailing & ATR ==="
-input double          Cfg_RiskMoney         = 25.0;               // risk_money ($)
-input double          Cfg_TargetRR          = 2.0;                // reward_risk_ratio
-input double          Cfg_BE_TriggerRR      = 0.5;                // breakeven_trigger_rr
-input double          Cfg_Trail_TriggerRR   = 1.0;                // trailing_trigger_rr
-input double          Cfg_Trail_LockRR      = 0.5;                // trailing_lock_rr
-input double          Cfg_VolumeAutoRatio   = 1.2;                // VolumeAutoRatio
+input group "=== Tham so dang dung (Doi chieu voi Web Config) ==="
+input double          Cfg_RiskMoney         = 25.0;               // Risk / lenh ($)
+input int             Cfg_MaxPositions      = 5;                  // Max positions
+input double          Cfg_TargetRR          = 2.0;                // Reward / Risk ratio
+input double          Cfg_RiskTolerancePct  = 0.25;               // Risk tolerance (%)
+input double          Cfg_CommFallbackPerLot= 0.0;                // Commission fallback ($/lot)
+input int             Cfg_SpreadBufferPts   = 0;                  // Spread buffer (points)
+input double          Cfg_Trail_TriggerRR   = 1.0;                // Trailing trigger (R)
+input double          Cfg_Trail_LockRR      = 0.5;                // Trailing lock (R)
+input double          Cfg_BE_TriggerRR      = 1.0;                // BE trigger (R)
+input string          Cfg_TrailingMode      = "Dynamic";          // Trailing mode
+
+input group "=== Thong so Reject & ATR (Doi chieu Indicator) ==="
 input ENUM_TIMEFRAMES InpATR_TF             = PERIOD_M15;         // Khung thoi gian doc ATR lich su
 input int             Cfg_ATR_Period        = 14;                 // Chu ky ATR (x ATR)
-
-input group "=== Thong so Reject (Doi chieu Indicator) ==="
 input bool            RejectOnCandleClose   = false;              // true: cho nen dong; false: xet ngay tren nen dang chay
 input int             RejectMaxBarsAfter    = 1;                  // So nen toi da sau nen cuc tri duoc phep xac nhan
 input double          RejectMinWickRatio    = 0.5;                // Gia dong phai lui it nhat ti le nay cua bien do (0-1)
@@ -41,14 +44,14 @@ input double          RejectMinBreakATR     = 0.05;               // Regular: do
 input double          RejectMinCloseBackATR = 0.02;               // Regular: dong lai ben trong muc cu toi thieu (x ATR)
 input bool            RejectRequireCloseDiv = false;              // Bat buoc them dieu kien gia dong nen nhu ban cu
 
-struct SPathPtV10
+struct SPathPtV11
 {
    datetime time;
    double   price;
    double   rVal;
 };
 
-struct STradeV10
+struct STradeV11
 {
    ulong       posId;
    string      sym;
@@ -70,11 +73,11 @@ struct STradeV10
    double      peakRangeATR;
    bool        passedRangeATR;
    string      srcType;
-   SPathPtV10  pts[];
+   SPathPtV11  pts[];
 };
 
-double Clamp10(double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); }
-double Round10(double v, double st) { return st > 0.0 ? MathRound(v / st) * st : v; }
+double Clamp11(double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); }
+double Round11(double v, double st) { return st > 0.0 ? MathRound(v / st) * st : v; }
 
 long CalcServerMinusGMT7Sec()
 {
@@ -153,18 +156,19 @@ double GetHistoricalClosedATR(string sym, ENUM_TIMEFRAMES tf, datetime srvTime, 
    return val;
 }
 
-void PushPt10(SPathPtV10 &arr[], datetime tm, double px, bool isBuy, double entry, double oneRPrice)
+void PushPt11(SPathPtV11 &arr[], datetime tm, double px, bool isBuy, double entry, double oneRPrice, double spreadBufR)
 {
    int n = ArraySize(arr);
    ArrayResize(arr, n + 1);
    arr[n].time  = tm;
    arr[n].price = px;
-   arr[n].rVal  = (oneRPrice > 0.0)
+   double rawR  = (oneRPrice > 0.0)
       ? ((isBuy ? (px - entry) : (entry - px)) / oneRPrice)
       : 0.0;
+   arr[n].rVal  = rawR - spreadBufR;
 }
 
-void BuildTradePathV10(STradeV10 &tr, int maxTicks, bool useTicks, ENUM_TIMEFRAMES atrTf, int atrPeriod)
+void BuildTradePathV11(STradeV11 &tr, int maxTicks, bool useTicks, ENUM_TIMEFRAMES atrTf, int atrPeriod, int spreadBufPts)
 {
    ArrayResize(tr.pts, 0);
    tr.peakR = -999999.0;
@@ -174,6 +178,11 @@ void BuildTradePathV10(STradeV10 &tr, int maxTicks, bool useTicks, ENUM_TIMEFRAM
    tr.srcType = "M1";
 
    tr.atrClosedAtOpen = GetHistoricalClosedATR(tr.sym, atrTf, tr.tOpenSrv, atrPeriod);
+
+   double ptSize = SymbolInfoDouble(tr.sym, SYMBOL_POINT);
+   double spreadBufR = (tr.oneR_Price > 0.0 && ptSize > 0.0 && spreadBufPts > 0)
+      ? ((spreadBufPts * ptSize) / tr.oneR_Price)
+      : 0.0;
 
    bool gotTicks = false;
    if(useTicks && tr.tCloseSrv >= tr.tOpenSrv)
@@ -187,15 +196,15 @@ void BuildTradePathV10(STradeV10 &tr, int maxTicks, bool useTicks, ENUM_TIMEFRAM
          gotTicks = true;
          tr.srcType = "TICK";
          int step = MathMax(1, copied / MathMax(100, maxTicks));
-         PushPt10(tr.pts, tr.tOpenSrv, tr.entry, tr.isBuy, tr.entry, tr.oneR_Price);
+         PushPt11(tr.pts, tr.tOpenSrv, tr.entry, tr.isBuy, tr.entry, tr.oneR_Price, spreadBufR);
          for(int i = 0; i < copied; i += step)
          {
             double px = tr.isBuy ? ticks[i].bid : ticks[i].ask;
             if(px <= 0.0) px = ticks[i].last;
             if(px > 0.0)
-               PushPt10(tr.pts, ticks[i].time, px, tr.isBuy, tr.entry, tr.oneR_Price);
+               PushPt11(tr.pts, ticks[i].time, px, tr.isBuy, tr.entry, tr.oneR_Price, spreadBufR);
          }
-         PushPt10(tr.pts, tr.tCloseSrv, tr.closePrice, tr.isBuy, tr.entry, tr.oneR_Price);
+         PushPt11(tr.pts, tr.tCloseSrv, tr.closePrice, tr.isBuy, tr.entry, tr.oneR_Price, spreadBufR);
       }
    }
 
@@ -208,7 +217,7 @@ void BuildTradePathV10(STradeV10 &tr, int maxTicks, bool useTicks, ENUM_TIMEFRAM
       if(sEnd < 0) sEnd = 0;
       if(sStart < sEnd) sStart = sEnd;
 
-      PushPt10(tr.pts, tr.tOpenSrv, tr.entry, tr.isBuy, tr.entry, tr.oneR_Price);
+      PushPt11(tr.pts, tr.tOpenSrv, tr.entry, tr.isBuy, tr.entry, tr.oneR_Price, spreadBufR);
       for(int b = sStart; b >= sEnd; b--)
       {
          datetime bt = iTime(tr.sym, tf, b);
@@ -223,10 +232,10 @@ void BuildTradePathV10(STradeV10 &tr, int maxTicks, bool useTicks, ENUM_TIMEFRAM
          double p3 = (cl >= op) ? MathMax(p2, hi) : MathMin(p2, lo);
          double p4 = (b == sEnd) ? tr.closePrice : cl;
 
-         if(b != sStart) PushPt10(tr.pts, bt, p1, tr.isBuy, tr.entry, tr.oneR_Price);
-         PushPt10(tr.pts, bt, p2, tr.isBuy, tr.entry, tr.oneR_Price);
-         PushPt10(tr.pts, bt, p3, tr.isBuy, tr.entry, tr.oneR_Price);
-         PushPt10(tr.pts, (b == sEnd ? tr.tCloseSrv : bt), p4, tr.isBuy, tr.entry, tr.oneR_Price);
+         if(b != sStart) PushPt11(tr.pts, bt, p1, tr.isBuy, tr.entry, tr.oneR_Price, spreadBufR);
+         PushPt11(tr.pts, bt, p2, tr.isBuy, tr.entry, tr.oneR_Price, spreadBufR);
+         PushPt11(tr.pts, bt, p3, tr.isBuy, tr.entry, tr.oneR_Price, spreadBufR);
+         PushPt11(tr.pts, (b == sEnd ? tr.tCloseSrv : bt), p4, tr.isBuy, tr.entry, tr.oneR_Price, spreadBufR);
       }
    }
 
@@ -262,25 +271,49 @@ void BuildTradePathV10(STradeV10 &tr, int maxTicks, bool useTicks, ENUM_TIMEFRAM
    }
 }
 
-double SimTP_V10(const STradeV10 &tr, double tpR)
+double SimTP_V11(const STradeV11 &tr, double tpR)
 {
    if(tr.peakR >= tpR) return tpR;
    return tr.realizedR;
 }
 
-double SimTrail_V10(const STradeV10 &tr, double trigR, double lockR)
+double SimTrailAndBE_V11(const STradeV11 &tr, double beTrigR, double trigR, double lockR)
 {
-   bool armed = false;
+   bool beArmed = false;
+   bool trailArmed = false;
+   double dynLock = lockR;
+
    for(int k = 0; k < ArraySize(tr.pts); k++)
    {
       double rv = tr.pts[k].rVal;
-      if(!armed && rv >= trigR)
-         armed = true;
-      else if(armed && rv <= lockR)
-         return lockR;
+
+      if(!beArmed && beTrigR > 0.0 && rv >= beTrigR)
+         beArmed = true;
+
+      if(!trailArmed && trigR > 0.0 && rv >= trigR)
+      {
+         trailArmed = true;
+         dynLock = lockR;
+      }
+      else if(trailArmed && rv > trigR)
+      {
+         // Che do Dynamic: khi gia di xa hon trigR, nang muc khoa dan theo buoc nho
+         double stepGain = (rv - trigR) * 0.5;
+         double candLock = lockR + stepGain;
+         if(candLock > dynLock) dynLock = candLock;
+      }
+
+      if(trailArmed && rv <= dynLock)
+         return dynLock;
+
+      if(beArmed && !trailArmed && rv <= 0.05)
+         return 0.05; // Khoa nhe quanh hoa von khi cham BE trigger
    }
-   if(armed)
-      return MathMax(lockR, tr.realizedR);
+
+   if(trailArmed)
+      return MathMax(dynLock, tr.realizedR);
+   if(beArmed)
+      return MathMax(0.05, tr.realizedR);
    return tr.realizedR;
 }
 
@@ -292,14 +325,14 @@ void OnStart()
 
    if(toGmt7 < fromGmt7)
    {
-      Print("[V10] Loi: Moc ket thuc phai lon hon hoac bang moc bat dau.");
+      Print("[V11] Loi: Moc ket thuc phai lon hon hoac bang moc bat dau.");
       return;
    }
 
    datetime fromSrv = GMT7ToServer(fromGmt7, srvMinusGmt7Sec);
    datetime toSrv   = GMT7ToServer(toGmt7, srvMinusGmt7Sec);
 
-   PrintFormat("[V10 TIME] GMT+7 [%s -> %s] => Server [%s -> %s] (Offset Srv-GMT7 = %+.1f gio)",
+   PrintFormat("[V11 TIME] GMT+7 [%s -> %s] => Server [%s -> %s] (Offset Srv-GMT7 = %+.1f gio)",
                TimeToString(fromGmt7, TIME_DATE|TIME_MINUTES|TIME_SECONDS),
                TimeToString(toGmt7, TIME_DATE|TIME_MINUTES|TIME_SECONDS),
                TimeToString(fromSrv, TIME_DATE|TIME_MINUTES|TIME_SECONDS),
@@ -308,11 +341,11 @@ void OnStart()
 
    if(!HistorySelect(fromSrv, toSrv))
    {
-      Print("[V10] Khong tai duoc lich su. Err=", GetLastError());
+      Print("[V11] Khong tai duoc lich su. Err=", GetLastError());
       return;
    }
 
-   STradeV10 trades[];
+   STradeV11 trades[];
    int n = 0;
    int cntTick = 0, cntM1 = 0;
 
@@ -350,10 +383,12 @@ void OnStart()
       if(tOpenSrv == 0 || entry <= 0.0) continue;
 
       datetime tCloseSrv = (datetime)HistoryDealGetInteger(dOut, DEAL_TIME);
+      double vol = HistoryDealGetDouble(dOut, DEAL_VOLUME);
+      double extraComm = (Cfg_CommFallbackPerLot > 0.0) ? (-Cfg_CommFallbackPerLot * vol) : 0.0;
       double netP = HistoryDealGetDouble(dOut, DEAL_PROFIT)
                   + HistoryDealGetDouble(dOut, DEAL_SWAP)
-                  + HistoryDealGetDouble(dOut, DEAL_COMMISSION);
-      double vol = HistoryDealGetDouble(dOut, DEAL_VOLUME);
+                  + HistoryDealGetDouble(dOut, DEAL_COMMISSION)
+                  + extraComm;
 
       string gvR = "V9R_" + IntegerToString((long)posId);
       double oneRPrice = GlobalVariableCheck(gvR) ? GlobalVariableGet(gvR) : 0.0;
@@ -382,20 +417,20 @@ void OnStart()
       trades[n].oneR_Money = oneRMoney;
       trades[n].realizedR  = (oneRMoney > 0.0) ? (netP / oneRMoney) : 0.0;
 
-      BuildTradePathV10(trades[n], InpMaxTicksPerTrade, InpUseRealTicks, InpATR_TF, Cfg_ATR_Period);
+      BuildTradePathV11(trades[n], InpMaxTicksPerTrade, InpUseRealTicks, InpATR_TF, Cfg_ATR_Period, Cfg_SpreadBufferPts);
       if(trades[n].srcType == "TICK") cntTick++; else cntM1++;
       n++;
    }
 
    if(n == 0)
    {
-      Print("[V10] Khong co lenh dong nao trong khoang thoi gian da chon.");
+      Print("[V11] Khong co lenh dong nao trong khoang thoi gian da chon.");
       return;
    }
 
    if(InpExportCsv)
    {
-      int hCsv = FileOpen("RSI_Div_V10_PricePath.csv", FILE_WRITE | FILE_CSV | FILE_ANSI, ',');
+      int hCsv = FileOpen("RSI_Div_V11_PricePath.csv", FILE_WRITE | FILE_CSV | FILE_ANSI, ',');
       if(hCsv != INVALID_HANDLE)
       {
          FileWrite(hCsv, "pos_id", "symbol", "side", "src", "step", "time_gmt7", "time_server", "price", "r_val", "peak_r", "trough_r", "realized_r", "atr_closed", "range_atr");
@@ -470,80 +505,85 @@ void OnStart()
    double avgRangeATR = sumRangeATR / n;
    double pf = (gLoss > 0.0) ? (gWin / gLoss) : (gWin > 0.0 ? 99.0 : 0.0);
 
-   // Mo phong tim TP toi uu va Trailing toi uu ngay trong ban V10
    double tpCands[]   = {1.0, 1.2, 1.3, 1.4, 1.5, 1.8, 2.0, 2.5, 3.0};
    double trigCands[] = {0.6, 0.8, 1.0, 1.2, 1.5};
    double lockCands[] = {0.2, 0.3, 0.5, 0.7, 0.9, 1.1};
+   double beCands[]   = {0.5, 0.7, 0.8, 1.0, 1.2};
 
    double curTPSumR = 0.0, bestTPSumR = -999999.0, bestTP = Cfg_TargetRR;
-   for(int i = 0; i < n; i++) curTPSumR += SimTP_V10(trades[i], Cfg_TargetRR);
+   for(int i = 0; i < n; i++) curTPSumR += SimTP_V11(trades[i], Cfg_TargetRR);
    bestTPSumR = curTPSumR;
 
    for(int c = 0; c < ArraySize(tpCands); c++)
    {
       double s = 0.0;
-      for(int i = 0; i < n; i++) s += SimTP_V10(trades[i], tpCands[c]);
+      for(int i = 0; i < n; i++) s += SimTP_V11(trades[i], tpCands[c]);
       if(s > bestTPSumR) { bestTPSumR = s; bestTP = tpCands[c]; }
    }
 
    double curTrailSumR = 0.0, bestTrailSumR = -999999.0;
-   double bestTrig = Cfg_Trail_TriggerRR, bestLock = Cfg_Trail_LockRR;
-   for(int i = 0; i < n; i++) curTrailSumR += SimTrail_V10(trades[i], Cfg_Trail_TriggerRR, Cfg_Trail_LockRR);
+   double bestTrig = Cfg_Trail_TriggerRR, bestLock = Cfg_Trail_LockRR, bestBE = Cfg_BE_TriggerRR;
+   for(int i = 0; i < n; i++) curTrailSumR += SimTrailAndBE_V11(trades[i], Cfg_BE_TriggerRR, Cfg_Trail_TriggerRR, Cfg_Trail_LockRR);
    bestTrailSumR = curTrailSumR;
 
-   for(int ti = 0; ti < ArraySize(trigCands); ti++)
+   for(int bi = 0; bi < ArraySize(beCands); bi++)
    {
-      double trR = trigCands[ti];
-      for(int li = 0; li < ArraySize(lockCands); li++)
+      double bR = beCands[bi];
+      for(int ti = 0; ti < ArraySize(trigCands); ti++)
       {
-         double lkR = lockCands[li];
-         if(lkR >= trR - 0.1) continue;
-         double s = 0.0;
-         for(int i = 0; i < n; i++) s += SimTrail_V10(trades[i], trR, lkR);
-         if(s > bestTrailSumR)
+         double trR = trigCands[ti];
+         for(int li = 0; li < ArraySize(lockCands); li++)
          {
-            bestTrailSumR = s;
-            bestTrig = trR;
-            bestLock = lkR;
+            double lkR = lockCands[li];
+            if(lkR >= trR - 0.1) continue;
+            double s = 0.0;
+            for(int i = 0; i < n; i++) s += SimTrailAndBE_V11(trades[i], bR, trR, lkR);
+            if(s > bestTrailSumR)
+            {
+               bestTrailSumR = s;
+               bestBE = bR;
+               bestTrig = trR;
+               bestLock = lkR;
+            }
          }
       }
    }
 
-   double propBE     = ((double)leak1R / n > 0.20) ? 0.75 : (((double)beCnt / n > 0.25) ? Round10(Clamp10(Cfg_BE_TriggerRR + 0.25, 0.5, 1.5), 0.05) : Cfg_BE_TriggerRR);
-   double propMinRng = Round10(Clamp10(avgRangeATR * 0.35, 0.20, 1.00), 0.05);
-   double propBreak  = Round10(Clamp10(RejectMinBreakATR + ((avgAdv > 1.1 || pf < 1.0) ? 0.03 : 0.0), 0.02, 0.30), 0.01);
-   double propBack   = Round10(Clamp10(RejectMinCloseBackATR + ((avgAdv > 1.1 || pf < 1.0) ? 0.02 : 0.0), 0.01, 0.20), 0.01);
+   double propMinRng = Round11(Clamp11(avgRangeATR * 0.35, 0.20, 1.00), 0.05);
+   double propBreak  = Round11(Clamp11(RejectMinBreakATR + ((avgAdv > 1.1 || pf < 1.0) ? 0.03 : 0.0), 0.02, 0.30), 0.01);
+   double propBack   = Round11(Clamp11(RejectMinCloseBackATR + ((avgAdv > 1.1 || pf < 1.0) ? 0.02 : 0.0), 0.01, 0.20), 0.01);
 
-   double score = Clamp10((pf - 0.8) / 0.8, 0.0, 1.0) * 35.0
-                + Clamp10((double)winCnt / n / 0.55, 0.0, 1.0) * 25.0
-                + Clamp10(1.0 - ((double)leak15R / n * 2.5), 0.0, 1.0) * 25.0
-                + Clamp10(1.0 - (avgAdv / 2.0), 0.0, 1.0) * 15.0;
+   double score = Clamp11((pf - 0.8) / 0.8, 0.0, 1.0) * 35.0
+                + Clamp11((double)winCnt / n / 0.55, 0.0, 1.0) * 25.0
+                + Clamp11(1.0 - ((double)leak15R / n * 2.5), 0.0, 1.0) * 25.0
+                + Clamp11(1.0 - (avgAdv / 2.0), 0.0, 1.0) * 15.0;
 
    string outTxt = StringFormat(
-      "================ V10 GOP FULL: PATH + ATR + REJECT + OPT ================\n"
+      "================ V11 SYNC CONFIG: PATH + ATR + REJECT + OPT ================\n"
       "GMT+7 : %s -> %s (Server: %s -> %s)\n"
+      "Cfg   : Risk=%.1f$ | MaxPos=%d | RR=%.2f | BE=%.2f | Trail=%.2f/%.2f (%s)\n"
       "Lenh  : %d (TICK:%d / M1:%d) | W:%d / BE:%d / L:%d | Net: %.2f$\n"
       "PF: %.2f | AvgR: %+.2fR | AvgWinR: %.2fR | Chot ~1R (0.8-1.15R): %d lenh\n"
       "ATR TF: %s (P%d) | AvgRangeATR: %.2fx (Dat %.2fx: %d/%d) | AvgAdvR: %.2fR\n"
       "PeakR : Avg=%.2fR, Med=%.2fR, P75=%.2fR\n"
       "Leak  : >=1.0R nhung dong <0.3R (%d) | >=1.5R nhung dong <0.5R (%d)\n"
       "DIEM HIEU QUA: %.1f / 100\n"
-      "-------------------------------------------------------------------------\n"
+      "----------------------------------------------------------------------------\n"
       "TOI UU TP (reward_risk_ratio):\n"
       "  Hien tai: %.2fR (%+.2fR)  =>  Toi uu: %.2fR (%+.2fR | %+.2fR)\n"
-      "TOI UU TRAILING (trigger / lock):\n"
-      "  Hien tai: %.2f / %.2f (%+.2fR) => Toi uu: %.2f / %.2f (%+.2fR | %+.2fR)\n"
-      "-------------------------------------------------------------------------\n"
-      "CON SO DE XUAT BO LOC & BE:\n"
-      "  breakeven_trigger_rr : %.2f -> %.2f\n"
+      "TOI UU BE & TRAILING (BE / trigger / lock):\n"
+      "  Hien tai: %.2f / %.2f / %.2f (%+.2fR) => Toi uu: %.2f / %.2f / %.2f (%+.2fR | %+.2fR)\n"
+      "----------------------------------------------------------------------------\n"
+      "CON SO DE XUAT BO LOC:\n"
       "  RejectMinRangeATR    : %.2f -> %.2f\n"
       "  RejectMinBreakATR    : %.2f -> %.2f\n"
       "  RejectMinCloseBackATR: %.2f -> %.2f\n"
-      "=========================================================================\n",
+      "============================================================================\n",
       TimeToString(fromGmt7, TIME_DATE|TIME_MINUTES|TIME_SECONDS),
       TimeToString(toGmt7, TIME_DATE|TIME_MINUTES|TIME_SECONDS),
       TimeToString(fromSrv, TIME_DATE|TIME_MINUTES|TIME_SECONDS),
       TimeToString(toSrv, TIME_DATE|TIME_MINUTES|TIME_SECONDS),
+      Cfg_RiskMoney, Cfg_MaxPositions, Cfg_TargetRR, Cfg_BE_TriggerRR, Cfg_Trail_TriggerRR, Cfg_Trail_LockRR, Cfg_TrailingMode,
       n, cntTick, cntM1, winCnt, beCnt, lossCnt, netP,
       pf, avgRealR, avgWinR, near1RCnt,
       EnumToString(InpATR_TF), Cfg_ATR_Period,
@@ -551,8 +591,8 @@ void OnStart()
       avgPeak, medPeak, p75Peak,
       leak1R, leak15R, score,
       Cfg_TargetRR, curTPSumR, bestTP, bestTPSumR, (bestTPSumR - curTPSumR),
-      Cfg_Trail_TriggerRR, Cfg_Trail_LockRR, curTrailSumR, bestTrig, bestLock, bestTrailSumR, (bestTrailSumR - curTrailSumR),
-      Cfg_BE_TriggerRR, propBE,
+      Cfg_BE_TriggerRR, Cfg_Trail_TriggerRR, Cfg_Trail_LockRR, curTrailSumR,
+      bestBE, bestTrig, bestLock, bestTrailSumR, (bestTrailSumR - curTrailSumR),
       RejectMinRangeATR, propMinRng,
       RejectMinBreakATR, propBreak,
       RejectMinCloseBackATR, propBack
@@ -562,7 +602,7 @@ void OnStart()
 
    if(InpExportSummary)
    {
-      int h = FileOpen("RSI_Div_V10_Summary.txt", FILE_WRITE | FILE_TXT | FILE_ANSI);
+      int h = FileOpen("RSI_Div_V11_Summary.txt", FILE_WRITE | FILE_TXT | FILE_ANSI);
       if(h != INVALID_HANDLE) { FileWriteString(h, outTxt); FileClose(h); }
    }
 }
