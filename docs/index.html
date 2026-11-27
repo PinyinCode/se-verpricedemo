@@ -795,6 +795,12 @@ body.trade-fullscreen .chart-stage #tradePanelToggle.floating-trade-toggle:hover
 .rt-list-item.sell b{color:#ff9aaa}
 .rt-list-item span{font-size:11px;color:#aebdd0;font-variant-numeric:tabular-nums}
 .rt-list-item span.right{text-align:right}
+.rt-list-row{display:flex;gap:5px;align-items:stretch}
+.rt-list-row .rt-list-item{flex:1;min-width:0}
+.rt-list-detail{flex:0 0 auto;padding:0 9px;border:1px solid #293d56;border-radius:8px;background:#13233a;color:#a9c7ea;font-size:11px;cursor:pointer}
+.rt-toast-main,.rt-toast-meta{cursor:pointer}
+#statsTodaySignals tr[data-idx]{cursor:pointer}
+#statsTodaySignals tr[data-idx]:hover,#statsTodaySignals tr[data-idx]:focus-visible{background:#162940}
 
 .rt-signal-dialog{
   width:min(390px,calc(100vw - 24px));max-height:82dvh;padding:0;
@@ -2847,6 +2853,7 @@ function rsi(values, period = 14) {
 const RT_DISMISSED_KEY_STORAGE = 'chartRtDismissedSignalKey';
 let rtSignals = [];            // mọi tín hiệu RT hôm nay (mọi mã, mọi khung), mới nhất trước
 const rtSeenKeys = new Set();
+let statsSignalRows = [];      // tín hiệu đang hiện trong bảng thống kê
 let rtFirstSync = true;
 
 // ===== Chỉ tín hiệu trong ngày (GMT+7) mới được coi là realtime =====
@@ -2970,7 +2977,12 @@ function showRealtimeToast(s, { open = false } = {}) {
       toast.classList.remove('show');
       syncRealtimeReopenButton();
     });
-    toast.querySelector('.rt-detail-btn').addEventListener('click', () => openRealtimeDetails(s));
+    toast.querySelector('.rt-detail-btn').addEventListener('click', () => openChartThenDetails(s));
+    toast.querySelectorAll('.rt-toast-main, .rt-toast-meta').forEach(el => el.addEventListener('click', () => {
+      toast.classList.remove('show');
+      syncRealtimeReopenButton();
+      void openSignalChart(s);
+    }));
     toast.querySelector('.rt-all-btn')?.addEventListener('click', e => { e.stopPropagation(); openRealtimeList(); });
   }
 
@@ -2987,11 +2999,12 @@ function renderRealtimeList() {
   const scroll = body.scrollTop;
   body.innerHTML = rtSignals.map((s, i) => {
     const isBuy = s.direction === 'BUY';
-    return '<button type="button" class="rt-list-item' + (isBuy ? '' : ' sell') + '" data-idx="' + i + '">'
+    return '<div class="rt-list-row"><button type="button" class="rt-list-item' + (isBuy ? '' : ' sell') + '" data-idx="' + i + '" title="Mở biểu đồ">'
       + '<b>' + (isBuy ? '▲ BUY' : '▼ SELL') + ' · ' + esc(s.symbol) + ' · ' + esc(s.timeframe) + '</b>'
       + '<span class="right">' + esc(s.divergence) + '</span>'
       + '<span>' + esc(signalTimeText(s)) + '</span>'
-      + '<span class="right">' + fmtPrice(s.price2, s.symbol) + '</span></button>';
+      + '<span class="right">' + fmtPrice(s.price2, s.symbol) + '</span></button>'
+      + '<button type="button" class="rt-list-detail" data-idx="' + i + '">Chi tiết</button></div>';
   }).join('');
   body.scrollTop = scroll;
 }
@@ -3100,38 +3113,52 @@ function computeCandleExtremeSl(target, refPrice, bufferPrice) {
   return Math.max(0, Number(sl.toFixed(priceDigits(target.symbol))));
 }
 
+// Chuyển biểu đồ sang đúng mã/khung của tín hiệu. Trả về true khi dữ liệu đã tải xong.
+async function openSignalChart(target) {
+  const symbol = String(target?.symbol || '').toUpperCase();
+  if (!symbol) return false;
+  const tf = String(target.timeframe || '').toUpperCase();
+  const hasOption = (id, value) => [...$(id).options].some(o => o.value === value);
+  if (!hasOption('symbol', symbol)) $('symbol').add(new Option(symbol, symbol));
+  if (tf === 'D1') ensureD1Option(true);
+  const nextTf = hasOption('tf', tf) ? tf : $('tf').value;
+  const viewKey = symbol + '|' + nextTf;
+  if (loadedKey === viewKey && $('symbol').value === symbol && $('tf').value === nextTf) return true;
+
+  $('symbol').value = symbol;
+  $('tf').value = nextTf;
+  serverAskPrice = 0; latestMarketPrice = 0; liveBar = null; loadedKey = '';
+  renderAskLine();
+  firstLoad = true;
+  lastBarsSignature = '';
+  refreshCommissionInfo();
+  syncRealtimeReopenButton();
+  await Promise.all([load(true), syncSymbolCommission(symbol)]);
+  // Người dùng đã chọn mã khác trong lúc chờ thì bỏ qua
+  if ($('symbol').value !== symbol || $('tf').value !== nextTf) return false;
+  void syncD1Option();
+  if (loadedKey !== viewKey) {
+    $('requestState').textContent = 'Chưa tải được dữ liệu ' + symbol + ' · ' + nextTf + '. Hãy thử lại.';
+    return false;
+  }
+  return true;
+}
+
+// Mở biểu đồ trước để SL/lot gợi ý tính theo đúng mã
+async function openChartThenDetails(s) {
+  await openSignalChart(s);
+  const symbol = String(s.symbol || '').toUpperCase();
+  if ($('symbol').value === symbol) openRealtimeDetails(s);
+}
+
 async function applyRealtimeSignalToForm(s) {
   const state = await verifyEmergencyBeforeTradePanel();
   if (state.enabled) { showTradeEmergencyWarning(state); return; }
   const target = s || latestModalSignalContext?.signal || latestRealtimeSignal;
   if (!target) return;
-  const symbol = String(target.symbol || '').toUpperCase();
-  const tf = String(target.timeframe || '').toUpperCase();
-  const hasOption = (id, value) => [...$(id).options].some(o => o.value === value);
-  if (!hasOption('symbol', symbol)) {
-    $('requestState').textContent = 'Mã ' + symbol + ' không có trong danh sách biểu đồ.';
-    return;
-  }
-  if (tf === 'D1') ensureD1Option(true);
-  const nextTf = hasOption('tf', tf) ? tf : $('tf').value;
-  const viewKey = symbol + '|' + nextTf;
-
-  if (loadedKey !== viewKey) {
-    if ($('rtSignalDialog').open) $('rtSignalDialog').close();
-    $('symbol').value = symbol;
-    $('tf').value = nextTf;
-    serverAskPrice = 0; latestMarketPrice = 0; liveBar = null; loadedKey = '';
-    renderAskLine();
-    firstLoad = true;
-    lastBarsSignature = '';
-    await Promise.all([load(true), syncSymbolCommission(symbol)]);
-    void syncD1Option();
-    if (loadedKey !== viewKey) {
-      $('requestState').textContent = 'Chưa tải được dữ liệu ' + symbol + ' · ' + nextTf + '. Hãy thử lại.';
-      return;
-    }
-    latestModalSignalContext = null; // tính lại SL theo nến đúng mã
-  }
+  const viewBefore = loadedKey;
+  if (!(await openSignalChart(target))) return;
+  if (loadedKey !== viewBefore) latestModalSignalContext = null; // tính lại SL theo nến đúng mã
   applyRealtimeSignalToFormNow(target);
 }
 
@@ -3292,13 +3319,14 @@ $('rtReopenBtn').addEventListener('click', e => {
 });
 $('rtListClose').addEventListener('click', closeRealtimeList);
 $('rtListBody').addEventListener('click', e => {
-  const item = e.target.closest('.rt-list-item');
+  const item = e.target.closest('[data-idx]');
   if (!item) return;
   const s = rtSignals[Number(item.dataset.idx)];
   if (!s) return;
   latestRealtimeSignal = s;
   closeRealtimeList();
-  openRealtimeDetails(s);
+  if (item.classList.contains('rt-list-detail')) void openChartThenDetails(s);
+  else void openSignalChart(s);
 });
 document.addEventListener('pointerdown', e => {
   if ($('rtListPanel').classList.contains('show') && !$('rtListPanel').contains(e.target)) closeRealtimeList();
@@ -4104,8 +4132,9 @@ function renderStats(data) {
   $('statsTodayPL').style.color = net >= 0 ? '#27c995' : '#f06b7e';
   $('statsSignalMeta').textContent = todaySignals.length + ' tín hiệu nhận được';
 
+  statsSignalRows = todaySignals;
   $('statsTodaySignals').innerHTML = todaySignals.length
-    ? todaySignals.map(x => '<tr><td>' + esc(localDateTime(x.signal_time)) + '</td><td>' + esc(x.symbol) + '</td><td>' + esc(x.timeframe) + '</td><td class="' + (String(x.direction).toUpperCase() === 'BUY' ? 'buy' : 'sell') + '">' + esc(x.direction) + '</td><td>' + esc(x.divergence) + '</td><td>' + esc(x.signal_type) + '</td><td>' + fmtPrice(x.price2, x.symbol) + '</td></tr>').join('')
+    ? todaySignals.map((x, i) => '<tr data-idx="' + i + '" tabindex="0" title="Mở biểu đồ"><td>' + esc(localDateTime(x.signal_time)) + '</td><td>' + esc(x.symbol) + '</td><td>' + esc(x.timeframe) + '</td><td class="' + (String(x.direction).toUpperCase() === 'BUY' ? 'buy' : 'sell') + '">' + esc(x.direction) + '</td><td>' + esc(x.divergence) + '</td><td>' + esc(x.signal_type) + '</td><td>' + fmtPrice(x.price2, x.symbol) + '</td></tr>').join('')
     : '<tr><td colspan="7" class="empty">Hôm nay chưa có tín hiệu</td></tr>';
 
   $('statsHistoryMeta').textContent = history.length + ' giao dịch';
@@ -4133,6 +4162,16 @@ async function refreshStats() {
   }
 }
 $('statsButton').addEventListener('click', () => { $('statsDialog').showModal(); refreshStats(); });
+function openStatsSignal(e) {
+  const row = e.target.closest('tr[data-idx]');
+  const s = row && statsSignalRows[Number(row.dataset.idx)];
+  if (!s) return;
+  e.preventDefault();
+  $('statsDialog').close();
+  void openSignalChart(s);
+}
+$('statsTodaySignals').addEventListener('click', openStatsSignal);
+$('statsTodaySignals').addEventListener('keydown', e => { if (e.key === 'Enter') openStatsSignal(e); });
 $('closeStatsDialog').addEventListener('click', () => $('statsDialog').close());
 $('statsDialog').addEventListener('click', e => { if (e.target === $('statsDialog')) $('statsDialog').close(); });
 
