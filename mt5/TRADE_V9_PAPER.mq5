@@ -7,7 +7,7 @@
 //| Vào lệnh độc lập với WebRequest tại thời điểm có tín hiệu.        |
 //+------------------------------------------------------------------+
 #property strict
-#property version "3.26"
+#property version "3.27"
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
@@ -22,6 +22,7 @@ input long   MagicNumber                  = 20240915;
 input string OrderComment                 = "TRADE-V9";
 input string IndicatorSymbolsCsv          = ""; // Để trống = quét chart hiện tại + Market Watch; hoặc nhập "XAUUSD,EURUSD"
 input bool   CancelPendingOnNews          = true; // Tự huỷ lệnh chờ của EA khi vào cửa sổ tin
+input bool   ShowSettingsOnChart          = true; // Hiển thị thông số cài đặt nhận được lên chart
 
 //--- Globals --------------------------------------------------------
 CTrade        trade;
@@ -140,6 +141,7 @@ void     PublishRealClosedDeals();
 int      CountRealExposure();
 void     PollSettings();
 void     SyncDashboardGlobalVariables();
+void     RenderSettingsChartOverlay();
 void     PollCommissions();
 void     ManageTrailing();
 void     CheckEmergencyStop();
@@ -601,7 +603,7 @@ bool HasProcessedPendingModify(string id)
 }
 void MarkProcessedPendingModify(string id) { PushDedupId(processedPendingModifyIds, id); }
 
-//--- Settings cache & polling ---------------------------------------
+//--- Settings cache, chart overlay & polling ------------------------
 void InitDefaultSettings()
 {
    g_settings.auto_trade_enabled             = true;
@@ -643,6 +645,45 @@ void InitDefaultSettings()
 
    g_settings.last_synced                    = 0;
    ArrayResize(g_newsEvents, 0);
+}
+
+void RenderSettingsChartOverlay()
+{
+   if(!ShowSettingsOnChart)
+      return;
+
+   string syncStr = (g_settings.last_synced > 0)
+      ? TimeToString(g_settings.last_synced, TIME_DATE|TIME_SECONDS)
+      : "Chua dong bo";
+
+   string timeFilterStr = g_settings.time_filter_enabled
+      ? StringFormat("ON (%02d:00-%02d:00 GMT+7)", g_settings.trading_start_hour, g_settings.trading_end_hour)
+      : "OFF";
+
+   string newsFilterStr = g_settings.news_filter_enabled
+      ? StringFormat("ON (-%dm/+%dm) | Chan=%s", g_settings.news_block_before_min, g_settings.news_block_after_min, IsNewsBlocked() ? "CO" : "KHONG")
+      : "OFF";
+
+   string txt =
+      "=== TRADE V9 SETTINGS ===\n" +
+      StringFormat("AutoTrade: %s | Emergency: %s (CloseAll:%s)\n",
+                   g_settings.auto_trade_enabled ? "ON" : "OFF",
+                   IsEmergencyStopActive() ? "ON" : "OFF",
+                   g_settings.emergency_close_all ? "ON" : "OFF") +
+      StringFormat("Risk: $%.2f | MaxPos: %d | RR: %.2f | Tol: %.2f%%\n",
+                   g_settings.risk_money, g_settings.max_positions,
+                   g_settings.reward_risk_ratio, g_settings.risk_tolerance_pct) +
+      StringFormat("BE: %s (%.2fR) | Trail: %s (%.2fR / %.2fR | %s)\n",
+                   g_settings.breakeven_enabled ? "ON" : "OFF", g_settings.breakeven_trigger_rr,
+                   g_settings.trailing_enabled ? "ON" : "OFF",
+                   g_settings.trailing_trigger_rr, g_settings.trailing_lock_rr, g_settings.trailing_mode) +
+      StringFormat("SpreadBuf: %d pts | CommFB: $%.2f | Slip: %d pts\n",
+                   g_settings.spread_buffer_points, g_settings.commission_fallback, g_settings.slippage_points) +
+      "TimeFilter: " + timeFilterStr + "\n" +
+      "NewsFilter: " + newsFilterStr + "\n" +
+      "Sync GMT+7: " + syncStr;
+
+   Comment(txt);
 }
 
 void SyncDashboardGlobalVariables()
@@ -734,6 +775,7 @@ bool ApplySettingsJson(string obj, bool saveDisk)
    g_settings.last_synced = TimeGMT7();
    RebuildNewsScheduleCache();
    SyncDashboardGlobalVariables();
+   RenderSettingsChartOverlay();
 
    if(saveDisk)
       SaveSettingsCacheToDisk(obj);
@@ -994,7 +1036,6 @@ void ManageTrailing()
          ns.sym = sym;
          ns.entryPrice = entryPrice;
          ns.initialSL = currentSL;
-         // 1R goc duoc luu lai de khong bi tinh sai sau khi khoi dong lai
          string gvR = "V9R_" + IntegerToString((long)ticket);
          bool slOnLossSide = currentSL > 0 && (isBuy ? currentSL < entryPrice : currentSL > entryPrice);
          ns.oneR = 0;
@@ -1004,7 +1045,7 @@ void ManageTrailing()
             ns.oneR = MathAbs(entryPrice - currentSL);
          else if(currentTP > 0 && g_settings.reward_risk_ratio > 0)
             ns.oneR = MathAbs(currentTP - entryPrice) / g_settings.reward_risk_ratio;
-         if(ns.oneR <= point) continue; // khong xac dinh duoc 1R: khong tu doi SL
+         if(ns.oneR <= point) continue;
          GlobalVariableSet(gvR, ns.oneR);
          ns.lockedSL = 0;
          ns.breakEvenDone = false;
@@ -1173,7 +1214,6 @@ void CheckNewsPendingCancel()
          ot != ORDER_TYPE_BUY_STOP && ot != ORDER_TYPE_SELL_STOP &&
          ot != ORDER_TYPE_BUY_STOP_LIMIT && ot != ORDER_TYPE_SELL_STOP_LIMIT) continue;
 
-      // Neu broker tu choi thi thu lai moi 5 giay
       if(!attempted)
       {
          if(lastAttemptMs > 0 && GetTickCount64() - lastAttemptMs < 5000) return;
@@ -1205,7 +1245,6 @@ void CheckEmergencyStop()
    }
    if(!g_settings.emergency_close_all) return;
 
-   // Con vi the / lenh cho thi thu lai moi 5 giay
    int remaining = CountRealPositions();
    for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
@@ -1465,7 +1504,6 @@ void CheckIndicatorSymbolSignal(string symbol)
    if(HasProcessedSignalKey(sigKey) || HasProcessedSignalKey(barSignalKey)) return;
    if(sigTime > 0 && GlobalVariableCheck(gvBar)) return;
 
-   // Chỉ vào lệnh trong đúng cây nến vừa tạo tín hiệu; sang nến mới thì bỏ qua
    datetime nowGmt7 = TimeGMT7();
    if(sigTime > 0 && !IsSignalInSameCandle(symUp, sigTime, nowGmt7))
    {
@@ -1570,7 +1608,6 @@ void ExecuteManualSignalJson(string sigJson)
    double riskMoneyReq = StringToDouble(JsonValue(sigJson, "risk_money"));
 
    MarkProcessedSignalKey("manual:" + sigId);
-   // Chong thuc thi lap ke ca sau khi EA khoi dong lai
    string gvManual = "V9M_" + sigId;
    if(GlobalVariableCheck(gvManual)) return;
    GlobalVariableSet(gvManual, (double)TimeLocal());
@@ -1624,7 +1661,6 @@ void ExecuteManualSignalJson(string sigJson)
       }
    }
 
-   // Lenh Market: luon kiem tra SL/TP va rui ro theo gia hien tai
    if(orderType == "MARKET")
       entry = (direction == "BUY") ? ask : bid;
 
@@ -1816,7 +1852,6 @@ bool CloseRealPositionById(string targetId, string symbol, string &detailOut, bo
       if(ot != ORDER_TYPE_BUY_LIMIT && ot != ORDER_TYPE_SELL_LIMIT &&
          ot != ORDER_TYPE_BUY_STOP && ot != ORDER_TYPE_SELL_STOP) continue;
 
-      string ordSym = OrderGetString(ORDER_SYMBOL);
       string tkStr = IntegerToString((long)ordTicket);
       bool matchId = (targetId != "" && tkStr == targetId);
       if(matchId)
@@ -1841,7 +1876,6 @@ void ExecuteCloseCommand(string cmdJson)
    string positionId = JsonValue(cmdJson, "position_id");
    string targetId = JsonValue(cmdJson, "ticket");
    if(targetId == "") targetId = positionId;
-   // Server co the gui ID dang P123 / O123: chi giu phan so cua ticket
    if(StringFind(targetId, "P") == 0 || StringFind(targetId, "O") == 0)
       targetId = StringSubstr(targetId, 1);
    string symbol = UpperTrim(JsonValue(cmdJson, "symbol"));
@@ -2217,13 +2251,15 @@ int OnInit()
    InitDefaultSettings();
    LoadCachedSettingsFromDisk();
    SyncDashboardGlobalVariables();
+   RenderSettingsChartOverlay();
    SyncBrokerGMTOffset(true);
 
    PollSettings();
    PollCommissions();
+   RenderSettingsChartOverlay();
 
    EventSetTimer(1);
-   Print("[V9] Started v3.26 (OnTimer-only + TimeGMT7 + SameCandle). magic=", MagicNumber,
+   Print("[V9] Started v3.27 (OnTimer-only + TimeGMT7 + SameCandle). magic=", MagicNumber,
          " | GMT+7=", TimeToString(TimeGMT7(), TIME_DATE|TIME_SECONDS),
          " | AutoTrade=", g_settings.auto_trade_enabled ? "ON" : "OFF",
          " | Trailing=", g_settings.trailing_enabled ? "ON" : "OFF",
@@ -2235,14 +2271,15 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
+   Comment("");
 }
 
 void OnTimer()
 {
    datetime nowGmt7 = TimeGMT7();
    GlobalVariableSet("HB_TradeManager", (double)nowGmt7);
-   // Cap nhat lien tuc de co chan tin tu tat ca khi mat ket noi server
    GlobalVariableSet("GV_NewsFilter_Blocked", IsWithinConfiguredNewsWindow() ? 1.0 : 0.0);
+   RenderSettingsChartOverlay();
    uint nowMs = GetTickCount();
 
    SyncBrokerGMTOffset(false);
@@ -2250,7 +2287,6 @@ void OnTimer()
    CheckEmergencyStop();
    CheckNewsPendingCancel();
 
-   // Uu tien lenh tay tu web truoc cac tac vu dong bo
    if(lastSltpPollMs == 0 ||
       (uint)(nowMs - lastSltpPollMs) >= (uint)(MathMax(1, g_settings.poll_seconds) * 1000))
    {
