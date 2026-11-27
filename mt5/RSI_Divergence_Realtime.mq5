@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026"
 #property link      "https://www.mql5.com"
-#property version   "1.15"
+#property version   "1.16"
 #property indicator_chart_window
 #property indicator_buffers 1
 #property indicator_plots   1
@@ -221,7 +221,6 @@ void PublishDirectSignalToEA_GV(int idx, string sym, ENUM_TIMEFRAMES tf,
    if(orderType == "BUY_LIMIT") otCode = 1.0;
    else if(orderType == "SELL_LIMIT") otCode = 2.0;
 
-   // Ghi TIME theo chuẩn TimeGMT7() và TF theo ENUM_TIMEFRAMES để EA đối chiếu đúng cây nến
    datetime sigTimeGmt7 = (signalTime > 0) ? ServerTimeToGMT7(signalTime) : nowGmt7;
    ENUM_TIMEFRAMES effectiveTf = (tf != PERIOD_CURRENT) ? tf :
       ((idx >= 0 && idx < ArraySize(arrSymTF)) ? arrSymTF[idx].tf : PERIOD_M15);
@@ -234,7 +233,7 @@ void PublishDirectSignalToEA_GV(int idx, string sym, ENUM_TIMEFRAMES tf,
    GlobalVariableSet(pfx + "SL",         slPrice);
    GlobalVariableSet(pfx + "TP",         tpPrice);
    GlobalVariableSet(pfx + "UPDATED",    (double)nowGmt7);
-   GlobalVariableSet(pfx + "SEQ",        (double)symSeq); // ghi sau cùng
+   GlobalVariableSet(pfx + "SEQ",        (double)symSeq);
 
    long totalSeq = (long)GlobalVariableGet("GV_IND_SIG_SEQ") + 1;
    GlobalVariableSet("GV_IND_SIG_SEQ", (double)totalSeq);
@@ -339,7 +338,6 @@ void UpdateTodayBounds()
    g_todayStartGMT7 = n - (n % 86400);
 }
 
-// Ưu tiên cài đặt từ web (EA ghi ra GV_Dash_*), không có thì dùng input
 bool IsHourAllowed(int h)
 {
    int start = GetGvInt("GV_Dash_TradingStartHour", ScanStartHour);
@@ -443,9 +441,6 @@ bool IsSymbolExcluded(string sym)
    return false;
 }
 
-// Kiem tra cu reject. level = dinh/day cu, extShift = nen tao cuc tri moi.
-// Regular: phai quet qua level roi dong lai ben trong.
-// Hidden: khong quet qua level, can nen dao chieu ro rang tu cuc tri moi.
 bool IsRejection(int idx, string sym, ENUM_TIMEFRAMES tf, bool isBear, bool isRegular,
                  double level, int extShift, datetime oldTime)
 {
@@ -458,9 +453,8 @@ bool IsRejection(int idx, string sym, ENUM_TIMEFRAMES tf, bool isBear, bool isRe
    double o = iOpen(sym, tf, confirm);
    double c = iClose(sym, tf, confirm);
    if(o <= 0 || c <= 0) return false;
-   if(isBear ? (c >= o) : (c <= o)) return false;   // nen xac nhan phai nguoc chieu
+   if(isBear ? (c >= o) : (c <= o)) return false;
 
-   // Bien do tinh tu nen cuc tri den nen xac nhan
    double hi = iHigh(sym, tf, confirm), lo = iLow(sym, tf, confirm);
    for(int i = confirm + 1; i <= extShift; i++)
    {
@@ -481,7 +475,6 @@ bool IsRejection(int idx, string sym, ENUM_TIMEFRAMES tf, bool isBear, bool isRe
    }
    else
    {
-      // Hidden: dinh/day moi khong duoc pha level
       if(isBear ? (hi >= level) : (lo <= level)) return false;
    }
 
@@ -986,7 +979,6 @@ string BuildTodaySignalsDisplay()
    PublishTodaySignals();
 
    string display = "\nTODAY SIGNALS - " + IntegerToString(g_todaySignalCount) + " signals\n";
-   display += " \n";
 
    if(g_todaySignalCount > 0)
    {
@@ -1004,13 +996,38 @@ string BuildTodaySignalsDisplay()
       display += "No signals yet\n";
    }
 
-   display += "----------------------------------------\n";
    return display;
 }
 
 //+------------------------------------------------------------------+
-//| DISPLAY FUNCTIONS                                                |
+//| DISPLAY FUNCTIONS (GỌN LABEL THỪA + COMMENT CẤU HÌNH CẦN THIẾT) |
 //+------------------------------------------------------------------+
+string BuildConfigCommentLine()
+{
+   string tfs = "";
+   if(EnableM15) tfs += "M15";
+   if(EnableH1)  tfs += (tfs != "" ? "+H1" : "H1");
+   if(tfs == "") tfs = "NONE";
+
+   int startH = GetGvInt("GV_Dash_TradingStartHour", ScanStartHour);
+   int endH   = GetGvInt("GV_Dash_TradingEndHour", ScanEndHour);
+   string hrStr = IsTimeFilterEnabledEffective()
+      ? StringFormat("%02d-%02dh GMT+7", startH, endH)
+      : "24/7";
+
+   string newsStr = IsNewsFilterEnabledEffective()
+      ? (g_isNewsBlocked ? "News:BLOCK" : "News:OK")
+      : "News:OFF";
+
+   string rejStr = StringFormat("Rej:%s(W%.1f/R%.2f/B%.2f)",
+                                RejectOnCandleClose ? "Close" : "Live",
+                                RejectMinWickRatio, RejectMinRangeATR, RejectMinBreakATR);
+
+   return StringFormat("// TF:%s | %s | %s | Vol>=%.1f | %s | EA:%s",
+                       tfs, hrStr, newsStr, VolumeAutoRatio, rejStr,
+                       PublishToDirectEA_GV ? "ON" : "OFF");
+}
+
 void Draw(string divergenceComment)
 {
    SHudConfig hud = GetHudConfig();
@@ -1018,6 +1035,14 @@ void Draw(string divergenceComment)
    {
       ClearAll();
       return;
+   }
+
+   // Xoa cac label trang tri / thua neu con ton tai tu ban cu
+   for(int i = ObjectsTotal(0) - 1; i >= 0; i--)
+   {
+      string name = ObjectName(0, i);
+      if(StringFind(name, P + "LINE_DECOR_") == 0 || StringFind(name, P + "FEATURES") == 0)
+         ObjectDelete(0, name);
    }
 
    int rowH = 18;
@@ -1032,9 +1057,8 @@ void Draw(string divergenceComment)
          ? DoubleToString((double)g_lastScanDurationMs / 1000.0, 1) + "s"
          : IntegerToString((int)g_lastScanDurationMs) + "ms";
 
-      string timeFilterStr = EnableTimeFilter ? " | " + IntegerToString(ScanStartHour) + "h-" + IntegerToString(ScanEndHour) + "h" : " | 24/7";
-      string line1Status = StringFormat("%s %s | %s | %s%s",
-                                       dotChar, speedStr, g_statusText, timeStr, timeFilterStr);
+      string line1Status = StringFormat("%s %s | %s | %s",
+                                       dotChar, speedStr, g_statusText, timeStr);
       UpdMsg("HEARTBEAT", line1Status, hud.startX, y, g_statusColor, hud.fontHeader, true);
       y += rowH + 2;
    }
@@ -1046,40 +1070,14 @@ void Draw(string divergenceComment)
 
    if(hud.showFeatures)
    {
-      string tfListStr = "";
-      if(EnableM15) tfListStr += "M15 ";
-      if(EnableH1)  tfListStr += "H1 ";
-
-      string signalStatus = EnableSignalOutput ? "SIG:ON" : "SIG:OFF";
-      string notifyStatus = EnablePushNotify ? "PUSH:ON" : "PUSH:OFF";
-      string monoStatus = RT_RequireMonotonicMove ? "MONO:ON" : "MONO:OFF";
-      string newsStatus = "";
-      if(IsNewsFilterEnabledEffective())
-         newsStatus = g_isNewsBlocked ? "NEWS:BLOCKED" : "NEWS:SAFE";
-      else
-         newsStatus = "NEWS:OFF";
-
-      string line2Features = StringFormat("%s | %s | %s | %s | %s",
-                                         tfListStr, signalStatus, notifyStatus, monoStatus, newsStatus);
-      color line2Color = g_isNewsBlocked ? clrOrangeRed : clrDimGray;
-      UpdMsg("FEATURES", line2Features, hud.startX, y, line2Color, 9, false);
-      y += rowH + 6;
+      color cfgColor = g_isNewsBlocked ? clrOrangeRed : clrSilver;
+      UpdMsg("CFG_COMMENT", BuildConfigCommentLine(), hud.startX, y, cfgColor, 9, false);
+      y += rowH + 4;
    }
    else
    {
-      string fn = P + "FEATURES";
-      if(ObjectFind(0, fn) >= 0) ObjectDelete(0, fn);
-   }
-
-   if(hud.showHeader || hud.showFeatures)
-   {
-      UpdMsg("LINE_DECOR_1", "================================================================================", hud.startX, y, clrDarkGray, 8);
-      y += 10;
-   }
-   else
-   {
-      string ln = P + "LINE_DECOR_1";
-      if(ObjectFind(0, ln) >= 0) ObjectDelete(0, ln);
+      string cn = P + "CFG_COMMENT";
+      if(ObjectFind(0, cn) >= 0) ObjectDelete(0, cn);
    }
 
    if(divergenceComment != "" && StringFind(divergenceComment, "CRASHED") < 0)
@@ -1097,13 +1095,13 @@ void Draw(string divergenceComment)
          {
             inHistorical = true;
             inToday = false;
-            y += 4;
+            y += 3;
          }
          if(StringFind(divLines[i], "TODAY") >= 0)
          {
             inHistorical = false;
             inToday = true;
-            y += 4;
+            y += 3;
          }
 
          if(inToday && !hud.showToday) continue;
@@ -1181,8 +1179,7 @@ void Cleanup(int validLineCount)
       string name = ObjectName(0, i);
       if(StringFind(name, P) != 0) continue;
       if(StringFind(name, P + "HEARTBEAT") == 0) continue;
-      if(StringFind(name, P + "FEATURES") == 0) continue;
-      if(StringFind(name, P + "LINE_DECOR_") == 0) continue;
+      if(StringFind(name, P + "CFG_COMMENT") == 0) continue;
       if(StringFind(name, P + "DIV_") == 0)
       {
          int idx_obj = (int)StringToInteger(StringSubstr(name, StringLen(P + "DIV_")));
@@ -1238,7 +1235,7 @@ int OnInit()
    if(tfList == "") tfList = "NONE!";
 
    Print("═══════════════════════════════════════════");
-   Print("RSI Divergence Realtime v1.15 (TimeGMT7 + TF Sync)");
+   Print("RSI Divergence Realtime v1.16 (TimeGMT7 + TF Sync)");
    Print("   Timeframes: ", tfList);
    Print("   GMT+7 Now: ", TimeToString(nowGmt7, TIME_DATE|TIME_SECONDS));
    Print("   Direct EA GV: ", PublishToDirectEA_GV ? "ON" : "OFF");
@@ -1497,7 +1494,6 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
       if(arrSymTF[idx].lastBarTime != 0 && arrSymTF[idx].lastShiftCached < MS_SwingBars)
          arrSymTF[idx].lastShiftCached = MS_SwingBars;
       arrSymTF[idx].lastBarTime = currentBarTime;
-
    }
 
    double bestBearH1 = 0, bestBearH2 = 0, bestBearR1 = 0, bestBearR2 = 0;
@@ -1728,7 +1724,6 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
 
                   double currentPrice = SymbolInfoDouble(sym, SYMBOL_BID);
                   bool rejected = IsRejection(idx, sym, tf, true, true, lastHighPrice, rtMaxHighShift, lastHighTime);
-                  // Moi cuc tri chi phat STRONG mot lan
                   bool isStrong = rejected && arrSymTF[idx].firedBearReg != timeAtMaxHigh;
                   if(isStrong)
                      arrSymTF[idx].firedBearReg = timeAtMaxHigh;
@@ -1802,7 +1797,6 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
 
                   double currentPrice = SymbolInfoDouble(sym, SYMBOL_BID);
                   bool rejected = IsRejection(idx, sym, tf, true, false, lastHighPrice, rtMaxRSIShift, lastHighTime);
-                  // Moi cuc tri chi phat STRONG mot lan
                   bool isStrong = rejected && arrSymTF[idx].firedBearHid != timeAtMaxRSI;
                   if(isStrong)
                      arrSymTF[idx].firedBearHid = timeAtMaxRSI;
@@ -1898,7 +1892,6 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
 
                   double currentPrice = SymbolInfoDouble(sym, SYMBOL_ASK);
                   bool rejected = IsRejection(idx, sym, tf, false, true, lastLowPrice, rtMinLowShift, lastLowTime);
-                  // Moi cuc tri chi phat STRONG mot lan
                   bool isStrong = rejected && arrSymTF[idx].firedBullReg != timeAtMinLow;
                   if(isStrong)
                      arrSymTF[idx].firedBullReg = timeAtMinLow;
@@ -1969,7 +1962,6 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
 
                   double currentPrice = SymbolInfoDouble(sym, SYMBOL_ASK);
                   bool rejected = IsRejection(idx, sym, tf, false, false, lastLowPrice, rtMinRSIShift, lastLowTime);
-                  // Moi cuc tri chi phat STRONG mot lan
                   bool isStrong = rejected && arrSymTF[idx].firedBullHid != timeAtMinRSI;
                   if(isStrong)
                      arrSymTF[idx].firedBullHid = timeAtMinRSI;
