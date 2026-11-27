@@ -779,6 +779,23 @@ body.trade-fullscreen .chart-stage #tradePanelToggle.floating-trade-toggle:hover
 .rt-reopen-btn.sell-mode{border-color:#a84457;color:#ff9aaa}
 .rt-reopen-btn .rt-dot{width:7px;height:7px;border-radius:50%;background:currentColor}
 
+.rt-list-panel{
+  position:fixed;z-index:1201;right:14px;bottom:14px;display:none;flex-direction:column;
+  width:min(340px,calc(100vw - 24px));max-height:min(60dvh,440px);
+  border:1px solid #35516f;border-radius:14px;background:#101b2c;color:var(--text);
+  box-shadow:0 20px 60px rgba(0,0,0,.6);overflow:hidden
+}
+.rt-list-panel.show{display:flex}
+.rt-list-head{display:flex;align-items:center;justify-content:space-between;gap:8px;padding:9px 12px;background:#142239;border-bottom:1px solid #2a3b53;font-size:12px}
+.rt-list-head button{padding:1px 8px;background:transparent;border:0;color:#a9b8ca;font-size:16px}
+.rt-list-body{overflow-y:auto;overscroll-behavior:contain;padding:6px;display:grid;gap:5px}
+.rt-list-item{display:grid;grid-template-columns:1fr auto;gap:2px 10px;width:100%;text-align:left;padding:8px 10px;border:1px solid #293d56;border-left:3px solid var(--green);border-radius:8px;background:#0d1929;color:var(--text);cursor:pointer}
+.rt-list-item.sell{border-left-color:#f06478}
+.rt-list-item b{font-size:12px;color:#75e5bd}
+.rt-list-item.sell b{color:#ff9aaa}
+.rt-list-item span{font-size:11px;color:#aebdd0;font-variant-numeric:tabular-nums}
+.rt-list-item span.right{text-align:right}
+
 .rt-signal-dialog{
   width:min(390px,calc(100vw - 24px));max-height:82dvh;padding:0;
   border:1px solid #35516f;border-radius:14px;background:#101b2c;color:var(--text);
@@ -1130,6 +1147,14 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
   <span class="rt-dot"></span>
   <span id="rtReopenText">RT</span>
 </button>
+
+<div id="rtListPanel" class="rt-list-panel" role="dialog" aria-label="Danh sách tín hiệu realtime hôm nay">
+  <div class="rt-list-head">
+    <strong id="rtListTitle">TÍN HIỆU REALTIME</strong>
+    <button type="button" id="rtListClose" aria-label="Đóng">✕</button>
+  </div>
+  <div class="rt-list-body" id="rtListBody"></div>
+</div>
 
 <dialog id="rtSignalDialog" class="rt-signal-dialog">
   <div class="rt-dialog-head">
@@ -1515,7 +1540,9 @@ function startAuthorizedPolling() {
   void checkServerStatus();
   void load();
   void refreshChartPositions();
+  void syncD1Option();
   authorizedTimers = [
+    setInterval(() => { if (apiAccessGranted && !document.hidden) void syncD1Option(); }, 60000),
     setInterval(() => { if (apiAccessGranted) void syncEaSettings(); }, 30000),
     setInterval(() => { if (apiAccessGranted) void refreshCommissionInfo(); }, 60000),
     setInterval(() => { if (apiAccessGranted) void refreshEmergencyModalWarning(); }, 30000),
@@ -2817,9 +2844,10 @@ function rsi(values, period = 14) {
   return out;
 }
 
-const knownRealtimeByView = new Map();
 const RT_DISMISSED_KEY_STORAGE = 'chartRtDismissedSignalKey';
-const RT_LATEST_SIGNAL_STORAGE = 'chartRtLatestSignal';
+let rtSignals = [];            // mọi tín hiệu RT hôm nay (mọi mã, mọi khung), mới nhất trước
+const rtSeenKeys = new Set();
+let rtFirstSync = true;
 
 // ===== Chỉ tín hiệu trong ngày (GMT+7) mới được coi là realtime =====
 // signal_time là giờ server broker; broker_offset_sec do ServerConnector gửi qua server.
@@ -2842,41 +2870,16 @@ function isTodaySignal(s) {
 }
 function clearLatestRealtimeSignal() {
   latestRealtimeSignal = null;
-  latestRealtimeCount = 1;
-  try {
-    sessionStorage.removeItem(RT_LATEST_SIGNAL_STORAGE);
-    localStorage.removeItem(RT_LATEST_SIGNAL_STORAGE);
-  } catch (_) {}
   const toast = $('rtSignalToast');
-  if (toast) { toast.classList.remove('show'); toast.innerHTML = ''; }
-  syncRealtimeReopenButton();
+  if (toast) { toast.classList.remove('show'); toast.innerHTML = ''; toast.dataset.sig = ''; }
+  closeRealtimeList();
 }
 function expireOldRealtimeSignal() {
   if (latestModalSignalContext && !isTodaySignal(latestModalSignalContext.signal)) {
     latestModalSignalContext = null;
     if ($('rtSignalDialog').open) $('rtSignalDialog').close();
   }
-  if (latestRealtimeSignal && !isTodaySignal(latestRealtimeSignal)) clearLatestRealtimeSignal();
-}
-
-function readStoredLatestRealtimeSignal() {
-  try {
-    const raw = sessionStorage.getItem(RT_LATEST_SIGNAL_STORAGE) || localStorage.getItem(RT_LATEST_SIGNAL_STORAGE);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    return parsed && parsed.signal_time ? parsed : null;
-  } catch (_) {
-    return null;
-  }
-}
-
-function saveLatestRealtimeSignal(s) {
-  if (!s) return;
-  try {
-    const str = JSON.stringify(s);
-    sessionStorage.setItem(RT_LATEST_SIGNAL_STORAGE, str);
-    localStorage.setItem(RT_LATEST_SIGNAL_STORAGE, str);
-  } catch (_) {}
+  if (rtSignals.some(s => !isTodaySignal(s))) applyRealtimeList(rtSignals);
 }
 
 function readDismissedSignalKey() {
@@ -2899,9 +2902,7 @@ function saveDismissedSignalKey(key) {
   } catch (_) {}
 }
 
-let latestRealtimeSignal = readStoredLatestRealtimeSignal();
-let latestRealtimeCount = 1;
-let rtToastDismissedByUser = false;
+let latestRealtimeSignal = null;
 let latestModalSignalContext = null;
 
 function signalKey(s) {
@@ -2917,14 +2918,11 @@ function syncRealtimeReopenButton() {
 
   // Nút mở lại RT là thông báo toàn cục, không phụ thuộc symbol/timeframe đang xem.
   const signal = latestRealtimeSignal;
-  const hasValidSignal = !!(signal && isTodaySignal(signal));
-
-  if (!hasValidSignal) {
+  if (!signal || !isTodaySignal(signal)) {
     btn.classList.remove('show', 'sell-mode');
     return;
   }
-
-  if (toast && toast.classList.contains('show')) {
+  if ((toast && toast.classList.contains('show')) || $('rtListPanel').classList.contains('show')) {
     btn.classList.remove('show');
     return;
   }
@@ -2932,31 +2930,15 @@ function syncRealtimeReopenButton() {
   const isBuy = String(signal.direction || '').toUpperCase() === 'BUY';
   btn.classList.toggle('sell-mode', !isBuy);
   $('rtReopenText').textContent =
-    (isBuy ? '▲ BUY' : '▼ SELL') +
-    ' · ' +
-    signal.symbol +
-    ' · ' +
-    signal.timeframe +
-    (latestRealtimeCount > 1 ? ' (+' + (latestRealtimeCount - 1) + ')' : '');
+    (isBuy ? '▲ BUY' : '▼ SELL') + ' · ' + signal.symbol + ' · ' + signal.timeframe +
+    (rtSignals.length > 1 ? ' (+' + (rtSignals.length - 1) + ') ▴' : '');
   btn.classList.add('show');
 }
-function showRealtimeToast(s, count = 1, { forceOpen = false } = {}) {
+
+function showRealtimeToast(s, { open = false } = {}) {
   if (!s || !isTodaySignal(s)) return;
-  const prevKey = latestRealtimeSignal ? signalKey(latestRealtimeSignal) : '';
-  const nextKey = signalKey(s);
   latestRealtimeSignal = s;
-  latestRealtimeCount = Math.max(1, Number(count) || 1);
-  saveLatestRealtimeSignal(s);
-
-  if (nextKey !== prevKey) {
-    rtToastDismissedByUser = false;
-  }
-  if (forceOpen) {
-    rtToastDismissedByUser = false;
-    if (readDismissedSignalKey() === nextKey) saveDismissedSignalKey('');
-  }
-
-  const shouldStayHidden = !forceOpen && (rtToastDismissedByUser || readDismissedSignalKey() === nextKey);
+  const total = rtSignals.length;
 
   let toast = $('rtSignalToast');
   if (!toast) {
@@ -2965,31 +2947,93 @@ function showRealtimeToast(s, count = 1, { forceOpen = false } = {}) {
     toast.className = 'rt-signal-toast';
     $('priceChart').appendChild(toast);
   }
-  const isBuy = s.direction === 'BUY';
-  toast.innerHTML =
-    '<div class="rt-toast-head"><span class="rt-toast-label">● REALTIME MỚI' +
-    (latestRealtimeCount > 1 ? ' · +' + (latestRealtimeCount - 1) : '') +
-    '</span><button type="button" class="rt-toast-close" aria-label="Ẩn">×</button></div>' +
-    '<div class="rt-toast-main ' + (isBuy ? 'buy' : 'sell') + '">' +
-    (isBuy ? '▲ BUY' : '▼ SELL') + ' · ' + esc(s.symbol) + ' · ' + esc(s.timeframe) + '</div>' +
-    '<div class="rt-toast-meta">' + esc(s.divergence) + ' · Giá điểm phân kỳ: ' + fmtPrice(s.price2, s.symbol) + '</div>' +
-    '<div class="rt-toast-meta">' + esc(signalTimeText(s)) + '</div>' +
-    '<div class="rt-toast-actions"><button type="button" class="rt-detail-btn">Xem chi tiết</button></div>';
+  // Chỉ dựng lại nội dung khi đổi, tránh mất thao tác chạm sau mỗi lần đồng bộ
+  const sig = signalKey(s) + '#' + total + '#' + digitsFor(s.symbol);
+  if (toast.dataset.sig !== sig) {
+    toast.dataset.sig = sig;
+    const isBuy = s.direction === 'BUY';
+    toast.innerHTML =
+      '<div class="rt-toast-head"><span class="rt-toast-label">● REALTIME MỚI' +
+      (total > 1 ? ' · +' + (total - 1) : '') +
+      '</span><button type="button" class="rt-toast-close" aria-label="Ẩn">×</button></div>' +
+      '<div class="rt-toast-main ' + (isBuy ? 'buy' : 'sell') + '">' +
+      (isBuy ? '▲ BUY' : '▼ SELL') + ' · ' + esc(s.symbol) + ' · ' + esc(s.timeframe) + '</div>' +
+      '<div class="rt-toast-meta">' + esc(s.divergence) + ' · Giá điểm phân kỳ: ' + fmtPrice(s.price2, s.symbol) + '</div>' +
+      '<div class="rt-toast-meta">' + esc(signalTimeText(s)) + '</div>' +
+      '<div class="rt-toast-actions">' +
+      (total > 1 ? '<button type="button" class="rt-all-btn">Xem tất cả (' + total + ')</button>' : '') +
+      '<button type="button" class="rt-detail-btn">Xem chi tiết</button></div>';
 
-  if (!shouldStayHidden) {
-    toast.classList.add('show');
-  } else {
-    toast.classList.remove('show');
+    toast.querySelector('.rt-toast-close').addEventListener('click', e => {
+      e.stopPropagation();
+      saveDismissedSignalKey(signalKey(s));
+      toast.classList.remove('show');
+      syncRealtimeReopenButton();
+    });
+    toast.querySelector('.rt-detail-btn').addEventListener('click', () => openRealtimeDetails(s));
+    toast.querySelector('.rt-all-btn')?.addEventListener('click', e => { e.stopPropagation(); openRealtimeList(); });
   }
-  syncRealtimeReopenButton();
 
-  toast.querySelector('.rt-toast-close').addEventListener('click', () => {
-    rtToastDismissedByUser = true;
-    saveDismissedSignalKey(signalKey(s));
-    toast.classList.remove('show');
-    syncRealtimeReopenButton();
+  toast.classList.toggle('show', open);
+  syncRealtimeReopenButton();
+}
+
+function renderRealtimeList() {
+  $('rtListTitle').textContent = 'TÍN HIỆU REALTIME HÔM NAY (' + rtSignals.length + ')';
+  const body = $('rtListBody');
+  const sig = rtSignals.map(s => signalKey(s) + ':' + digitsFor(s.symbol)).join(';');
+  if (body.dataset.sig === sig) return;
+  body.dataset.sig = sig;
+  const scroll = body.scrollTop;
+  body.innerHTML = rtSignals.map((s, i) => {
+    const isBuy = s.direction === 'BUY';
+    return '<button type="button" class="rt-list-item' + (isBuy ? '' : ' sell') + '" data-idx="' + i + '">'
+      + '<b>' + (isBuy ? '▲ BUY' : '▼ SELL') + ' · ' + esc(s.symbol) + ' · ' + esc(s.timeframe) + '</b>'
+      + '<span class="right">' + esc(s.divergence) + '</span>'
+      + '<span>' + esc(signalTimeText(s)) + '</span>'
+      + '<span class="right">' + fmtPrice(s.price2, s.symbol) + '</span></button>';
+  }).join('');
+  body.scrollTop = scroll;
+}
+function openRealtimeList() {
+  if (!rtSignals.length) return;
+  renderRealtimeList();
+  $('rtListPanel').classList.add('show');
+  $('rtSignalToast')?.classList.remove('show');
+  syncRealtimeReopenButton();
+}
+function closeRealtimeList() {
+  $('rtListPanel').classList.remove('show');
+  syncRealtimeReopenButton();
+}
+
+// Danh sách từ /api/dashboard là nguồn duy nhất cho popup, nút RT và bảng chọn
+function applyRealtimeList(signals) {
+  const unique = new Map();
+  (Array.isArray(signals) ? signals : []).forEach(s => {
+    if (s && s.signal_type === 'RT' && isTodaySignal(s)) unique.set(signalKey(s), s);
   });
-  toast.querySelector('.rt-detail-btn').addEventListener('click', () => openRealtimeDetails(s));
+  rtSignals = [...unique.values()].sort((a, b) => Number(b.signal_time) - Number(a.signal_time));
+  const fresh = rtSignals.filter(s => !rtSeenKeys.has(signalKey(s)));
+  fresh.forEach(s => rtSeenKeys.add(signalKey(s)));
+  const first = rtFirstSync;
+  rtFirstSync = false;
+
+  if (!rtSignals.length) { clearLatestRealtimeSignal(); return; }
+
+  const listOpen = $('rtListPanel').classList.contains('show');
+  const toastOpen = !!$('rtSignalToast')?.classList.contains('show');
+  if (listOpen) {
+    latestRealtimeSignal = rtSignals[0];
+    renderRealtimeList();
+  } else if (first) {
+    showRealtimeToast(rtSignals[0], { open: readDismissedSignalKey() !== signalKey(rtSignals[0]) });
+  } else if (fresh.length) {
+    showRealtimeToast(fresh[0], { open: true });
+  } else {
+    const keep = latestRealtimeSignal && unique.has(signalKey(latestRealtimeSignal));
+    showRealtimeToast(keep ? unique.get(signalKey(latestRealtimeSignal)) : rtSignals[0], { open: toastOpen });
+  }
 }
 
 function computeCandleExtremeSl(target, refPrice, bufferPrice) {
@@ -2998,7 +3042,9 @@ function computeCandleExtremeSl(target, refPrice, bufferPrice) {
   const p2 = Number(target?.price2) || 0;
   const rawT1 = Number(target?.time1) || 0;
   const rawT2 = Number(target?.time2) || 0;
-  const bars = typeof candleSeries?.data === 'function' ? (candleSeries.data() || []) : [];
+  // Chỉ dùng nến trên chart khi đúng mã và khung của tín hiệu
+  const sameView = loadedKey === String(target?.symbol || '').toUpperCase() + '|' + String(target?.timeframe || '').toUpperCase();
+  const bars = sameView && typeof candleSeries?.data === 'function' ? (candleSeries.data() || []) : [];
 
   let scopedBars = [];
   if (rawT1 > 0 && rawT2 > 0 && bars.length) {
@@ -3057,7 +3103,36 @@ function computeCandleExtremeSl(target, refPrice, bufferPrice) {
 async function applyRealtimeSignalToForm(s) {
   const state = await verifyEmergencyBeforeTradePanel();
   if (state.enabled) { showTradeEmergencyWarning(state); return; }
-  applyRealtimeSignalToFormNow(s);
+  const target = s || latestModalSignalContext?.signal || latestRealtimeSignal;
+  if (!target) return;
+  const symbol = String(target.symbol || '').toUpperCase();
+  const tf = String(target.timeframe || '').toUpperCase();
+  const hasOption = (id, value) => [...$(id).options].some(o => o.value === value);
+  if (!hasOption('symbol', symbol)) {
+    $('requestState').textContent = 'Mã ' + symbol + ' không có trong danh sách biểu đồ.';
+    return;
+  }
+  if (tf === 'D1') ensureD1Option(true);
+  const nextTf = hasOption('tf', tf) ? tf : $('tf').value;
+  const viewKey = symbol + '|' + nextTf;
+
+  if (loadedKey !== viewKey) {
+    if ($('rtSignalDialog').open) $('rtSignalDialog').close();
+    $('symbol').value = symbol;
+    $('tf').value = nextTf;
+    serverAskPrice = 0; latestMarketPrice = 0; liveBar = null; loadedKey = '';
+    renderAskLine();
+    firstLoad = true;
+    lastBarsSignature = '';
+    await Promise.all([load(true), syncSymbolCommission(symbol)]);
+    void syncD1Option();
+    if (loadedKey !== viewKey) {
+      $('requestState').textContent = 'Chưa tải được dữ liệu ' + symbol + ' · ' + nextTf + '. Hãy thử lại.';
+      return;
+    }
+    latestModalSignalContext = null; // tính lại SL theo nến đúng mã
+  }
+  applyRealtimeSignalToFormNow(target);
 }
 
 function applyRealtimeSignalToFormNow(s) {
@@ -3078,16 +3153,6 @@ function applyRealtimeSignalToFormNow(s) {
   const suggestedSl = Number(latestModalSignalContext?.suggestedSl) > 0
     ? Number(latestModalSignalContext.suggestedSl)
     : computeCandleExtremeSl(target, refPrice, bufferPrice);
-
-  const targetSym = String(target.symbol || '').toUpperCase();
-  const targetTf = String(target.timeframe || '').toUpperCase();
-  const viewChanged =
-    (targetSym && $('symbol').value !== targetSym) ||
-    (targetTf && $('tf').value !== targetTf);
-
-  if (viewChanged) { latestMarketPrice = 0; serverAskPrice = 0; liveBar = null; loadedKey = ''; }
-  if (targetSym && $('symbol').value !== targetSym) $('symbol').value = targetSym;
-  if (targetTf && $('tf').value !== targetTf) $('tf').value = targetTf;
 
   const rr = Number(eaState.settings.reward_risk_ratio) > 0
     ? Number(eaState.settings.reward_risk_ratio)
@@ -3154,12 +3219,6 @@ function applyRealtimeSignalToFormNow(s) {
     $('rtSignalDialog').close();
   }
 
-  if (viewChanged) {
-    firstLoad = true;
-    lastBarsSignature = '';
-    void load(true);
-    void syncSymbolCommission($('symbol').value);
-  }
 }
 
 function openRealtimeDetails(s) {
@@ -3222,14 +3281,28 @@ function openRealtimeDetails(s) {
   if (!$('rtSignalDialog').open) $('rtSignalDialog').showModal();
 }
 
-$('rtReopenBtn').addEventListener('click', () => {
+$('rtReopenBtn').addEventListener('click', e => {
+  e.stopPropagation();
   expireOldRealtimeSignal();
-  if (latestRealtimeSignal) {
-    showRealtimeToast(latestRealtimeSignal, latestRealtimeCount, { forceOpen: true });
-  } else {
-    $('requestState').textContent = 'Chưa có tín hiệu RT nào trên cặp/khung giờ này.';
+  if (rtSignals.length > 1) openRealtimeList();
+  else if (latestRealtimeSignal) {
+    saveDismissedSignalKey('');
+    showRealtimeToast(latestRealtimeSignal, { open: true });
   }
 });
+$('rtListClose').addEventListener('click', closeRealtimeList);
+$('rtListBody').addEventListener('click', e => {
+  const item = e.target.closest('.rt-list-item');
+  if (!item) return;
+  const s = rtSignals[Number(item.dataset.idx)];
+  if (!s) return;
+  latestRealtimeSignal = s;
+  closeRealtimeList();
+  openRealtimeDetails(s);
+});
+document.addEventListener('pointerdown', e => {
+  if ($('rtListPanel').classList.contains('show') && !$('rtListPanel').contains(e.target)) closeRealtimeList();
+}, true);
 $('rtDialogClose').addEventListener('click', () => $('rtSignalDialog').close());
 $('rtDialogOk').addEventListener('click', () => $('rtSignalDialog').close());
 
@@ -3244,40 +3317,8 @@ function renderSignals(signals, bars) {
     text: s.direction + ' ' + s.divergence + ' ' + s.signal_type,
   }));
   candleSeries.setMarkers(bars.length ? markers : []);
-
-  const viewKey = $('symbol').value + '|' + $('tf').value;
-  expireOldRealtimeSignal();
-  const rtItems = list.filter(s => s.signal_type === 'RT' && isTodaySignal(s)).sort((a, b) => Number(b.signal_time) - Number(a.signal_time));
-  const currentKeys = new Set(rtItems.map(signalKey));
-  // Tín hiệu đã lưu của đúng mã/khung đang xem nhưng không còn trong danh sách thì bỏ
-  if (latestRealtimeSignal
-      && latestRealtimeSignal.symbol === $('symbol').value
-      && latestRealtimeSignal.timeframe === $('tf').value
-      && !currentKeys.has(signalKey(latestRealtimeSignal))) {
-    clearLatestRealtimeSignal();
-  }
-  if (!knownRealtimeByView.has(viewKey)) {
-    knownRealtimeByView.set(viewKey, currentKeys);
-    if (rtItems.length) {
-      const topSignal = rtItems[0];
-      const alreadyDismissed = readDismissedSignalKey() === signalKey(topSignal);
-      showRealtimeToast(topSignal, rtItems.length, { forceOpen: !alreadyDismissed });
-    }
-  } else {
-    const known = knownRealtimeByView.get(viewKey);
-    const fresh = rtItems.filter(s => !known.has(signalKey(s)));
-    currentKeys.forEach(k => known.add(k));
-    if (fresh.length) {
-      fresh.sort((a, b) => Number(b.signal_time) - Number(a.signal_time));
-      showRealtimeToast(fresh[0], fresh.length, { forceOpen: true });
-    }
-  }
 }
 
-expireOldRealtimeSignal();
-if (latestRealtimeSignal) {
-  showRealtimeToast(latestRealtimeSignal, 1, { forceOpen: false });
-}
 setInterval(expireOldRealtimeSignal, 15000); // qua 00:00 GMT+7 thì tự gỡ
 
 function defaultGap(ref) {
@@ -3491,6 +3532,31 @@ async function pollTick() {
     }
   } catch (_) {}
   setTimeout(pollTick, 1000);
+}
+
+// Khung D1 chỉ xuất hiện khi server có nến D1 của mã đang chọn
+function ensureD1Option(available) {
+  const select = $('tf');
+  const option = [...select.options].find(o => o.value === 'D1');
+  if (available && !option) select.add(new Option('D1', 'D1'));
+  else if (!available && option) option.remove();
+}
+async function syncD1Option() {
+  if (!apiAccessGranted) return;
+  const symbol = $('symbol').value;
+  try {
+    const r = await apiFetch(API_BASE + '/api/chart/data?symbol=' + encodeURIComponent(symbol) + '&timeframe=D1&limit=50', { cache: 'no-store' });
+    if (!r.ok) return;
+    const d = await r.json();
+    if ($('symbol').value !== symbol || !Array.isArray(d.candles)) return;
+    const available = d.candles.length > 0;
+    const wasD1 = $('tf').value === 'D1';
+    ensureD1Option(available);
+    if (!available && wasD1) {
+      $('tf').value = 'M15';
+      $('tf').dispatchEvent(new Event('change'));
+    }
+  } catch (_) {} // lỗi mạng: giữ nguyên danh sách khung
 }
 
 async function load(forceNetwork = false) {
@@ -3843,6 +3909,8 @@ async function refreshChartPositions() {
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const d = await r.json();
     rememberDigits(d.symbol_digits);
+    rememberBrokerOffset(d.broker_offset_sec);
+    if (Array.isArray(d.today_signals)) applyRealtimeList(d.today_signals);
     const openList = Array.isArray(d.mt5_positions) ? d.mt5_positions : [];
     const pendingList = Array.isArray(d.mt5_pending_orders) ? d.mt5_pending_orders : [];
     const snapshotAge = d.mt5_snapshot_updated_at ? Math.max(0, Math.round((Date.now() - Date.parse(d.mt5_snapshot_updated_at)) / 1000)) : null;
@@ -4593,9 +4661,9 @@ async function sendOrderNow(direction) {
 
 $('sendBuy').addEventListener('click', () => sendOrder('BUY'));
 $('sendSell').addEventListener('click', () => sendOrder('SELL'));
-$('symbol').addEventListener('change', () => { serverAskPrice = 0; latestMarketPrice = 0; liveBar = null; loadedKey = ''; renderAskLine(); firstLoad = true; lastBarsSignature = ''; load(); void syncSymbolCommission($('symbol').value); refreshCommissionInfo(); syncRealtimeReopenButton(); });
+$('symbol').addEventListener('change', () => { serverAskPrice = 0; latestMarketPrice = 0; liveBar = null; loadedKey = ''; renderAskLine(); firstLoad = true; lastBarsSignature = ''; load(); void syncSymbolCommission($('symbol').value); refreshCommissionInfo(); syncRealtimeReopenButton(); void syncD1Option(); });
 $('tf').addEventListener('change', () => { liveBar = null; loadedKey = ''; firstLoad = true; lastBarsSignature = ''; load(); syncRealtimeReopenButton(); });
-$('refresh').addEventListener('click', () => { lastBarsSignature = ''; load(true); void syncEaSettings(); void syncSymbolCommission($('symbol').value); });
+$('refresh').addEventListener('click', () => { lastBarsSignature = ''; load(true); void syncD1Option(); void syncEaSettings(); void syncSymbolCommission($('symbol').value); });
 
 const rsiResizeHandle = $('rsiResizeHandle');
 const lotResizeHandle = $('lotResizeHandle');
