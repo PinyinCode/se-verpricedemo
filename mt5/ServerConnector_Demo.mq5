@@ -4,7 +4,7 @@
 //| Chart & account feed only (no trade execution).                  |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.50"
+#property version "1.52"
 
 #include <Trade\Trade.mqh>
 
@@ -200,6 +200,9 @@ bool Due(ulong lastMs, int seconds)
 {
    return lastMs == 0 || GetTickCount64() - lastMs >= (ulong)seconds * 1000;
 }
+
+// File va GlobalVariable cua indicator ghi gio theo GMT+7
+datetime NowGmt7() { return TimeGMT() + 7*3600; }
 
 int EnsureTickSlot(string sym)
 {
@@ -521,6 +524,13 @@ void SendHeartbeat()
       g_lastHeartbeat=GetTickCount64();
    else
       Print("[SERVER] Heartbeat failed. HTTP=",status," response=",response);
+
+   // Chuyen tiep heartbeat cua indicator (indicator khong goi duoc WebRequest)
+   if(GlobalVariableCheck("HB_RSI_Indicator") &&
+      (long)NowGmt7()-(long)GlobalVariableGet("HB_RSI_Indicator")<=30)
+      HttpRequest("POST","/api/heartbeat",
+         "{\"component\":\"rsi-divergence-indicator\",\"status\":\"online\",\"details\":\"via ServerConnector\"}",
+         response,status);
 }
 
 void ImportLegacyDivergenceSignal()
@@ -551,7 +561,7 @@ void ImportLegacyDivergenceSignal()
    string signature=IntegerToString((int)signalTime)+"|"+symbol+"|"+timeframe+"|"+IntegerToString(type);
    if(signature==g_lastLegacySignature) return;
    if(symbol=="" || entry<=0 || sl<=0 || signalTime<=0) return;
-   if(TimeCurrent()-signalTime>MaxLegacySignalAgeSeconds) return;
+   if(NowGmt7()-signalTime>MaxLegacySignalAgeSeconds) return;
 
    string direction=(type>0)?"BUY":"SELL";
    string source="div-"+symbol+"-"+timeframe+"-"+IntegerToString((int)signalTime);
@@ -595,7 +605,7 @@ void ImportDivergenceQueue()
       if(symbol=="" || (direction!="BUY" && direction!="SELL") || signalTime<=0 || entry<=0 || sl<=0)
       { GlobalVariableSet(g_queueCursorName,(double)lineNo); continue; }
 
-      if(detectedAt<=0 || TimeCurrent()-detectedAt>MaxLegacySignalAgeSeconds)
+      if(detectedAt<=0 || NowGmt7()-detectedAt>MaxLegacySignalAgeSeconds)
       {
          GlobalVariableSet(g_queueCursorName,(double)lineNo);
          Print("[SERVER] Skipped expired queued signal: ",symbol," ",tf," ",direction);
@@ -629,7 +639,7 @@ void PublishScanStatus()
    if(g_netBusy || !Due(g_lastScanPost,3)) return;
    g_lastScanPost=GetTickCount64();
    string raw="";
-   int file=FileOpen("DIVSCAN_SYMBOLS.txt",FILE_READ|FILE_TXT|FILE_COMMON);
+   int file=FileOpen("DIVSCAN_SYMBOLS.txt",FILE_READ|FILE_TXT|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
    if(file!=INVALID_HANDLE)
    {
       raw=FileReadString(file);
@@ -640,7 +650,7 @@ void PublishScanStatus()
    datetime scanTime=0;
    string symbolsJson="[]";
    if(fieldCount>=1) scanTime=(datetime)StringToInteger(fields[0]);
-   if(fieldCount>=2 && scanTime>0 && TimeCurrent()-scanTime<=30)
+   if(fieldCount>=2 && scanTime>0 && NowGmt7()-scanTime<=30)
    {
       string entries[];
       int entryCount=StringSplit(fields[1],';',entries);
@@ -673,11 +683,12 @@ void PublishTodaySignals()
 {
    if(g_netBusy) return;
    string items="";
+   int itemCount=0;
    int file=FileOpen("DIVTODAY_SIGNALS.txt",FILE_READ|FILE_TXT|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
    if(file==INVALID_HANDLE) return;
    {
       if(!FileIsEnding(file)) FileReadString(file);
-      while(!FileIsEnding(file))
+      while(!FileIsEnding(file) && itemCount<200) // server nhan toi da 200
       {
          string line=FileReadString(file);
          if(line=="") continue;
@@ -693,6 +704,7 @@ void PublishTodaySignals()
          }
          if(symbol=="" || (direction!="BUY" && direction!="SELL") || signalTime<=0) continue;
          if(sigType!="RT" && sigType!="HIST") sigType="RT";
+         itemCount++;
          if(items!="") items+=",";
          items+=StringFormat("{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\",\"divergence\":\"%s\",\"signal_type\":\"%s\",\"signal_time\":%d,\"price1\":%.8f,\"price2\":%.8f,\"rsi1\":%.2f,\"rsi2\":%.2f,\"time1\":%d,\"time2\":%d}",
             JsonEscape(symbol),JsonEscape(tf),direction,JsonEscape(divType),sigType,(int)signalTime,
@@ -701,7 +713,9 @@ void PublishTodaySignals()
       }
       FileClose(file);
    }
-   string body="{\"signals\":["+items+"]}";
+   // Do lech gio broker so voi UTC (lam tron 15 phut) de server loc dung tin hieu trong ngay
+   int brokerOffset=(int)MathRound((double)(TimeTradeServer()-TimeGMT())/900.0)*900;
+   string body="{\"broker_offset_sec\":"+IntegerToString(brokerOffset)+",\"signals\":["+items+"]}";
    if(body == g_lastTodaySignalsPayload && !Due(g_lastTodaySent,30)) return;
 
    string response; int status;
@@ -743,7 +757,7 @@ int BuildChartTargets(string &symbols[], string &timeframes[])
    if(StringSplit(raw,'#',fields)>=2)
    {
       datetime scanTime=(datetime)StringToInteger(fields[0]);
-      if(scanTime>0 && TimeCurrent()-scanTime<=60)
+      if(scanTime>0 && NowGmt7()-scanTime<=60)
       {
          string entries[];
          int count=StringSplit(fields[1],';',entries);
@@ -986,7 +1000,7 @@ int OnInit()
       return INIT_PARAMETERS_INCORRECT;
    }
    EventSetTimer(1);
-   Print("ServerConnector v1.50 initialized. Buffer OnTick + coalesced batch tick flush.");
+   Print("ServerConnector v1.51 initialized. Buffer OnTick + coalesced batch tick flush.");
    return INIT_SUCCEEDED;
 }
 
