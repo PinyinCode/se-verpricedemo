@@ -4,7 +4,7 @@
 //| Chart & account feed only (no trade execution).                  |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.53"
+#property version "1.54"
 
 #include <Trade\Trade.mqh>
 
@@ -73,6 +73,7 @@ string   g_connStatus      = "INIT";
 int      g_lastConnHttp    = 0;
 string   g_lastConnMsg     = "Waiting for first sync";
 datetime g_lastConnOkTime  = 0;
+datetime g_countDayStart   = 0;
 ulong    g_tickBatchCount  = 0;
 ulong    g_candleBatchCount= 0;
 
@@ -174,9 +175,23 @@ string JsonObjectValue(string json, string key)
 // File va GlobalVariable cua indicator ghi gio theo GMT+7
 datetime NowGmt7() { return TimeGMT() + 7*3600; }
 
+void ResetDailyCountersIfNeeded()
+{
+   datetime now7 = NowGmt7();
+   datetime curDayStart = now7 - (now7 % 86400);
+   if(g_countDayStart != curDayStart)
+   {
+      g_countDayStart = curDayStart;
+      g_tickBatchCount = 0;
+      g_candleBatchCount = 0;
+   }
+}
+
 void RenderConnectionComment()
 {
    if(!ShowConnectionComment) return;
+
+   ResetDailyCountersIfNeeded();
 
    bool mt5Conn = (bool)TerminalInfoInteger(TERMINAL_CONNECTED);
    string okTimeStr = (g_lastConnOkTime > 0)
@@ -188,12 +203,12 @@ void RenderConnectionComment()
       statusLabel = "MT5 DISCONNECTED";
 
    string txt =
-      "=== SERVER CONNECTOR v1.53 ===\n" +
+      "=== SERVER CONNECTOR v1.54 ===\n" +
       StringFormat("Trang thai : %s (MT5:%s | HTTP:%d)\n",
                    statusLabel, mt5Conn ? "OK" : "MAT KET NOI", g_lastConnHttp) +
       StringFormat("Consumer   : %s | Server: %s\n", ConsumerId, ServerBaseURL) +
       StringFormat("Chi tiet   : %s\n", g_lastConnMsg) +
-      StringFormat("Dong bo OK : %s (GMT+7) | Ticks:%I64u | Candles:%I64u",
+      StringFormat("Dong bo OK : %s (GMT+7) | Ticks:%I64u | Candles:%I64u (Reset 00h GMT+7)",
                    okTimeStr, g_tickBatchCount, g_candleBatchCount);
 
    Comment(txt);
@@ -333,6 +348,8 @@ void BufferAllTicks()
 void FlushBufferedTicks()
 {
    if(!EnableFastTickPush || g_netBusy) return;
+
+   ResetDailyCountersIfNeeded();
 
    ulong nowMs = GetTickCount64();
    int flushCadence = MathMax(50, TickFlushIntervalMs);
@@ -889,6 +906,8 @@ bool PublishCandleBatch(string symbol, string tfText, ENUM_TIMEFRAMES period, bo
    if(g_netBusy || symbol=="" || period==PERIOD_CURRENT) return false;
    if(!SymbolSelect(symbol,true)) return false;
 
+   ResetDailyCountersIfNeeded();
+
    if(!SeriesInfoInteger(symbol, period, SERIES_SYNCHRONIZED))
    {
       MqlRates warmup[];
@@ -1052,9 +1071,10 @@ int OnInit()
       Print("[SERVER] Set ApiKey privately in EA inputs.");
       return INIT_PARAMETERS_INCORRECT;
    }
+   ResetDailyCountersIfNeeded();
    EventSetTimer(1);
    RenderConnectionComment();
-   Print("ServerConnector v1.53 initialized. Buffer OnTick + coalesced batch tick flush.");
+   Print("ServerConnector v1.54 initialized. Buffer OnTick + coalesced batch tick flush.");
    return INIT_SUCCEEDED;
 }
 
@@ -1071,6 +1091,7 @@ void OnTick()
 
 void OnTimer()
 {
+   ResetDailyCountersIfNeeded();
    BufferAllTicks();
    FlushBufferedTicks();
 
