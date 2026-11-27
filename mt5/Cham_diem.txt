@@ -1,20 +1,26 @@
-================ V11 SYNC CONFIG: PATH + ATR + REJECT + OPT ================
+================ V13 WIN + LOSS ATR & SPREAD/SL ================
 GMT+7 : 2026.11.27 00:00:00 -> 2026.11.27 23:59:59 (Server: 2026.11.26 17:00:00 -> 2026.11.27 16:59:59)
-Cfg   : Risk=25.0$ | MaxPos=5 | RR=2.00 | BE=1.00 | Trail=1.00/0.50 (Dynamic)
 Lenh  : 5 (TICK:5 / M1:0) | W:4 / BE:0 / L:1 | Net: 55.92$
-PF: 3.81 | AvgR: +0.53R | AvgWinR: 0.91R | Chot ~1R (0.8-1.15R): 2 lenh
-ATR TF: PERIOD_M15 (P14) | AvgRangeATR: 3.95x (Dat 0.30x: 5/5) | AvgAdvR: 0.60R
-PeakR : Avg=1.21R, Med=1.38R, P75=1.56R
-Leak  : >=1.0R nhung dong <0.3R (0) | >=1.5R nhung dong <0.5R (0)
-DIEM HIEU QUA: 95.5 / 100
-----------------------------------------------------------------------------
-TOI UU TP (reward_risk_ratio):
-  Hien tai: 2.00R (+2.65R)  =>  Toi uu: 1.30R (+3.54R | +0.89R)
-TOI UU BE & TRAILING (BE / trigger / lock):
-  Hien tai: 1.00 / 1.00 / 0.50 (+2.07R) => Toi uu: 0.80 / 1.50 / 1.10 (+2.82R | +0.75R)
-----------------------------------------------------------------------------
-CON SO DE XUAT BO LOC:
-  RejectMinRangeATR    : 0.30 -> 1.00
+PF: 3.81 | AvgR: +0.53R | AvgWinR: 0.91R | Chot ~1R: 2 | Score: 95.5/100
+ATR TF: PERIOD_M15 (P14) | Dat Rng >=0.30x: 5/5 | Leak1R:0 | Leak1.5R:0
+----------------------------------------------------------------
+SO SANH ATR MA THANG (4) VS MA THUA (1):
+  THANG : AvgPeak=1.45R | Avg(SL/ATR)=2.15x | Avg(Rng/ATR)=4.32x
+  THUA  : AvgTrough=-1.00R | Avg(SL/ATR)=1.98x | Avg(Rng/ATR)=2.47x | AvgSp/SL=24.4%
+----------------------------------------------------------------
+DANH SACH MA THANG:
+  + #4245703716 XAUUSD (BUY): +19.90$ (+0.97R) | Peak=1.56R | SL/ATR=1.33x | Rng/ATR=2.71x
+  + #4245979385 USDJPY (SELL): +23.16$ (+1.15R) | Peak=1.67R | SL/ATR=1.04x | Rng/ATR=2.18x
+  + #4246073538 EURUSD (BUY): +13.14$ (+0.64R) | Peak=1.18R | SL/ATR=0.99x | Rng/ATR=1.52x
+  + #4246019933 NZDUSD (BUY): +19.62$ (+0.88R) | Peak=1.38R | SL/ATR=5.23x | Rng/ATR=10.88x
+DANH SACH MA THUA:
+  - #4245737522 USDCAD (SELL): -19.90$ (-1.00R) | Trough=-1.00R | SL/ATR=1.98x | Rng/ATR=2.47x | Sp=11.0pts (24.4% SL)
+----------------------------------------------------------------
+TOI UU TP (RR)   : 2.00R (+2.65R) => 1.30R (+3.54R | +0.89R)
+TOI UU BE/TRAIL  : 1.00/1.00/0.50 (+2.07R) => 0.80/1.50/1.10 (+2.82R | +0.75R)
+DE XUAT THAM SO  :
+  Spread buffer (pts)  : 0 -> 6
+  RejectMinRangeATR    : 0.30 -> 0.85
   RejectMinBreakATR    : 0.05 -> 0.05
-  RejectMinCloseBackATR: 0.02 -> 0.02
-============================================================================
+  RejectMinCloseBackATR: 0.02 -> 0.04
+================================================================
