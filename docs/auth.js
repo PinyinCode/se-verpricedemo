@@ -10,6 +10,7 @@ const loginBtn=document.getElementById('accountLoginBtn');
 const dock=document.getElementById('accountAuthDock');
 const emailLabel=document.getElementById('accountUserEmail');
 let auth=null,db=null,checking=false;
+const RECHECK_MS=15*60*1000;
 const AUTH_CACHE_KEY='forex_account_auth_cache_v1';
 window.accountAuthGranted=false;
 function readAuthCache(user){
@@ -65,11 +66,22 @@ async function checkPermission(user){
  }
  return true;
 }
+// Kiểm tra lại quyền khi đã mở từ cache: hết hạn / bị thu hồi thì khóa, lỗi mạng thì giữ phiên.
+async function recheck(user){
+ try{
+  await checkPermission(user);
+ }catch(e){
+  if(e.code&&e.code!=='permission-denied')return;
+  if(!auth.currentUser||auth.currentUser.uid!==user.uid)return;
+  clearAuthCache();
+  lock(firebaseError(e));
+ }
+}
 async function onUser(user){
  if(checking)return;
  if(!user){clearAuthCache();lock('Đăng nhập để tiếp tục.');return;}
- // Reuse the previously verified session after refresh; only query Firestore on first login.
- if(readAuthCache(user)){unlock(user);return;}
+ // Mở ngay bằng phiên đã xác thực trước đó, rồi kiểm tra lại ở nền.
+ if(readAuthCache(user)){unlock(user);recheck(user);return;}
  checking=true;loginBtn.disabled=true;googleBtn.disabled=true;show('Đang kiểm tra quyền truy cập...');
  try{
   await checkPermission(user);
@@ -89,6 +101,7 @@ function init(){
   if(!firebase.apps.length)firebase.initializeApp(cfg);
   auth=firebase.auth();db=firebase.firestore();
   auth.onAuthStateChanged(onUser,e=>lock(firebaseError(e)));
+  setInterval(()=>{if(window.accountAuthGranted&&auth.currentUser)recheck(auth.currentUser);},RECHECK_MS);
  }catch(e){lock(e.message||String(e));}
 }
 googleBtn.addEventListener('click',async()=>{
