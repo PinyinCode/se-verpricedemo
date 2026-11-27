@@ -1,30 +1,18 @@
 //+------------------------------------------------------------------+
 //| TRADE_V9_PAPER.mq5                                               |
 //| OnTimer-only + Unified TimeGMT7() Clock                          |
-//| Đọc cấu hình từ Server (/api/settings) + Cache local.            |
-//| Chỉ lấy ENTRY & SL từ Indicator (GV_IND_<SYM>_*), tự tính Lot/TP.|
-//| Chỉ vào lệnh trong đúng cây nến tạo tín hiệu; sang nến mới bỏ qua.|
+//| Đọc cấu hình từ Server (/api/settings) + Cache local.          |
+//| Chỉ lấy ENTRY & SL từ Indicator (GV_IND_<SYM>_*), tự tính Lot/TP. |
+//| Chỉ vào lệnh trong đúng cây nến tạo tín hiệu; sang nến mới bỏ qua. |
 //| Vào lệnh độc lập với WebRequest tại thời điểm có tín hiệu.        |
 //+------------------------------------------------------------------+
-// CONTRACT với Indicator (RSI_Divergence_Realtime.mq5):
-//   GV_IND_<SYM>_SEQ         -> tăng dần (Indicator ghi CUỐI CÙNG)
-//   GV_IND_<SYM>_TF          -> ENUM_TIMEFRAMES (double)
-//   GV_IND_<SYM>_TIME        -> GMT+7 timestamp (Indicator đã convert)
-//   GV_IND_<SYM>_UPDATED     -> GMT+7 timestamp lúc Indicator ghi
-//   GV_IND_<SYM>_DIR         -> +1 BUY / -1 SELL
-//   GV_IND_<SYM>_ORDER_TYPE  -> 0 MARKET, 1 BUY_LIMIT, 2 SELL_LIMIT
-//   GV_IND_<SYM>_ENTRY/SL/TP -> double
-//   GV_IND_PROTO_VER         -> version protocol (2 bên phải khớp)
-// EA KHÔNG convert lại TIME — so trực tiếp với TimeGMT7().
-//+------------------------------------------------------------------+
 #property strict
-#property version "3.25"
+#property version "3.26"
 
 #include <Trade\Trade.mqh>
 #include <Trade\PositionInfo.mqh>
 
 #define SETTINGS_CACHE_FILE "trade_v9_settings_cache.json"
-#define INDICATOR_PROTOCOL_VERSION 1.0
 
 //--- Connection & Identity Inputs -----------------------------------
 input string ServerBaseURL                = "https://investforex.onrender.com";
@@ -32,7 +20,8 @@ input string ApiKey                       = "SET_A_LONG_RANDOM_API_KEY";
 input string ConsumerId                   = "trade-v9";
 input long   MagicNumber                  = 20240915;
 input string OrderComment                 = "TRADE-V9";
-input string IndicatorSymbolsCsv          = ""; // Trống = chart + Market Watch; hoặc "XAUUSD,EURUSD"
+input string IndicatorSymbolsCsv          = ""; // Để trống = quét chart hiện tại + Market Watch; hoặc nhập "XAUUSD,EURUSD"
+input bool   CancelPendingOnNews          = true; // Tự huỷ lệnh chờ của EA khi vào cửa sổ tin
 
 //--- Globals --------------------------------------------------------
 CTrade        trade;
@@ -142,10 +131,6 @@ int      g_brokerToGMTOffset   = 0;
 datetime g_lastBrokerOffsetSync = 0;
 bool     g_emergencyClosedOnce  = false;
 
-// Cache emergency stop để tránh đọc GV quá nhiều
-bool     g_emergencyCacheValue = false;
-datetime g_emergencyCacheTime  = 0;
-
 //--- Forward declarations -------------------------------------------
 datetime TimeGMT7();
 datetime ServerTimeToGMT7(datetime st);
@@ -158,6 +143,7 @@ void     SyncDashboardGlobalVariables();
 void     PollCommissions();
 void     ManageTrailing();
 void     CheckEmergencyStop();
+void     CheckNewsPendingCancel();
 bool     IsEmergencyStopActive();
 SRiskBreakdown ComputeRiskBreakdown(string symbol, double slDistance, double volume);
 int      ResolveSignalTfSeconds(string symUp);
@@ -231,21 +217,28 @@ int ResolveSignalTfSeconds(string symUp)
       if(sec > 0) return sec;
    }
    int chartSec = PeriodSeconds(_Period);
-   return (chartSec > 0) ? chartSec : 900;
+   return (chartSec > 0) ? chartSec : 900; // Mặc định M15 = 900s nếu không rõ TF
 }
 
-// GV_IND_<SYM>_TIME được Indicator ghi = GMT+7 (đã qua ServerTimeToGMT7).
-// EA KHÔNG convert lại, so trực tiếp với nowGmt7.
 bool IsSignalInSameCandle(string symUp, long sigTime, datetime nowGmt7)
 {
    if(sigTime <= 0) return true;
+
    int tfSec = ResolveSignalTfSeconds(symUp);
    if(tfSec <= 0) return true;
 
-   if(sigTime > (long)nowGmt7 + tfSec) return false;
+   long sigGmt7 = sigTime;
+   long diffDirect = MathAbs((long)nowGmt7 - sigTime);
+   long diffViaServer = MathAbs((long)nowGmt7 - (long)ServerTimeToGMT7((datetime)sigTime));
+   if(diffViaServer < diffDirect)
+      sigGmt7 = (long)ServerTimeToGMT7((datetime)sigTime);
+
+   if(sigGmt7 > (long)nowGmt7 + tfSec)
+      return false;
 
    long curBarStart = ((long)nowGmt7 / tfSec) * tfSec;
-   long sigBarStart = (sigTime / tfSec) * tfSec;
+   long sigBarStart = (sigGmt7 / tfSec) * tfSec;
+
    return (curBarStart == sigBarStart);
 }
 
@@ -538,38 +531,33 @@ void ExtractTopLevelObjects(string arrJson, string &outObjects[])
    }
 }
 
-//--- HTTP (with 1 retry on transient error) -------------------------
+//--- HTTP -----------------------------------------------------------
 bool Request(string method, string path, string body, string &response, int &status)
 {
-   for(int attempt = 0; attempt < 2; attempt++)
+   char data[], result[];
+   if(body != "")
    {
-      char data[], result[];
-      if(body != "")
-      {
-         StringToCharArray(body, data, 0, WHOLE_ARRAY, CP_UTF8);
-         int n = ArraySize(data); if(n > 0 && data[n-1] == 0) ArrayResize(data, n-1);
-      }
-      else ArrayResize(data, 0);
-      string headers = "X-API-Key: " + ApiKey + "\r\nContent-Type: application/json\r\n";
-      string responseHeaders;
-      ResetLastError();
-      status = WebRequest(method, ServerBaseURL + path, headers, 3000, data, result, responseHeaders);
-      if(status == -1)
-      {
-         static datetime lastReqErrLog = 0;
-         if(TimeCurrent() - lastReqErrLog >= 30)
-         {
-            lastReqErrLog = TimeCurrent();
-            Print("[V9] WebRequest error=", GetLastError(), " path=", path, " attempt=", attempt);
-         }
-         response = "";
-         if(attempt == 0) { Sleep(150); continue; }
-         return false;
-      }
-      response = CharArrayToString(result, 0, -1, CP_UTF8);
-      return status >= 200 && status < 300;
+      StringToCharArray(body, data, 0, WHOLE_ARRAY, CP_UTF8);
+      int n = ArraySize(data); if(n > 0 && data[n-1] == 0) ArrayResize(data, n-1);
    }
-   return false;
+   else ArrayResize(data, 0);
+   string headers = "X-API-Key: " + ApiKey + "\r\nContent-Type: application/json\r\n";
+   string responseHeaders;
+   ResetLastError();
+   status = WebRequest(method, ServerBaseURL + path, headers, 3000, data, result, responseHeaders);
+   if(status == -1)
+   {
+      static datetime lastReqErrLog = 0;
+      if(TimeCurrent() - lastReqErrLog >= 30)
+      {
+         lastReqErrLog = TimeCurrent();
+         Print("[V9] WebRequest error=", GetLastError(), " path=", path);
+      }
+      response = "";
+      return false;
+   }
+   response = CharArrayToString(result, 0, -1, CP_UTF8);
+   return status >= 200 && status < 300;
 }
 
 //--- Dedup tracking -------------------------------------------------
@@ -963,8 +951,6 @@ void PruneTrailStates()
    {
       if(!PositionSelectByTicket(g_trailStates[i].ticket))
       {
-         // Xoá GV lưu 1R để tránh rác
-         GlobalVariableDel("V9R_" + IntegerToString((long)g_trailStates[i].ticket));
          int last = ArraySize(g_trailStates) - 1;
          for(int j = i; j < last; j++)
             g_trailStates[j] = g_trailStates[j+1];
@@ -1008,6 +994,7 @@ void ManageTrailing()
          ns.sym = sym;
          ns.entryPrice = entryPrice;
          ns.initialSL = currentSL;
+         // 1R goc duoc luu lai de khong bi tinh sai sau khi khoi dong lai
          string gvR = "V9R_" + IntegerToString((long)ticket);
          bool slOnLossSide = currentSL > 0 && (isBuy ? currentSL < entryPrice : currentSL > entryPrice);
          ns.oneR = 0;
@@ -1017,7 +1004,7 @@ void ManageTrailing()
             ns.oneR = MathAbs(entryPrice - currentSL);
          else if(currentTP > 0 && g_settings.reward_risk_ratio > 0)
             ns.oneR = MathAbs(currentTP - entryPrice) / g_settings.reward_risk_ratio;
-         if(ns.oneR <= point) continue;
+         if(ns.oneR <= point) continue; // khong xac dinh duoc 1R: khong tu doi SL
          GlobalVariableSet(gvR, ns.oneR);
          ns.lockedSL = 0;
          ns.breakEvenDone = false;
@@ -1119,18 +1106,11 @@ void ManageTrailing()
    }
 }
 
-//--- Emergency stop (cache 1s) -------------------------------------
+//--- Emergency stop -------------------------------------------------
 bool IsEmergencyStopActive()
 {
-   datetime now = TimeGMT7();
-   if(now == g_emergencyCacheTime)
-      return g_emergencyCacheValue;
-
-   bool dashStop = (GlobalVariableCheck("GV_Dash_EmergencyStop") &&
-                    GlobalVariableGet("GV_Dash_EmergencyStop") >= 0.5);
-   g_emergencyCacheValue = (g_settings.emergency_stop || dashStop);
-   g_emergencyCacheTime  = now;
-   return g_emergencyCacheValue;
+   bool dashStop = (GlobalVariableCheck("GV_Dash_EmergencyStop") && GlobalVariableGet("GV_Dash_EmergencyStop") >= 0.5);
+   return (g_settings.emergency_stop || dashStop);
 }
 
 void CloseAllMagicPositions()
@@ -1174,6 +1154,48 @@ void CancelAllMagicPending()
    }
 }
 
+//--- Huy lenh cho khi vao cua so tin --------------------------------
+void CheckNewsPendingCancel()
+{
+   if(!CancelPendingOnNews || !g_settings.news_filter_enabled) return;
+   if(!IsWithinConfiguredNewsWindow()) return;
+
+   static ulong lastAttemptMs = 0;
+   bool attempted = false;
+   bool deleted = false;
+   for(int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      ulong ticket = OrderGetTicket(i);
+      if(ticket == 0) continue;
+      if(OrderGetInteger(ORDER_MAGIC) != MagicNumber) continue;
+      ENUM_ORDER_TYPE ot = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+      if(ot != ORDER_TYPE_BUY_LIMIT && ot != ORDER_TYPE_SELL_LIMIT &&
+         ot != ORDER_TYPE_BUY_STOP && ot != ORDER_TYPE_SELL_STOP &&
+         ot != ORDER_TYPE_BUY_STOP_LIMIT && ot != ORDER_TYPE_SELL_STOP_LIMIT) continue;
+
+      // Neu broker tu choi thi thu lai moi 5 giay
+      if(!attempted)
+      {
+         if(lastAttemptMs > 0 && GetTickCount64() - lastAttemptMs < 5000) return;
+         lastAttemptMs = GetTickCount64();
+         attempted = true;
+      }
+
+      string sym = OrderGetString(ORDER_SYMBOL);
+      trade.SetExpertMagicNumber(MagicNumber);
+      trade.SetAsyncMode(false);
+      if(trade.OrderDelete(ticket) && IsTradeRetcodeOk())
+      {
+         deleted = true;
+         Print("[V9 NEWS] Deleted pending ticket=", ticket, " ", sym);
+      }
+      else
+         Print("[V9 NEWS] FAILED delete ticket=", ticket, " ", sym, " retcode=", trade.ResultRetcode());
+   }
+   if(deleted)
+      SendAccountSnapshot();
+}
+
 void CheckEmergencyStop()
 {
    if(!IsEmergencyStopActive())
@@ -1183,6 +1205,7 @@ void CheckEmergencyStop()
    }
    if(!g_settings.emergency_close_all) return;
 
+   // Con vi the / lenh cho thi thu lai moi 5 giay
    int remaining = CountRealPositions();
    for(int i = OrdersTotal() - 1; i >= 0; i--)
    {
@@ -1425,7 +1448,6 @@ void CheckIndicatorSymbolSignal(string symbol)
    long seq = (long)GlobalVariableGet(pfx + "SEQ");
    if(seq <= 0) return;
 
-   // GV_IND_<SYM>_TIME đã là GMT+7 — không convert
    long sigTime = (long)GlobalVariableGet(pfx + "TIME");
    long updatedTime = GlobalVariableCheck(pfx + "UPDATED") ? (long)GlobalVariableGet(pfx + "UPDATED") : 0;
    double dirVal = GlobalVariableGet(pfx + "DIR");
@@ -1443,7 +1465,7 @@ void CheckIndicatorSymbolSignal(string symbol)
    if(HasProcessedSignalKey(sigKey) || HasProcessedSignalKey(barSignalKey)) return;
    if(sigTime > 0 && GlobalVariableCheck(gvBar)) return;
 
-   // Chỉ vào lệnh trong đúng cây nến vừa tạo tín hiệu; sang nến mới bỏ qua
+   // Chỉ vào lệnh trong đúng cây nến vừa tạo tín hiệu; sang nến mới thì bỏ qua
    datetime nowGmt7 = TimeGMT7();
    if(sigTime > 0 && !IsSignalInSameCandle(symUp, sigTime, nowGmt7))
    {
@@ -1499,21 +1521,6 @@ void CheckIndicatorSymbolSignal(string symbol)
 
 void PollIndicatorSignals()
 {
-   // Kiểm tra protocol version 1 lần
-   static datetime lastProtoCheck = 0;
-   if(TimeCurrent() - lastProtoCheck >= 300)
-   {
-      lastProtoCheck = TimeCurrent();
-      if(GlobalVariableCheck("GV_IND_PROTO_VER"))
-      {
-         double indVer = GlobalVariableGet("GV_IND_PROTO_VER");
-         if(MathAbs(indVer - INDICATOR_PROTOCOL_VERSION) > 0.001)
-            Print("[V9 PROTO] WARNING: Indicator proto=", DoubleToString(indVer, 2),
-                  " EA proto=", DoubleToString(INDICATOR_PROTOCOL_VERSION, 2),
-                  " — contract có thể không khớp");
-      }
-   }
-
    if(IndicatorSymbolsCsv != "")
    {
       string parts[];
@@ -1563,6 +1570,7 @@ void ExecuteManualSignalJson(string sigJson)
    double riskMoneyReq = StringToDouble(JsonValue(sigJson, "risk_money"));
 
    MarkProcessedSignalKey("manual:" + sigId);
+   // Chong thuc thi lap ke ca sau khi EA khoi dong lai
    string gvManual = "V9M_" + sigId;
    if(GlobalVariableCheck(gvManual)) return;
    GlobalVariableSet(gvManual, (double)TimeLocal());
@@ -1616,6 +1624,7 @@ void ExecuteManualSignalJson(string sigJson)
       }
    }
 
+   // Lenh Market: luon kiem tra SL/TP va rui ro theo gia hien tai
    if(orderType == "MARKET")
       entry = (direction == "BUY") ? ask : bid;
 
@@ -1807,6 +1816,7 @@ bool CloseRealPositionById(string targetId, string symbol, string &detailOut, bo
       if(ot != ORDER_TYPE_BUY_LIMIT && ot != ORDER_TYPE_SELL_LIMIT &&
          ot != ORDER_TYPE_BUY_STOP && ot != ORDER_TYPE_SELL_STOP) continue;
 
+      string ordSym = OrderGetString(ORDER_SYMBOL);
       string tkStr = IntegerToString((long)ordTicket);
       bool matchId = (targetId != "" && tkStr == targetId);
       if(matchId)
@@ -1831,6 +1841,7 @@ void ExecuteCloseCommand(string cmdJson)
    string positionId = JsonValue(cmdJson, "position_id");
    string targetId = JsonValue(cmdJson, "ticket");
    if(targetId == "") targetId = positionId;
+   // Server co the gui ID dang P123 / O123: chi giu phan so cua ticket
    if(StringFind(targetId, "P") == 0 || StringFind(targetId, "O") == 0)
       targetId = StringSubstr(targetId, 1);
    string symbol = UpperTrim(JsonValue(cmdJson, "symbol"));
@@ -2211,17 +2222,13 @@ int OnInit()
    PollSettings();
    PollCommissions();
 
-   // Ghi protocol version EA khớp với Indicator (thông tin)
-   GlobalVariableSet("GV_EA_PROTO_VER", INDICATOR_PROTOCOL_VERSION);
-
    EventSetTimer(1);
-   Print("[V9] Started v3.25 (OnTimer-only + TimeGMT7 + SameCandle + ProtoFix). magic=", MagicNumber,
+   Print("[V9] Started v3.26 (OnTimer-only + TimeGMT7 + SameCandle). magic=", MagicNumber,
          " | GMT+7=", TimeToString(TimeGMT7(), TIME_DATE|TIME_SECONDS),
          " | AutoTrade=", g_settings.auto_trade_enabled ? "ON" : "OFF",
          " | Trailing=", g_settings.trailing_enabled ? "ON" : "OFF",
          " | NewsWindow=-", g_settings.news_block_before_min, "m/+", g_settings.news_block_after_min, "m",
-         " | Risk=$", DoubleToString(g_settings.risk_money, 2),
-         " | Proto=", DoubleToString(INDICATOR_PROTOCOL_VERSION, 2));
+         " | Risk=$", DoubleToString(g_settings.risk_money, 2));
    return INIT_SUCCEEDED;
 }
 
@@ -2234,13 +2241,16 @@ void OnTimer()
 {
    datetime nowGmt7 = TimeGMT7();
    GlobalVariableSet("HB_TradeManager", (double)nowGmt7);
+   // Cap nhat lien tuc de co chan tin tu tat ca khi mat ket noi server
+   GlobalVariableSet("GV_NewsFilter_Blocked", IsWithinConfiguredNewsWindow() ? 1.0 : 0.0);
    uint nowMs = GetTickCount();
 
    SyncBrokerGMTOffset(false);
 
    CheckEmergencyStop();
+   CheckNewsPendingCancel();
 
-   // Ưu tiên lệnh tay từ web trước các tác vụ đồng bộ
+   // Uu tien lenh tay tu web truoc cac tac vu dong bo
    if(lastSltpPollMs == 0 ||
       (uint)(nowMs - lastSltpPollMs) >= (uint)(MathMax(1, g_settings.poll_seconds) * 1000))
    {
