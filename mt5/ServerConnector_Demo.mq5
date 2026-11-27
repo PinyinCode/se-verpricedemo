@@ -4,7 +4,7 @@
 //| Chart & account feed only (no trade execution).                  |
 //+------------------------------------------------------------------+
 #property strict
-#property version "1.52"
+#property version "1.53"
 
 #include <Trade\Trade.mqh>
 
@@ -13,6 +13,7 @@ input string ApiKey = "SET_A_LONG_RANDOM_API_KEY";
 input string ConsumerId = "mt5-demo-vps";
 input int PollSeconds = 3;
 input int HeartbeatSeconds = 15;
+input bool ShowConnectionComment = true;
 
 // Fast tick buffer & flush controls
 input bool EnableFastTickPush = true;
@@ -66,6 +67,14 @@ string g_lastHistoryDigest = "";
 string g_lastChartFeedState = "";
 string g_lastCommissionState = "";
 string g_lastAccountState = "";
+
+// Connection status comment state
+string   g_connStatus      = "INIT";
+int      g_lastConnHttp    = 0;
+string   g_lastConnMsg     = "Waiting for first sync";
+datetime g_lastConnOkTime  = 0;
+ulong    g_tickBatchCount  = 0;
+ulong    g_candleBatchCount= 0;
 
 // Prevent overlapping HTTP calls on single-threaded EA
 bool  g_netBusy = false;
@@ -162,6 +171,34 @@ string JsonObjectValue(string json, string key)
    return "";
 }
 
+// File va GlobalVariable cua indicator ghi gio theo GMT+7
+datetime NowGmt7() { return TimeGMT() + 7*3600; }
+
+void RenderConnectionComment()
+{
+   if(!ShowConnectionComment) return;
+
+   bool mt5Conn = (bool)TerminalInfoInteger(TERMINAL_CONNECTED);
+   string okTimeStr = (g_lastConnOkTime > 0)
+      ? TimeToString(g_lastConnOkTime, TIME_DATE|TIME_SECONDS)
+      : "Chua co";
+
+   string statusLabel = g_connStatus;
+   if(!mt5Conn && statusLabel == "ONLINE")
+      statusLabel = "MT5 DISCONNECTED";
+
+   string txt =
+      "=== SERVER CONNECTOR v1.53 ===\n" +
+      StringFormat("Trang thai : %s (MT5:%s | HTTP:%d)\n",
+                   statusLabel, mt5Conn ? "OK" : "MAT KET NOI", g_lastConnHttp) +
+      StringFormat("Consumer   : %s | Server: %s\n", ConsumerId, ServerBaseURL) +
+      StringFormat("Chi tiet   : %s\n", g_lastConnMsg) +
+      StringFormat("Dong bo OK : %s (GMT+7) | Ticks:%I64u | Candles:%I64u",
+                   okTimeStr, g_tickBatchCount, g_candleBatchCount);
+
+   Comment(txt);
+}
+
 bool HttpRequest(string method,string path,string body,string &response,int &status,int timeoutMs=2500,bool allowWhenBusy=false)
 {
    if(g_netBusy && !allowWhenBusy) return false;
@@ -182,17 +219,33 @@ bool HttpRequest(string method,string path,string body,string &response,int &sta
    ResetLastError();
    status = WebRequest(method,url,headers,timeoutMs,data,result,responseHeaders);
    g_netBusy = false;
+   g_lastConnHttp = status;
 
    if(status == -1)
    {
       int err = GetLastError();
+      g_connStatus = "NET ERR";
+      g_lastConnMsg = StringFormat("WebRequest err=%d (%s)", err, path);
+      RenderConnectionComment();
       Print("[SERVER] WebRequest failed: err=",err," url=",url,
             ". Add server URL to MT5 Tools > Options > Expert Advisors > Allow WebRequest.");
       response="";
       return false;
    }
    response=CharArrayToString(result,0,-1,CP_UTF8);
-   return (status>=200 && status<300);
+   if(status>=200 && status<300)
+   {
+      g_connStatus = "ONLINE";
+      g_lastConnOkTime = NowGmt7();
+      g_lastConnMsg = StringFormat("OK %s %s (HTTP %d)", method, path, status);
+      RenderConnectionComment();
+      return true;
+   }
+
+   g_connStatus = "HTTP ERR";
+   g_lastConnMsg = StringFormat("HTTP %d on %s", status, path);
+   RenderConnectionComment();
+   return false;
 }
 
 // Hen gio theo dong ho may, van chay khi thi truong khong co bao gia moi
@@ -200,9 +253,6 @@ bool Due(ulong lastMs, int seconds)
 {
    return lastMs == 0 || GetTickCount64() - lastMs >= (ulong)seconds * 1000;
 }
-
-// File va GlobalVariable cua indicator ghi gio theo GMT+7
-datetime NowGmt7() { return TimeGMT() + 7*3600; }
 
 int EnsureTickSlot(string sym)
 {
@@ -323,12 +373,14 @@ void FlushBufferedTicks()
    int status = 0;
    if(HttpRequest("POST", "/api/mt5/ticks/batch", body, resp, status, 900, false))
    {
+      g_tickBatchCount += (ulong)ArraySize(chosenIndices);
       for(int j=0; j<ArraySize(chosenIndices); j++)
       {
          int idx = chosenIndices[j];
          g_bufDirty[idx] = false;
          g_bufLastSentMs[idx] = nowMs;
       }
+      RenderConnectionComment();
    }
 }
 
@@ -911,6 +963,7 @@ bool PublishCandleBatch(string symbol, string tfText, ENUM_TIMEFRAMES period, bo
    }
 
    g_candleDigests[cacheIdx] = digest;
+   g_candleBatchCount++;
    return true;
 }
 
@@ -1000,11 +1053,16 @@ int OnInit()
       return INIT_PARAMETERS_INCORRECT;
    }
    EventSetTimer(1);
-   Print("ServerConnector v1.51 initialized. Buffer OnTick + coalesced batch tick flush.");
+   RenderConnectionComment();
+   Print("ServerConnector v1.53 initialized. Buffer OnTick + coalesced batch tick flush.");
    return INIT_SUCCEEDED;
 }
 
-void OnDeinit(const int reason){ EventKillTimer(); }
+void OnDeinit(const int reason)
+{
+   EventKillTimer();
+   Comment("");
+}
 
 void OnTick()
 {
@@ -1046,4 +1104,6 @@ void OnTimer()
       ImportDivergenceQueue();
       ImportLegacyDivergenceSignal();
    }
+
+   RenderConnectionComment();
 }
