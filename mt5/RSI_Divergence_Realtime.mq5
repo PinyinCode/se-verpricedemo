@@ -5,7 +5,7 @@
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026"
 #property link      "https://www.mql5.com"
-#property version   "1.13"
+#property version   "1.15"
 #property indicator_chart_window
 #property indicator_buffers 1
 #property indicator_plots   1
@@ -43,19 +43,21 @@ input int RTPrintCooldownSeconds = 60;
 input double RT_RetrackATRMultiplier = 0.3;
 input string ExcludeSymbols = "";
 
-// GỬI TÍN HIỆU TRỰC TIẾP CHO EA (QUA GLOBAL VARIABLES) & ĐỒNG BỘ SERVER
-input group "=== Direct EA & Server Sync ==="
+input group "=== Xac nhan Reject ==="
+input bool   RejectOnCandleClose   = false;  // true: cho nen dong; false: xet ngay tren nen dang chay
+input int    RejectMaxBarsAfter    = 1;      // So nen toi da sau nen cuc tri duoc phep xac nhan
+input double RejectMinWickRatio    = 0.5;    // Gia dong phai lui it nhat ti le nay cua bien do (0-1)
+input double RejectMinRangeATR     = 0.3;    // Bien do toi thieu cua cu reject (x ATR)
+input double RejectMinBreakATR     = 0.05;   // Regular: do quet toi thieu qua dinh/day cu (x ATR)
+input double RejectMinCloseBackATR = 0.02;   // Regular: dong lai ben trong muc cu toi thieu (x ATR)
+input bool   RejectRequireCloseDiv = false;  // Bat buoc them dieu kien gia dong nen nhu ban cu
+
+// GỬI TÍN HIỆU CHO EA (GLOBAL VARIABLES). SERVER ĐƯỢC ĐỒNG BỘ QUA FILE BỞI ServerConnector
+// (MQL5 không cho indicator gọi WebRequest)
+input group "=== Direct EA Signal ==="
 input bool   PublishToDirectEA_GV    = true;  // Ghi tín hiệu trực tiếp vào GV_IND_<SYM>_* cho EA
-input bool   EnableServerSync        = true;  // Gửi heartbeat, scans & today-signals lên server
-input bool   EnableServerSend        = true;  // Gửi tín hiệu realtime lên /api/signals/realtime
 input bool   SendOnlyStrongSignal    = true;
-input string ServerBaseUrl         = "https://investforex.onrender.com";
-input string ServerSignalUrl         = "https://investforex.onrender.com/api/signals/realtime";
-input string ServerApiKey            = "";
-input int    ServerTimeoutMs         = 3000;
-input int    ServerResendSeconds     = 30;
-input int    HeartbeatIntervalSec    = 15;
-input int    TodaySyncIntervalSec    = 20;
+input int    EaResendSeconds         = 30;    // Ghi lại cùng tín hiệu sau N giây
 
 // TIMEZONE (Unified TimeGMT7)
 int      g_brokerToGMTOffset     = 0;
@@ -89,10 +91,10 @@ struct SSymbolTFData
    datetime lastBullRegRTTime;
    datetime lastBullHidRTTime;
 
-   bool pendingBearRegStrong;
-   bool pendingBearHidStrong;
-   bool pendingBullRegStrong;
-   bool pendingBullHidStrong;
+   datetime firedBearReg;   // nen cuc tri da phat tin hieu STRONG
+   datetime firedBearHid;
+   datetime firedBullReg;
+   datetime firedBullHid;
 };
 
 struct SRTLine { string text; datetime time; bool isToday; };
@@ -132,9 +134,6 @@ int g_lastRTCount = 0;
 bool g_isNewsBlocked = false;
 datetime g_lastNewsCheckTime = 0;
 
-datetime g_lastServerHeartbeatTime = 0;
-datetime g_lastTodaySyncTime = 0;
-string g_lastSyncedSymbolsJson = "";
 
 // FORWARD DECLARATIONS
 void SyncBrokerGMTOffset(bool force = false);
@@ -154,6 +153,9 @@ bool IsSymbolExcluded(string sym);
 bool IsInTradeTime(datetime signalTime);
 
 bool GetGvBool(string name, bool defVal);
+bool IsHourAllowed(int h);
+bool IsRejection(int idx, string sym, ENUM_TIMEFRAMES tf, bool isBear, bool isRegular, double level, int extShift, datetime oldTime);
+bool IsTimeFilterEnabledEffective();
 int GetGvInt(string name, int defVal);
 
 int GetSymbolTFIndex(string s, ENUM_TIMEFRAMES tf);
@@ -189,167 +191,6 @@ void PublishScanSymbols(string symbols);
 void PublishTodaySignals();
 void CleanupInvalidRTTodaySignals();
 bool IsValidSLForDirection(string type, double entryPrice, double slPrice);
-void SyncHeartbeatToServer(string status, string details, bool force = false);
-void SyncScansToServer(string scannedSymbols);
-void SyncTodaySignalsToServer(bool force = false);
-
-string EscapeJson(string s)
-{
-   StringReplace(s, "\\", "\\\\");
-   StringReplace(s, "\"", "\\\"");
-   StringReplace(s, "\r", "\\r");
-   StringReplace(s, "\n", "\\n");
-   return s;
-}
-
-string BuildServerEndpoint(string path)
-{
-   string base = ServerBaseUrl;
-   while(StringLen(base) > 0 && StringGetCharacter(base, StringLen(base) - 1) == '/')
-      base = StringSubstr(base, 0, StringLen(base) - 1);
-   if(StringLen(path) > 0 && StringGetCharacter(path, 0) != '/')
-      path = "/" + path;
-   return base + path;
-}
-
-int PostJsonToServer(string url, string jsonPayload, string &outResponse)
-{
-   outResponse = "";
-   if(url == "") return -1;
-
-   char postData[];
-   int bodyLen = StringToCharArray(jsonPayload, postData, 0, WHOLE_ARRAY, CP_UTF8);
-   if(bodyLen > 0)
-      ArrayResize(postData, bodyLen - 1);
-
-   string headers = "Content-Type: application/json\r\n";
-   if(ServerApiKey != "")
-      headers += "X-API-Key: " + ServerApiKey + "\r\n";
-
-   char result[];
-   string resultHeaders = "";
-   ResetLastError();
-   int httpCode = WebRequest("POST", url, headers, ServerTimeoutMs, postData, result, resultHeaders);
-   if(ArraySize(result) > 0)
-      outResponse = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
-   return httpCode;
-}
-
-void SyncHeartbeatToServer(string status, string details, bool force)
-{
-   if(!EnableServerSync) return;
-   datetime nowGmt7 = TimeGMT7();
-   int interval = MathMax(5, HeartbeatIntervalSec);
-   if(!force && (nowGmt7 - g_lastServerHeartbeatTime) < interval) return;
-
-   g_lastServerHeartbeatTime = nowGmt7;
-   string url = BuildServerEndpoint("/api/heartbeat");
-   string payload = StringFormat(
-      "{\"component\":\"rsi-divergence-indicator\",\"status\":\"%s\",\"details\":\"%s\",\"gmt7\":%d}",
-      EscapeJson(status),
-      EscapeJson(details),
-      (int)nowGmt7
-   );
-   string resp = "";
-   PostJsonToServer(url, payload, resp);
-}
-
-void SyncScansToServer(string scannedSymbols)
-{
-   if(!EnableServerSync) return;
-   string arrJson = "[";
-   if(scannedSymbols != "")
-   {
-      string parts[];
-      int n = StringSplit(scannedSymbols, ';', parts);
-      int added = 0;
-      for(int i = 0; i < n; i++)
-      {
-         string item = parts[i];
-         StringTrimLeft(item);
-         StringTrimRight(item);
-         if(item == "") continue;
-         if(added > 0) arrJson += ",";
-         arrJson += "\"" + EscapeJson(item) + "\"";
-         added++;
-      }
-   }
-   arrJson += "]";
-
-   if(arrJson == g_lastSyncedSymbolsJson) return;
-   g_lastSyncedSymbolsJson = arrJson;
-
-   string url = BuildServerEndpoint("/api/scans");
-   string payload = StringFormat(
-      "{\"component\":\"rsi-divergence-indicator\",\"symbols\":%s}",
-      arrJson
-   );
-   string resp = "";
-   PostJsonToServer(url, payload, resp);
-}
-
-void SyncTodaySignalsToServer(bool force)
-{
-   if(!EnableServerSync) return;
-   datetime nowGmt7 = TimeGMT7();
-   int interval = MathMax(5, TodaySyncIntervalSec);
-   if(!force && (nowGmt7 - g_lastTodaySyncTime) < interval) return;
-
-   g_lastTodaySyncTime = nowGmt7;
-   string itemsJson = "[";
-   int validCount = 0;
-   for(int i = 0; i < g_todaySignalCount; i++)
-   {
-      if(g_todaySignals[i].signalType == "RT")
-      {
-         string prefix = "DIVDATA_" + g_todaySignals[i].sym + "_" + g_todaySignals[i].tfStr + "_";
-         string tType = g_todaySignals[i].type;
-         if(!GlobalVariableCheck(prefix + tType + "_ACTIVE") || GlobalVariableGet(prefix + tType + "_ACTIVE") == 0)
-            continue;
-      }
-      string dir = (g_todaySignals[i].type == "BEAR") ? "SELL" : "BUY";
-      string divNorm = (g_todaySignals[i].divType == "Hid") ? "Hid" : "Reg";
-      if(validCount > 0) itemsJson += ",";
-      itemsJson += StringFormat(
-         "{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\",\"divergence\":\"%s\","
-         "\"signal_type\":\"%s\",\"signal_time\":%d,\"price1\":%.8f,\"price2\":%.8f,"
-         "\"rsi1\":%.2f,\"rsi2\":%.2f,\"time1\":%d,\"time2\":%d}",
-         EscapeJson(g_todaySignals[i].sym),
-         EscapeJson(g_todaySignals[i].tfStr),
-         dir,
-         divNorm,
-         EscapeJson(g_todaySignals[i].signalType),
-         (int)g_todaySignals[i].time,
-         g_todaySignals[i].price1,
-         g_todaySignals[i].price2,
-         g_todaySignals[i].rsi1,
-         g_todaySignals[i].rsi2,
-         (int)g_todaySignals[i].time1,
-         (int)g_todaySignals[i].time2
-      );
-      validCount++;
-   }
-   itemsJson += "]";
-
-   string url = BuildServerEndpoint("/api/today-signals");
-   string payload = StringFormat("{\"signals\":%s}", itemsJson);
-   string resp = "";
-   PostJsonToServer(url, payload, resp);
-}
-
-string BuildDedupSource(string signalKey)
-{
-   string cleanKey = signalKey;
-   StringReplace(cleanKey, "|", "_");
-   StringReplace(cleanKey, "SELL", "S");
-   StringReplace(cleanKey, "BUY", "B");
-   StringReplace(cleanKey, "Reg", "R");
-   StringReplace(cleanKey, "Hid", "H");
-   string dedupSource = "rt_" + cleanKey;
-   if(StringLen(dedupSource) > 40)
-      dedupSource = StringSubstr(dedupSource, StringLen(dedupSource) - 40, 40);
-   return dedupSource;
-}
 
 //--- Ghi tín hiệu trực tiếp sang Global Variables cho EA ----------
 void PublishDirectSignalToEA_GV(int idx, string sym, ENUM_TIMEFRAMES tf,
@@ -365,7 +206,7 @@ void PublishDirectSignalToEA_GV(int idx, string sym, ENUM_TIMEFRAMES tf,
    if(idx >= 0 && idx < ArraySize(arrSymTF))
    {
       if(signalKey == arrSymTF[idx].lastDirectEaSignalKey &&
-         (nowGmt7 - arrSymTF[idx].lastDirectEaSignalTime) < MathMax(1, ServerResendSeconds))
+         (nowGmt7 - arrSymTF[idx].lastDirectEaSignalTime) < MathMax(1, EaResendSeconds))
          return;
       arrSymTF[idx].lastDirectEaSignalKey = signalKey;
       arrSymTF[idx].lastDirectEaSignalTime = nowGmt7;
@@ -385,7 +226,6 @@ void PublishDirectSignalToEA_GV(int idx, string sym, ENUM_TIMEFRAMES tf,
    ENUM_TIMEFRAMES effectiveTf = (tf != PERIOD_CURRENT) ? tf :
       ((idx >= 0 && idx < ArraySize(arrSymTF)) ? arrSymTF[idx].tf : PERIOD_M15);
 
-   GlobalVariableSet(pfx + "SEQ",        (double)symSeq);
    GlobalVariableSet(pfx + "TF",         (double)effectiveTf);
    GlobalVariableSet(pfx + "TIME",       (double)sigTimeGmt7);
    GlobalVariableSet(pfx + "DIR",        (side == "BUY") ? 1.0 : -1.0);
@@ -394,6 +234,7 @@ void PublishDirectSignalToEA_GV(int idx, string sym, ENUM_TIMEFRAMES tf,
    GlobalVariableSet(pfx + "SL",         slPrice);
    GlobalVariableSet(pfx + "TP",         tpPrice);
    GlobalVariableSet(pfx + "UPDATED",    (double)nowGmt7);
+   GlobalVariableSet(pfx + "SEQ",        (double)symSeq); // ghi sau cùng
 
    long totalSeq = (long)GlobalVariableGet("GV_IND_SIG_SEQ") + 1;
    GlobalVariableSet("GV_IND_SIG_SEQ", (double)totalSeq);
@@ -409,51 +250,7 @@ void EmitRealtimeSignal(int idx, string sym, ENUM_TIMEFRAMES tf, string tfStr,
    if(entryPrice <= 0 || slPrice <= 0) return;
    if(!IsValidSLForDirection(side, entryPrice, slPrice)) return;
 
-   // 1. Luôn ghi trực tiếp qua GV cho EA — độc lập hoàn toàn với WebRequest
    PublishDirectSignalToEA_GV(idx, sym, tf, side, "MARKET", entryPrice, slPrice, tpPrice, signalTime, signalKey);
-
-   // 2. Gửi HTTP lên server chỉ là luồng đồng bộ phụ; không ảnh hưởng việc vào lệnh
-   if(!EnableServerSend) return;
-   string targetUrl = (ServerSignalUrl != "") ? ServerSignalUrl : BuildServerEndpoint("/api/signals/realtime");
-
-   datetime nowGmt7 = TimeGMT7();
-   bool hasIdx = (idx >= 0 && idx < ArraySize(arrSymTF));
-   int resendSec = MathMax(1, ServerResendSeconds);
-   if(hasIdx && signalKey == arrSymTF[idx].lastSentSignalKey &&
-      (nowGmt7 - arrSymTF[idx].lastSentSignalTime) < resendSec)
-      return;
-
-   int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
-   if(digits <= 0) digits = 5;
-
-   double score = isStrong ? MathMin(100.0, 70.0 + volRatio * 10.0) : MathMin(69.0, 40.0 + volRatio * 8.0);
-   string dedupSource = BuildDedupSource(signalKey);
-
-   string payload = StringFormat(
-      "{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\",\"order_type\":\"MARKET\","
-      "\"entry\":%s,\"sl\":%s,\"tp\":0,\"score\":%.2f,\"source\":\"%s\"}",
-      EscapeJson(sym),
-      EscapeJson(tfStr),
-      EscapeJson(side),
-      DoubleToString(entryPrice, digits),
-      DoubleToString(slPrice, digits),
-      score,
-      EscapeJson(dedupSource)
-   );
-
-   string respStr = "";
-   int httpCode = PostJsonToServer(targetUrl, payload, respStr);
-
-   if(hasIdx)
-   {
-      arrSymTF[idx].lastSentSignalKey = signalKey;
-      arrSymTF[idx].lastSentSignalTime = nowGmt7;
-   }
-
-   if(httpCode >= 200 && httpCode < 300)
-   {
-      Print("SERVER RT SIGNAL SENT [HTTP ", httpCode, "]: ", signalKey, " (", side, " ", divType, ") src=", dedupSource);
-   }
 }
 
 //+------------------------------------------------------------------+
@@ -542,18 +339,28 @@ void UpdateTodayBounds()
    g_todayStartGMT7 = n - (n % 86400);
 }
 
+// Ưu tiên cài đặt từ web (EA ghi ra GV_Dash_*), không có thì dùng input
+bool IsHourAllowed(int h)
+{
+   int start = GetGvInt("GV_Dash_TradingStartHour", ScanStartHour);
+   int end   = GetGvInt("GV_Dash_TradingEndHour", ScanEndHour);
+   if(start <= end) return (h >= start && h < end);
+   return (h >= start || h < end);
+}
+
+bool IsTimeFilterEnabledEffective()
+{
+   return GetGvBool("GV_Dash_TimeFilterEnabled", EnableTimeFilter);
+}
+
 bool IsInScanTime()
 {
-   if(!EnableTimeFilter) return true;
+   if(!IsTimeFilterEnabledEffective()) return true;
    SyncBrokerGMTOffset(false);
    datetime n = TimeGMT7();
    MqlDateTime dt;
    TimeToStruct(n, dt);
-   int h = dt.hour;
-   if(ScanStartHour <= ScanEndHour)
-      return (h >= ScanStartHour && h < ScanEndHour);
-   else
-      return (h >= ScanStartHour || h < ScanEndHour);
+   return IsHourAllowed(dt.hour);
 }
 
 bool IsNewsFilterEnabledEffective()
@@ -571,12 +378,10 @@ bool IsNewsSafe()
 
 bool IsInTradeTime(datetime signalTime)
 {
-   if(!EnableTimeFilter) return true;
+   if(!IsTimeFilterEnabledEffective()) return true;
    datetime gmt7Time = ServerTimeToGMT7(signalTime);
    MqlDateTime dt; TimeToStruct(gmt7Time, dt);
-   int h = dt.hour;
-   if(ScanStartHour <= ScanEndHour) return (h >= ScanStartHour && h < ScanEndHour);
-   else return (h >= ScanStartHour || h < ScanEndHour);
+   return IsHourAllowed(dt.hour);
 }
 
 //+------------------------------------------------------------------+
@@ -636,6 +441,58 @@ bool IsSymbolExcluded(string sym)
       if(exclude != "" && StringFind(upperSym, exclude) >= 0) return true;
    }
    return false;
+}
+
+// Kiem tra cu reject. level = dinh/day cu, extShift = nen tao cuc tri moi.
+// Regular: phai quet qua level roi dong lai ben trong.
+// Hidden: khong quet qua level, can nen dao chieu ro rang tu cuc tri moi.
+bool IsRejection(int idx, string sym, ENUM_TIMEFRAMES tf, bool isBear, bool isRegular,
+                 double level, int extShift, datetime oldTime)
+{
+   int confirm = RejectOnCandleClose ? 1 : 0;
+   if(extShift < confirm || extShift > confirm + MathMax(0, RejectMaxBarsAfter)) return false;
+
+   double atr = GetATRValue(idx, sym, tf, 14);
+   if(atr <= 0) return false;
+
+   double o = iOpen(sym, tf, confirm);
+   double c = iClose(sym, tf, confirm);
+   if(o <= 0 || c <= 0) return false;
+   if(isBear ? (c >= o) : (c <= o)) return false;   // nen xac nhan phai nguoc chieu
+
+   // Bien do tinh tu nen cuc tri den nen xac nhan
+   double hi = iHigh(sym, tf, confirm), lo = iLow(sym, tf, confirm);
+   for(int i = confirm + 1; i <= extShift; i++)
+   {
+      hi = MathMax(hi, iHigh(sym, tf, i));
+      lo = MathMin(lo, iLow(sym, tf, i));
+   }
+   double range = hi - lo;
+   if(range <= 0 || range < atr * RejectMinRangeATR) return false;
+
+   double pullback = isBear ? (hi - c) / range : (c - lo) / range;
+   if(pullback < RejectMinWickRatio) return false;
+
+   if(isRegular)
+   {
+      double sweep = isBear ? (iHigh(sym, tf, extShift) - level) : (level - iLow(sym, tf, extShift));
+      double back  = isBear ? (level - c) : (c - level);
+      if(sweep < atr * RejectMinBreakATR || back < atr * RejectMinCloseBackATR) return false;
+   }
+   else
+   {
+      // Hidden: dinh/day moi khong duoc pha level
+      if(isBear ? (hi >= level) : (lo <= level)) return false;
+   }
+
+   if(RejectRequireCloseDiv)
+   {
+      double closeNew = iClose(sym, tf, extShift);
+      double closeOld = iClose(sym, tf, iBarShift(sym, tf, oldTime, false));
+      bool wantHigher = (isBear == isRegular);
+      if(wantHigher ? (closeNew <= closeOld) : (closeNew >= closeOld)) return false;
+   }
+   return true;
 }
 
 bool IsValidSLForDirection(string type, double entryPrice, double slPrice)
@@ -826,10 +683,10 @@ int InitSymTF(string sym, ENUM_TIMEFRAMES tf, string tfStr)
    arrSymTF[idx].lastBearHidRTTime = 0;
    arrSymTF[idx].lastBullRegRTTime = 0;
    arrSymTF[idx].lastBullHidRTTime = 0;
-   arrSymTF[idx].pendingBearRegStrong = false;
-   arrSymTF[idx].pendingBearHidStrong = false;
-   arrSymTF[idx].pendingBullRegStrong = false;
-   arrSymTF[idx].pendingBullHidStrong = false;
+   arrSymTF[idx].firedBearReg = 0;
+   arrSymTF[idx].firedBearHid = 0;
+   arrSymTF[idx].firedBullReg = 0;
+   arrSymTF[idx].firedBullHid = 0;
    ArraySetAsSeries(arrSymTF[idx].rsiBuf, true);
    return idx;
 }
@@ -1117,22 +974,22 @@ void ClearOldTodaySignals()
 string BuildTodaySignalsDisplay()
 {
    CleanupInvalidRTTodaySignals();
+
+   for(int i = 0; i < g_todaySignalCount - 1; i++)
+      for(int j = i + 1; j < g_todaySignalCount; j++)
+         if(ServerTimeToGMT7(g_todaySignals[i].time) < ServerTimeToGMT7(g_todaySignals[j].time))
+         {
+            STodaySignal tmp = g_todaySignals[i];
+            g_todaySignals[i] = g_todaySignals[j];
+            g_todaySignals[j] = tmp;
+         }
    PublishTodaySignals();
-   SyncTodaySignalsToServer(false);
 
    string display = "\nTODAY SIGNALS - " + IntegerToString(g_todaySignalCount) + " signals\n";
    display += " \n";
 
    if(g_todaySignalCount > 0)
    {
-      for(int i = 0; i < g_todaySignalCount - 1; i++)
-         for(int j = i + 1; j < g_todaySignalCount; j++)
-            if(ServerTimeToGMT7(g_todaySignals[i].time) < ServerTimeToGMT7(g_todaySignals[j].time))
-            {
-               STodaySignal tmp = g_todaySignals[i];
-               g_todaySignals[i] = g_todaySignals[j];
-               g_todaySignals[j] = tmp;
-            }
       for(int i = 0; i < g_todaySignalCount; i++)
       {
          string icon = (g_todaySignals[i].type == "BEAR") ? "[SELL]" : "[BUY]";
@@ -1371,9 +1228,6 @@ int OnInit()
    g_lastRTPrintTime = g_lastRTCount = 0;
    g_isNewsBlocked = false;
    g_lastNewsCheckTime = 0;
-   g_lastServerHeartbeatTime = 0;
-   g_lastTodaySyncTime = 0;
-   g_lastSyncedSymbolsJson = "";
    ArrayResize(g_todaySignals, 0);
    g_todaySignalCount = 0;
    CleanupOldSignals();
@@ -1384,16 +1238,15 @@ int OnInit()
    if(tfList == "") tfList = "NONE!";
 
    Print("═══════════════════════════════════════════");
-   Print("RSI Divergence Realtime v1.13 (TimeGMT7 + TF Sync)");
+   Print("RSI Divergence Realtime v1.15 (TimeGMT7 + TF Sync)");
    Print("   Timeframes: ", tfList);
    Print("   GMT+7 Now: ", TimeToString(nowGmt7, TIME_DATE|TIME_SECONDS));
    Print("   Direct EA GV: ", PublishToDirectEA_GV ? "ON" : "OFF");
-   Print("   Server Sync: ", EnableServerSync ? "ON" : "OFF");
+   Print("   Server Sync: qua ServerConnector (file Common)");
    Print("═══════════════════════════════════════════");
 
    g_statusText = "RUNNING";
    g_statusColor = clrTeal;
-   SyncHeartbeatToServer("online", "Initialized: " + tfList, true);
 
    return INIT_SUCCEEDED;
 }
@@ -1403,11 +1256,10 @@ int OnInit()
 //+------------------------------------------------------------------+
 void PublishScanSymbols(string symbols)
 {
-   int h = FileOpen("DIVSCAN_SYMBOLS.txt", FILE_WRITE | FILE_TXT | FILE_COMMON);
+   int h = FileOpen("DIVSCAN_SYMBOLS.txt", FILE_WRITE | FILE_TXT | FILE_COMMON | FILE_SHARE_READ);
    if(h == INVALID_HANDLE) return;
    FileWriteString(h, IntegerToString((int)TimeGMT7()) + "#" + symbols);
    FileClose(h);
-   SyncScansToServer(symbols);
 }
 
 void OnTimer()
@@ -1437,7 +1289,6 @@ void OnTimer()
       PublishScanSymbols("");
       g_statusColor = clrOrangeRed;
       g_statusText = "NEWS BLOCKED";
-      SyncHeartbeatToServer("warning", "News filter active", false);
       Draw("NEWS BLOCKED");
       return;
    }
@@ -1466,7 +1317,6 @@ void OnTimer()
       PublishScanSymbols("");
       g_statusColor = clrRed;
       g_statusText = "CRASHED!";
-      SyncHeartbeatToServer("offline", "Indicator or terminal disconnected", false);
       Draw("CRASHED");
       return;
    }
@@ -1476,7 +1326,6 @@ void OnTimer()
       PublishScanSymbols("");
       g_statusColor = clrGray;
       g_statusText = "STANDBY";
-      SyncHeartbeatToServer("online", "Standby outside scan hours", false);
       Draw("STANDBY");
       return;
    }
@@ -1494,7 +1343,6 @@ void OnTimer()
    {
       string td = BuildTodaySignalsDisplay();
       string dm = g_latestRTSignal == "" ? "Scanning..." : g_latestRTSignal;
-      SyncHeartbeatToServer("online", StringFormat("Idle tick | symTF=%d", ArraySize(arrSymTF)), false);
       Draw(dm + td);
       return;
    }
@@ -1541,11 +1389,6 @@ void OnTimer()
    }
    PublishScanSymbols(scannedSymbols);
    g_lastScanDurationMs = GetTickCount() - scanStartMs;
-   SyncHeartbeatToServer(
-      "online",
-      StringFormat("Scan %ums | RT=%d | Today=%d", (int)g_lastScanDurationMs, rtCount, g_todaySignalCount),
-      false
-   );
 
    string dc = "";
    static string slr = "";
@@ -1607,7 +1450,6 @@ void OnTimer()
 //+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
-   SyncHeartbeatToServer("offline", "Indicator removed/deinit: " + IntegerToString(reason), true);
    EventKillTimer();
    ClearAll();
 
@@ -1656,11 +1498,6 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
          arrSymTF[idx].lastShiftCached = MS_SwingBars;
       arrSymTF[idx].lastBarTime = currentBarTime;
 
-      // Sang nến mới mà nến trước chưa reject -> bỏ cờ chờ của nến cũ
-      arrSymTF[idx].pendingBearRegStrong = false;
-      arrSymTF[idx].pendingBearHidStrong = false;
-      arrSymTF[idx].pendingBullRegStrong = false;
-      arrSymTF[idx].pendingBullHidStrong = false;
    }
 
    double bestBearH1 = 0, bestBearH2 = 0, bestBearR1 = 0, bestBearR2 = 0;
@@ -1889,16 +1726,12 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   datetime gmt7Time = ServerTimeToGMT7(timeAtMaxHigh);
                   string timeStr = TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES);
 
-                  double closeNew = iClose(sym, tf, rtMaxHighShift);
-                  double closeOld = iClose(sym, tf, iBarShift(sym, tf, lastHighTime, false));
-                  if(closeNew > closeOld)
-                     arrSymTF[idx].pendingBearRegStrong = true;
-
                   double currentPrice = SymbolInfoDouble(sym, SYMBOL_BID);
-                  bool rejectNow = (rtMaxHighShift == 0) && (currentPrice < lastHighPrice);
-                  bool isStrong = arrSymTF[idx].pendingBearRegStrong && rejectNow;
+                  bool rejected = IsRejection(idx, sym, tf, true, true, lastHighPrice, rtMaxHighShift, lastHighTime);
+                  // Moi cuc tri chi phat STRONG mot lan
+                  bool isStrong = rejected && arrSymTF[idx].firedBearReg != timeAtMaxHigh;
                   if(isStrong)
-                     arrSymTF[idx].pendingBearRegStrong = false;
+                     arrSymTF[idx].firedBearReg = timeAtMaxHigh;
 
                   double slSellReg = rtMaxHigh + spreadVal;
 
@@ -1911,7 +1744,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                      arrSymTF[idx].lastBearRegRTTime = currentBarTimeForTrack;
                   }
 
-                  string strengthTag = isStrong ? " [STRONG]" : " [WEAK]";
+                  string strengthTag = rejected ? " [STRONG]" : " [WEAK]";
 
                   ArrayResize(rtLines, rtCount + 1);
                   rtLines[rtCount].text = "[SELL-RT] [" + tfStr + "] " + sym + " [Reg] (" + timeStr + ")" + strengthTag + " [Running...]";
@@ -1927,12 +1760,12 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   if(timeAtMaxHigh >= g_initTime && IsNewsSafe())
                   {
                      string sigKey = sym + "|" + tfStr + "|SELL|Reg|" + IntegerToString(timeAtMaxHigh);
-                     EmitRealtimeSignal(idx, sym, tf, tfStr, "SELL", "REG", isStrong, currentPrice, slSellReg, 0.0, lastHighPrice, rtMaxHigh, peakVolRatio, timeAtMaxHigh, sigKey);
+                     EmitRealtimeSignal(idx, sym, tf, tfStr, "SELL", "REG", isStrong, currentPrice, slSellReg, 0.0, lastHighPrice, rtMaxHigh, peakVolRatio, currentBarTimeForTrack, sigKey);
                   }
 
-                  if(isStrong && timeAtMaxHigh >= g_initTime && IsNewsSafe() && shouldTrack && IsValidSLForDirection("SELL", currentPrice, slSellReg))
+                  if(isStrong && timeAtMaxHigh >= g_initTime && IsNewsSafe() && IsInTradeTime(timeAtMaxHigh) && IsValidSLForDirection("SELL", currentPrice, slSellReg))
                   {
-                     WriteStrongSignalToGV(sym, tfStr, "SELL", currentPrice, slSellReg, slSellReg, lastHighPrice, true, "REG", timeAtMaxHigh);
+                     WriteStrongSignalToGV(sym, tfStr, "SELL", currentPrice, slSellReg, slSellReg, lastHighPrice, true, "REG", currentBarTimeForTrack);
                      string sigKey = sym + "|" + tfStr + "|SELL|Reg|" + IntegerToString(timeAtMaxHigh);
                      PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "SELL", "Reg", currentPrice, slSellReg, timeAtMaxHigh, sigKey);
                   }
@@ -1951,10 +1784,6 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
             }
          }
       }
-      else
-      {
-         arrSymTF[idx].pendingBearRegStrong = false;
-      }
 
       if(rtMaxRSI > lastHighRSI && priceAtMaxRSI < lastHighPrice && rtMaxRSIShift != lastHighShift)
       {
@@ -1968,19 +1797,15 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   datetime gmt7Time = ServerTimeToGMT7(timeAtMaxRSI);
                   string timeStr = TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES);
 
-                  double closeNew = iClose(sym, tf, rtMaxRSIShift);
-                  double closeOld = iClose(sym, tf, iBarShift(sym, tf, lastHighTime, false));
-                  if(closeNew < closeOld)
-                     arrSymTF[idx].pendingBearHidStrong = true;
-
                   double slHidBear = MathMax(lastHighPrice, priceAtMaxRSI);
                   double slSellHid = slHidBear + spreadVal;
 
                   double currentPrice = SymbolInfoDouble(sym, SYMBOL_BID);
-                  bool rejectNow = (rtMaxRSIShift == 0) && (currentPrice < slHidBear);
-                  bool isStrong = arrSymTF[idx].pendingBearHidStrong && rejectNow;
+                  bool rejected = IsRejection(idx, sym, tf, true, false, lastHighPrice, rtMaxRSIShift, lastHighTime);
+                  // Moi cuc tri chi phat STRONG mot lan
+                  bool isStrong = rejected && arrSymTF[idx].firedBearHid != timeAtMaxRSI;
                   if(isStrong)
-                     arrSymTF[idx].pendingBearHidStrong = false;
+                     arrSymTF[idx].firedBearHid = timeAtMaxRSI;
 
                   bool shouldTrack = ShouldRetrack(idx, currentPrice, arrSymTF[idx].lastBearHidRTPrice, sym, tf, currentBarTimeForTrack, arrSymTF[idx].lastBearHidRTTime);
                   if(shouldTrack && !IsInTradeTime(timeAtMaxRSI)) shouldTrack = false;
@@ -1991,7 +1816,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                      arrSymTF[idx].lastBearHidRTTime = currentBarTimeForTrack;
                   }
 
-                  string strengthTag = isStrong ? " [STRONG]" : " [WEAK]";
+                  string strengthTag = rejected ? " [STRONG]" : " [WEAK]";
 
                   ArrayResize(rtLines, rtCount + 1);
                   rtLines[rtCount].text = "[SELL-RT] [" + tfStr + "] " + sym + " [Hid] (" + timeStr + ")" + strengthTag + " [Running...]";
@@ -2007,14 +1832,14 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   if(timeAtMaxRSI >= g_initTime && IsNewsSafe())
                   {
                      string sigKey = sym + "|" + tfStr + "|SELL|Hid|" + IntegerToString(timeAtMaxRSI);
-                     EmitRealtimeSignal(idx, sym, tf, tfStr, "SELL", "HID", isStrong, currentPrice, slSellHid, 0.0, lastHighPrice, priceAtMaxRSI, peakVolRatio, timeAtMaxRSI, sigKey);
+                     EmitRealtimeSignal(idx, sym, tf, tfStr, "SELL", "HID", isStrong, currentPrice, slSellHid, 0.0, lastHighPrice, priceAtMaxRSI, peakVolRatio, currentBarTimeForTrack, sigKey);
                   }
 
-                  if(isStrong && timeAtMaxRSI >= g_initTime && IsNewsSafe() && shouldTrack)
+                  if(isStrong && timeAtMaxRSI >= g_initTime && IsNewsSafe() && IsInTradeTime(timeAtMaxRSI))
                   {
                      if(IsValidSLForDirection("SELL", currentPrice, slSellHid))
                      {
-                        WriteStrongSignalToGV(sym, tfStr, "SELL", currentPrice, slSellHid, slSellHid, lastHighPrice, true, "HID", timeAtMaxRSI);
+                        WriteStrongSignalToGV(sym, tfStr, "SELL", currentPrice, slSellHid, slSellHid, lastHighPrice, true, "HID", currentBarTimeForTrack);
                         string sigKey = sym + "|" + tfStr + "|SELL|Hid|" + IntegerToString(timeAtMaxRSI);
                         PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "SELL", "Hid", currentPrice, slSellHid, timeAtMaxRSI, sigKey);
                      }
@@ -2034,15 +1859,6 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
             }
          }
       }
-      else
-      {
-         arrSymTF[idx].pendingBearHidStrong = false;
-      }
-   }
-   else
-   {
-      arrSymTF[idx].pendingBearRegStrong = false;
-      arrSymTF[idx].pendingBearHidStrong = false;
    }
 
    // REALTIME BULLISH
@@ -2080,16 +1896,12 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   datetime gmt7Time = ServerTimeToGMT7(timeAtMinLow);
                   string timeStr = TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES);
 
-                  double closeNew = iClose(sym, tf, rtMinLowShift);
-                  double closeOld = iClose(sym, tf, iBarShift(sym, tf, lastLowTime, false));
-                  if(closeNew < closeOld)
-                     arrSymTF[idx].pendingBullRegStrong = true;
-
                   double currentPrice = SymbolInfoDouble(sym, SYMBOL_ASK);
-                  bool rejectNow = (rtMinLowShift == 0) && (currentPrice > lastLowPrice);
-                  bool isStrong = arrSymTF[idx].pendingBullRegStrong && rejectNow;
+                  bool rejected = IsRejection(idx, sym, tf, false, true, lastLowPrice, rtMinLowShift, lastLowTime);
+                  // Moi cuc tri chi phat STRONG mot lan
+                  bool isStrong = rejected && arrSymTF[idx].firedBullReg != timeAtMinLow;
                   if(isStrong)
-                     arrSymTF[idx].pendingBullRegStrong = false;
+                     arrSymTF[idx].firedBullReg = timeAtMinLow;
 
                   bool shouldTrack = ShouldRetrack(idx, currentPrice, arrSymTF[idx].lastBullRegRTPrice, sym, tf, currentBarTimeForTrack, arrSymTF[idx].lastBullRegRTTime);
                   if(shouldTrack && !IsInTradeTime(timeAtMinLow)) shouldTrack = false;
@@ -2100,7 +1912,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                      arrSymTF[idx].lastBullRegRTTime = currentBarTimeForTrack;
                   }
 
-                  string strengthTag = isStrong ? " [STRONG]" : " [WEAK]";
+                  string strengthTag = rejected ? " [STRONG]" : " [WEAK]";
 
                   ArrayResize(rtLines, rtCount + 1);
                   rtLines[rtCount].text = "[BUY-RT] [" + tfStr + "] " + sym + " [Reg] (" + timeStr + ")" + strengthTag + " [Running...]";
@@ -2116,12 +1928,12 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   if(timeAtMinLow >= g_initTime && IsNewsSafe())
                   {
                      string sigKey = sym + "|" + tfStr + "|BUY|Reg|" + IntegerToString(timeAtMinLow);
-                     EmitRealtimeSignal(idx, sym, tf, tfStr, "BUY", "REG", isStrong, currentPrice, rtMinLow, 0.0, lastLowPrice, rtMinLow, troughVolRatio, timeAtMinLow, sigKey);
+                     EmitRealtimeSignal(idx, sym, tf, tfStr, "BUY", "REG", isStrong, currentPrice, rtMinLow, 0.0, lastLowPrice, rtMinLow, troughVolRatio, currentBarTimeForTrack, sigKey);
                   }
 
-                  if(isStrong && timeAtMinLow >= g_initTime && IsNewsSafe() && shouldTrack && IsValidSLForDirection("BUY", currentPrice, rtMinLow))
+                  if(isStrong && timeAtMinLow >= g_initTime && IsNewsSafe() && IsInTradeTime(timeAtMinLow) && IsValidSLForDirection("BUY", currentPrice, rtMinLow))
                   {
-                     WriteStrongSignalToGV(sym, tfStr, "BUY", currentPrice, rtMinLow, lastHighPrice, rtMinLow, true, "REG", timeAtMinLow);
+                     WriteStrongSignalToGV(sym, tfStr, "BUY", currentPrice, rtMinLow, lastHighPrice, rtMinLow, true, "REG", currentBarTimeForTrack);
                      string sigKey = sym + "|" + tfStr + "|BUY|Reg|" + IntegerToString(timeAtMinLow);
                      PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "BUY", "Reg", currentPrice, rtMinLow, timeAtMinLow, sigKey);
                   }
@@ -2140,10 +1952,6 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
             }
          }
       }
-      else
-      {
-         arrSymTF[idx].pendingBullRegStrong = false;
-      }
 
       if(rtMinRSI < lastLowRSI && priceAtMinRSI > lastLowPrice && rtMinRSIShift != lastLowShift)
       {
@@ -2157,18 +1965,14 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   datetime gmt7Time = ServerTimeToGMT7(timeAtMinRSI);
                   string timeStr = TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES);
 
-                  double closeNew = iClose(sym, tf, rtMinRSIShift);
-                  double closeOld = iClose(sym, tf, iBarShift(sym, tf, lastLowTime, false));
-                  if(closeNew > closeOld)
-                     arrSymTF[idx].pendingBullHidStrong = true;
-
                   double slHidBull = MathMin(lastLowPrice, priceAtMinRSI);
 
                   double currentPrice = SymbolInfoDouble(sym, SYMBOL_ASK);
-                  bool rejectNow = (rtMinRSIShift == 0) && (currentPrice > slHidBull);
-                  bool isStrong = arrSymTF[idx].pendingBullHidStrong && rejectNow;
+                  bool rejected = IsRejection(idx, sym, tf, false, false, lastLowPrice, rtMinRSIShift, lastLowTime);
+                  // Moi cuc tri chi phat STRONG mot lan
+                  bool isStrong = rejected && arrSymTF[idx].firedBullHid != timeAtMinRSI;
                   if(isStrong)
-                     arrSymTF[idx].pendingBullHidStrong = false;
+                     arrSymTF[idx].firedBullHid = timeAtMinRSI;
 
                   bool shouldTrack = ShouldRetrack(idx, currentPrice, arrSymTF[idx].lastBullHidRTPrice, sym, tf, currentBarTimeForTrack, arrSymTF[idx].lastBullHidRTTime);
                   if(shouldTrack && !IsInTradeTime(timeAtMinRSI)) shouldTrack = false;
@@ -2179,7 +1983,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                      arrSymTF[idx].lastBullHidRTTime = currentBarTimeForTrack;
                   }
 
-                  string strengthTag = isStrong ? " [STRONG]" : " [WEAK]";
+                  string strengthTag = rejected ? " [STRONG]" : " [WEAK]";
 
                   ArrayResize(rtLines, rtCount + 1);
                   rtLines[rtCount].text = "[BUY-RT] [" + tfStr + "] " + sym + " [Hid] (" + timeStr + ")" + strengthTag + " [Running...]";
@@ -2195,14 +1999,14 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   if(timeAtMinRSI >= g_initTime && IsNewsSafe())
                   {
                      string sigKey = sym + "|" + tfStr + "|BUY|Hid|" + IntegerToString(timeAtMinRSI);
-                     EmitRealtimeSignal(idx, sym, tf, tfStr, "BUY", "HID", isStrong, currentPrice, slHidBull, 0.0, lastLowPrice, priceAtMinRSI, troughVolRatio, timeAtMinRSI, sigKey);
+                     EmitRealtimeSignal(idx, sym, tf, tfStr, "BUY", "HID", isStrong, currentPrice, slHidBull, 0.0, lastLowPrice, priceAtMinRSI, troughVolRatio, currentBarTimeForTrack, sigKey);
                   }
 
-                  if(isStrong && timeAtMinRSI >= g_initTime && IsNewsSafe() && shouldTrack)
+                  if(isStrong && timeAtMinRSI >= g_initTime && IsNewsSafe() && IsInTradeTime(timeAtMinRSI))
                   {
                      if(IsValidSLForDirection("BUY", currentPrice, slHidBull))
                      {
-                        WriteStrongSignalToGV(sym, tfStr, "BUY", currentPrice, slHidBull, lastHighPrice, lastLowPrice, true, "HID", timeAtMinRSI);
+                        WriteStrongSignalToGV(sym, tfStr, "BUY", currentPrice, slHidBull, lastHighPrice, lastLowPrice, true, "HID", currentBarTimeForTrack);
                         string sigKey = sym + "|" + tfStr + "|BUY|Hid|" + IntegerToString(timeAtMinRSI);
                         PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "BUY", "Hid", currentPrice, slHidBull, timeAtMinRSI, sigKey);
                      }
@@ -2222,15 +2026,6 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
             }
          }
       }
-      else
-      {
-         arrSymTF[idx].pendingBullHidStrong = false;
-      }
-   }
-   else
-   {
-      arrSymTF[idx].pendingBullRegStrong = false;
-      arrSymTF[idx].pendingBullHidStrong = false;
    }
 }
 
