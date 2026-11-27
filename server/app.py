@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 BASE_DIR = Path(__file__).resolve().parent
+FRONTEND_DIR = BASE_DIR.parent / "docs"
 DB_PATH = Path(os.getenv("FOREX_DB_PATH", str(BASE_DIR / "forex_demo.db")))
 API_KEY = os.getenv("FOREX_API_KEY", "").strip()
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
@@ -556,7 +557,7 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "OPTIONS"],
     allow_headers=["Content-Type", "X-API-Key"],
 )
-app.mount("/static", StaticFiles(directory=str(BASE_DIR / "dashboard")), name="static")
+app.mount("/static", StaticFiles(directory=str(FRONTEND_DIR)), name="static")
 
 
 def require_key(x_api_key: str | None = Header(default=None)) -> None:
@@ -958,22 +959,22 @@ class SettingsIn(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 def dashboard():
-    return FileResponse(BASE_DIR / "dashboard" / "index.html")
+    return FileResponse(FRONTEND_DIR / "index.html")
 
 
 @app.get("/index.html", response_class=HTMLResponse)
 def index_page():
-    return FileResponse(BASE_DIR / "dashboard" / "index.html")
+    return FileResponse(FRONTEND_DIR / "index.html")
 
 
 @app.get("/settings.html", response_class=HTMLResponse)
 def settings_page():
-    return FileResponse(BASE_DIR / "dashboard" / "settings.html")
+    return FileResponse(FRONTEND_DIR / "settings.html")
 
 
 @app.get("/config.js")
 def config_js():
-    path = BASE_DIR / "dashboard" / "config.js"
+    path = FRONTEND_DIR / "config.js"
     if path.is_file():
         return FileResponse(path, media_type="application/javascript")
     return Response("// Không có config.js: dùng cùng địa chỉ với trang\n", media_type="application/javascript")
@@ -981,7 +982,7 @@ def config_js():
 
 @app.get("/chart", response_class=HTMLResponse)
 def chart_page():
-    return FileResponse(BASE_DIR / "dashboard" / "chart.html")
+    raise HTTPException(status_code=404, detail="Trang chart.html chưa có trong thư mục docs")
 
 
 @app.get("/api/auth/check", dependencies=[Depends(require_key)])
