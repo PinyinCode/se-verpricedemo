@@ -2,17 +2,15 @@
 //|                           RSI_Divergence_Realtime.mq5            |
 //|   Realtime Signal Only -> Direct GV to EA + Full Server Sync     |
 //|   Unified TimeGMT7() Clock + Synced TF for EA Candle Check       |
-//|   v2.1: Tối ưu cache handle, spread trung bình & đồng bộ tín hiệu|
+//|   v1.17: RT STRONG = simple close compare (like v1.00)           |
 //+------------------------------------------------------------------+
 #property copyright "Copyright 2026"
 #property link      "https://www.mql5.com"
-#property version   "2.1"
+#property version   "1.17"
 #property indicator_chart_window
 #property indicator_buffers 1
 #property indicator_plots   1
 #property indicator_type1   DRAW_NONE
-
-#include "StrongSignalEngine.mqh"
 
 //+------------------------------------------------------------------+
 //| INPUT PARAMETERS                                                 |
@@ -21,10 +19,10 @@ string ExpiryDate = "2099.12.30";
 datetime expiry = StringToTime(ExpiryDate);
 string P = "DBL_";
 #define MS_BARS_DEFAULT 100
-#define INDICATOR_PROTOCOL_VERSION 1.0
 
 input bool EnableM15 = true;
 input bool EnableH1  = true;
+
 input bool EnableTimeFilter = true;
 input int  ScanStartHour = 7;
 input int  ScanEndHour = 23;
@@ -45,42 +43,20 @@ input int RTPrintCooldownSeconds = 60;
 input double RT_RetrackATRMultiplier = 0.3;
 input string ExcludeSymbols = "";
 
-input group "=== Direct EA & Server Sync ==="
+input group "=== Direct EA Signal ==="
 input bool   PublishToDirectEA_GV    = true;
-input bool   EnableServerSync        = true;
-input bool   EnableServerSend        = true;
 input bool   SendOnlyStrongSignal    = true;
-input string ServerBaseUrl           = "https://investforex.onrender.com";
-input string ServerSignalUrl         = "https://investforex.onrender.com/api/signals/realtime";
-input string ServerApiKey            = "";
-input int    ServerTimeoutMs         = 3000;
-input int    ServerResendSeconds     = 30;
-input int    HeartbeatIntervalSec    = 15;
-input int    TodaySyncIntervalSec    = 20;
+input int    EaResendSeconds         = 30;
 
-input group "=== Strong Signal Engine v2 ==="
-input bool   SSE_EnableScoring          = true;
-input bool   SSE_RequireHTFAlignment    = true;
-input double SSE_ScoreThresholdStrong   = 70.0;
-input double SSE_ScoreThresholdGood     = 55.0;
-input int    SSE_PendingTTLBars         = 4;
-input double SSE_MinRejectATR           = 0.3;
-input int    SSE_FreshnessMaxBars       = 10;
-input bool   SSE_DowngradeCounterTrend  = true;
-
-// TIMEZONE & STATE
+// TIMEZONE
 int      g_brokerToGMTOffset     = 0;
 datetime g_lastBrokerOffsetSync  = 0;
 datetime g_lastScanM15           = 0, g_lastScanH1 = 0;
 datetime g_todayStartGMT7        = 0;
-SSEConfig g_sseCfg;
 
 struct SSymbolTFData
 {
-   string sym; ENUM_TIMEFRAMES tf; string tfStr;
-   int rsiHandle; int atrHandle;
-   int htfMAHandle; int htfRSIHandle;
-   double avgSpread; int spreadSamples;
+   string sym; ENUM_TIMEFRAMES tf; string tfStr; int rsiHandle; int atrHandle;
    datetime lastBullNotifyBar, lastBearNotifyBar, lastBullNotifyTime, lastBearNotifyTime;
    double bearSL, bullSL; datetime bearSLTime, bullSLTime;
    double maxVolBear, maxVolBull; int lastShiftCached; datetime lastBarTime;
@@ -93,15 +69,21 @@ struct SSymbolTFData
    datetime lastStrongSignalPrintTime; string lastStrongSignalKey;
    string lastDirectEaSignalKey; datetime lastDirectEaSignalTime;
    string lastSentSignalKey; datetime lastSentSignalTime;
-   string lastQueueSignalKey; datetime lastQueueSignalTime;
-   double lastBearRegRTPrice, lastBearHidRTPrice, lastBullRegRTPrice, lastBullHidRTPrice;
-   datetime lastBearRegRTTime, lastBearHidRTTime, lastBullRegRTTime, lastBullHidRTTime;
-   SPendingSignal pendingBearReg2;
-   SPendingSignal pendingBearHid2;
-   SPendingSignal pendingBullReg2;
-   SPendingSignal pendingBullHid2;
-   datetime lastStrongEmitBar;
-   string   lastStrongGrade;
+
+   double lastBearRegRTPrice;
+   double lastBearHidRTPrice;
+   double lastBullRegRTPrice;
+   double lastBullHidRTPrice;
+
+   datetime lastBearRegRTTime;
+   datetime lastBearHidRTTime;
+   datetime lastBullRegRTTime;
+   datetime lastBullHidRTTime;
+
+   datetime firedBearReg;
+   datetime firedBearHid;
+   datetime firedBullReg;
+   datetime firedBullHid;
 };
 
 struct SRTLine { string text; datetime time; bool isToday; };
@@ -109,10 +91,21 @@ struct STodaySignal { string sym, tfStr, type, divType, signalType; datetime tim
 
 struct SHudConfig
 {
-   bool enabled, showHeader, showFeatures, showRT, showHist, showToday;
-   int  fontRT, fontHist, fontToday, fontHeader, startX, topMargin;
+   bool enabled;
+   bool showHeader;
+   bool showFeatures;
+   bool showRT;
+   bool showHist;
+   bool showToday;
+   int  fontRT;
+   int  fontHist;
+   int  fontToday;
+   int  fontHeader;
+   int  startX;
+   int  topMargin;
 };
 
+// GLOBAL VARIABLES
 SSymbolTFData arrSymTF[];
 STodaySignal g_todaySignals[];
 int g_todaySignalCount = 0;
@@ -129,11 +122,9 @@ datetime g_lastRTPrintTime = 0;
 int g_lastRTCount = 0;
 bool g_isNewsBlocked = false;
 datetime g_lastNewsCheckTime = 0;
-datetime g_lastServerHeartbeatTime = 0;
-datetime g_lastTodaySyncTime = 0;
-string g_lastSyncedSymbolsJson = "";
 
-//--- Forward declarations ------------------------------------------
+
+// FORWARD DECLARATIONS
 void SyncBrokerGMTOffset(bool force = false);
 datetime TimeGMT7();
 datetime ServerTimeToGMT7(datetime serverTime);
@@ -145,12 +136,16 @@ bool IsNewsSafe();
 void GetEnabledTimeframes(ENUM_TIMEFRAMES &tfs[], string &tfStrs[]);
 double GetATRValue(int idx, string sym, ENUM_TIMEFRAMES tf, int period);
 double GetCurrentSpreadPrice(string sym);
-double UpdateAndGetAvgSpread(int idx, double currentSpread);
 ENUM_TIMEFRAMES StringToEnum(string tfStr);
+
 bool IsSymbolExcluded(string sym);
 bool IsInTradeTime(datetime signalTime);
+
 bool GetGvBool(string name, bool defVal);
+bool IsHourAllowed(int h);
+bool IsTimeFilterEnabledEffective();
 int GetGvInt(string name, int defVal);
+
 int GetSymbolTFIndex(string s, ENUM_TIMEFRAMES tf);
 int InitSymTF(string sym, ENUM_TIMEFRAMES tf, string tfStr);
 void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLines[], datetime &histTimes[], int &histCount);
@@ -163,6 +158,7 @@ bool IsMonotonicStructure(string sym, ENUM_TIMEFRAMES tf, int shiftNew, int shif
 double CalcVolumeRatio(string sym, ENUM_TIMEFRAMES tf, int shift, int bars, int maLen);
 bool IsReversalCandle(string sym, ENUM_TIMEFRAMES tf, int shift);
 bool ShouldRetrack(int idx, double currentPrice, double lastTrackedPrice, string sym, ENUM_TIMEFRAMES tf, datetime currentBarTime, datetime lastTrackedBarTime);
+
 void AddTodaySignal(string sym, string tfStr, string type, string divType, string signalType, datetime time1, datetime time2, double price1, double price2, double rsi1, double rsi2);
 void ClearOldTodaySignals();
 string BuildTodaySignalsDisplay();
@@ -178,146 +174,13 @@ void ClearAllDivergenceData(string sym, string tfStr);
 void CleanupOldSignals();
 void PrintStrongSignalOnce(SSymbolTFData &data, string sym, string tfStr, string type, string divType, double entryPrice, double slPrice, datetime signalTime, string signalKey);
 void PrintRTSignalChange(int currentRTCount, string comment);
-void WriteStrongSignalToGV(int idx, string sym, string tfStr, string type, double entryPrice, double slPrice, double highPrice, double lowPrice, bool isStrong, string divType, datetime signalTime, double score = 0, string signalKey = "");
+void WriteStrongSignalToGV(string sym, string tfStr, string type, double entryPrice, double slPrice, double highPrice, double lowPrice, bool isStrong, string divType, datetime signalTime, double score = 0);
 void PublishScanSymbols(string symbols);
 void PublishTodaySignals();
 void CleanupInvalidRTTodaySignals();
 bool IsValidSLForDirection(string type, double entryPrice, double slPrice);
-void SyncHeartbeatToServer(string status, string details, bool force = false);
-void SyncScansToServer(string scannedSymbols);
-void SyncTodaySignalsToServer(bool force = false);
 
-string EscapeJson(string s)
-{
-   StringReplace(s, "\\", "\\\\");
-   StringReplace(s, "\"", "\\\"");
-   StringReplace(s, "\r", "\\r");
-   StringReplace(s, "\n", "\\n");
-   return s;
-}
-
-string BuildServerEndpoint(string path)
-{
-   string base = ServerBaseUrl;
-   while(StringLen(base) > 0 && StringGetCharacter(base, StringLen(base) - 1) == '/')
-      base = StringSubstr(base, 0, StringLen(base) - 1);
-   if(StringLen(path) > 0 && StringGetCharacter(path, 0) != '/')
-      path = "/" + path;
-   return base + path;
-}
-
-int PostJsonToServer(string url, string jsonPayload, string &outResponse)
-{
-   outResponse = "";
-   if(url == "") return -1;
-   char postData[];
-   int bodyLen = StringToCharArray(jsonPayload, postData, 0, WHOLE_ARRAY, CP_UTF8);
-   if(bodyLen > 0) ArrayResize(postData, bodyLen - 1);
-   string headers = "Content-Type: application/json\r\n";
-   if(ServerApiKey != "") headers += "X-API-Key: " + ServerApiKey + "\r\n";
-   char result[]; string resultHeaders = "";
-   ResetLastError();
-   int httpCode = WebRequest("POST", url, headers, ServerTimeoutMs, postData, result, resultHeaders);
-   if(ArraySize(result) > 0) outResponse = CharArrayToString(result, 0, WHOLE_ARRAY, CP_UTF8);
-   return httpCode;
-}
-
-void SyncHeartbeatToServer(string status, string details, bool force)
-{
-   if(!EnableServerSync) return;
-   datetime nowGmt7 = TimeGMT7();
-   int interval = MathMax(5, HeartbeatIntervalSec);
-   if(!force && (nowGmt7 - g_lastServerHeartbeatTime) < interval) return;
-   g_lastServerHeartbeatTime = nowGmt7;
-   string url = BuildServerEndpoint("/api/heartbeat");
-   string payload = StringFormat("{\"component\":\"rsi-divergence-indicator\",\"status\":\"%s\",\"details\":\"%s\",\"gmt7\":%d}",
-      EscapeJson(status), EscapeJson(details), (int)nowGmt7);
-   string resp = "";
-   int code = PostJsonToServer(url, payload, resp);
-   if(code < 200 || code >= 300)
-      Print("Heartbeat sync warning [HTTP ", code, "]: ", resp);
-}
-
-void SyncScansToServer(string scannedSymbols)
-{
-   if(!EnableServerSync) return;
-   string arrJson = "[";
-   if(scannedSymbols != "")
-   {
-      string parts[];
-      int n = StringSplit(scannedSymbols, ';', parts);
-      int added = 0;
-      for(int i = 0; i < n; i++)
-      {
-         string item = parts[i];
-         StringTrimLeft(item); StringTrimRight(item);
-         if(item == "") continue;
-         if(added > 0) arrJson += ",";
-         arrJson += "\"" + EscapeJson(item) + "\"";
-         added++;
-      }
-   }
-   arrJson += "]";
-   if(arrJson == g_lastSyncedSymbolsJson) return;
-   g_lastSyncedSymbolsJson = arrJson;
-   string url = BuildServerEndpoint("/api/scans");
-   string payload = StringFormat("{\"component\":\"rsi-divergence-indicator\",\"symbols\":%s}", arrJson);
-   string resp = "";
-   int code = PostJsonToServer(url, payload, resp);
-   if(code < 200 || code >= 300)
-      Print("Scans sync warning [HTTP ", code, "]: ", resp);
-}
-
-void SyncTodaySignalsToServer(bool force)
-{
-   if(!EnableServerSync) return;
-   datetime nowGmt7 = TimeGMT7();
-   int interval = MathMax(5, TodaySyncIntervalSec);
-   if(!force && (nowGmt7 - g_lastTodaySyncTime) < interval) return;
-   g_lastTodaySyncTime = nowGmt7;
-   string itemsJson = "[";
-   int validCount = 0;
-   for(int i = 0; i < g_todaySignalCount; i++)
-   {
-      if(g_todaySignals[i].signalType == "RT")
-      {
-         string prefix = "DIVDATA_" + g_todaySignals[i].sym + "_" + g_todaySignals[i].tfStr + "_";
-         string tType = g_todaySignals[i].type;
-         if(!GlobalVariableCheck(prefix + tType + "_ACTIVE") || GlobalVariableGet(prefix + tType + "_ACTIVE") == 0) continue;
-      }
-      string dir = (g_todaySignals[i].type == "BEAR") ? "SELL" : "BUY";
-      string divNorm = (g_todaySignals[i].divType == "Hid") ? "Hid" : "Reg";
-      if(validCount > 0) itemsJson += ",";
-      itemsJson += StringFormat("{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\",\"divergence\":\"%s\",\"signal_type\":\"%s\",\"signal_time\":%d,\"price1\":%.8f,\"price2\":%.8f,\"rsi1\":%.2f,\"rsi2\":%.2f,\"time1\":%d,\"time2\":%d}",
-         EscapeJson(g_todaySignals[i].sym), EscapeJson(g_todaySignals[i].tfStr), dir, divNorm,
-         EscapeJson(g_todaySignals[i].signalType), (int)g_todaySignals[i].time,
-         g_todaySignals[i].price1, g_todaySignals[i].price2,
-         g_todaySignals[i].rsi1, g_todaySignals[i].rsi2,
-         (int)g_todaySignals[i].time1, (int)g_todaySignals[i].time2);
-      validCount++;
-   }
-   itemsJson += "]";
-   string url = BuildServerEndpoint("/api/today-signals");
-   string payload = StringFormat("{\"signals\":%s}", itemsJson);
-   string resp = "";
-   int code = PostJsonToServer(url, payload, resp);
-   if(code < 200 || code >= 300)
-      Print("Today signals sync warning [HTTP ", code, "]: ", resp);
-}
-
-string BuildDedupSource(string signalKey)
-{
-   string cleanKey = signalKey;
-   StringReplace(cleanKey, "|", "_");
-   StringReplace(cleanKey, "SELL", "S");
-   StringReplace(cleanKey, "BUY", "B");
-   StringReplace(cleanKey, "Reg", "R");
-   StringReplace(cleanKey, "Hid", "H");
-   string dedupSource = "rt_" + cleanKey;
-   if(StringLen(dedupSource) > 40) dedupSource = StringSubstr(dedupSource, StringLen(dedupSource) - 40, 40);
-   return dedupSource;
-}
-
+//--- Ghi tín hiệu trực tiếp sang Global Variables cho EA ----------
 void PublishDirectSignalToEA_GV(int idx, string sym, ENUM_TIMEFRAMES tf,
                                 string side, string orderType,
                                 double entryPrice, double slPrice, double tpPrice,
@@ -331,7 +194,7 @@ void PublishDirectSignalToEA_GV(int idx, string sym, ENUM_TIMEFRAMES tf,
    if(idx >= 0 && idx < ArraySize(arrSymTF))
    {
       if(signalKey == arrSymTF[idx].lastDirectEaSignalKey &&
-         (nowGmt7 - arrSymTF[idx].lastDirectEaSignalTime) < MathMax(1, ServerResendSeconds))
+         (nowGmt7 - arrSymTF[idx].lastDirectEaSignalTime) < MathMax(1, EaResendSeconds))
          return;
       arrSymTF[idx].lastDirectEaSignalKey = signalKey;
       arrSymTF[idx].lastDirectEaSignalTime = nowGmt7;
@@ -341,6 +204,7 @@ void PublishDirectSignalToEA_GV(int idx, string sym, ENUM_TIMEFRAMES tf,
    StringToUpper(symUp);
    string pfx = "GV_IND_" + symUp + "_";
 
+   long symSeq = (long)GlobalVariableGet(pfx + "SEQ") + 1;
    double otCode = 0.0;
    if(orderType == "BUY_LIMIT") otCode = 1.0;
    else if(orderType == "SELL_LIMIT") otCode = 2.0;
@@ -357,9 +221,7 @@ void PublishDirectSignalToEA_GV(int idx, string sym, ENUM_TIMEFRAMES tf,
    GlobalVariableSet(pfx + "SL",         slPrice);
    GlobalVariableSet(pfx + "TP",         tpPrice);
    GlobalVariableSet(pfx + "UPDATED",    (double)nowGmt7);
-
-   long symSeq = (long)GlobalVariableGet(pfx + "SEQ") + 1;
-   GlobalVariableSet(pfx + "SEQ", (double)symSeq);
+   GlobalVariableSet(pfx + "SEQ",        (double)symSeq);
 
    long totalSeq = (long)GlobalVariableGet("GV_IND_SIG_SEQ") + 1;
    GlobalVariableSet("GV_IND_SIG_SEQ", (double)totalSeq);
@@ -369,68 +231,29 @@ void EmitRealtimeSignal(int idx, string sym, ENUM_TIMEFRAMES tf, string tfStr,
                         string side, string divType, bool isStrong,
                         double entryPrice, double slPrice, double tpPrice,
                         double refPrice1, double refPrice2, double volRatio,
-                        datetime signalTime, string signalKey,
-                        double score = 0, string grade = "")
+                        datetime signalTime, string signalKey)
 {
    if(SendOnlyStrongSignal && !isStrong) return;
    if(entryPrice <= 0 || slPrice <= 0) return;
    if(!IsValidSLForDirection(side, entryPrice, slPrice)) return;
 
    PublishDirectSignalToEA_GV(idx, sym, tf, side, "MARKET", entryPrice, slPrice, tpPrice, signalTime, signalKey);
-
-   if(score > 0 || grade != "")
-   {
-      string symUp = sym; StringToUpper(symUp);
-      string pfx = "GV_IND_" + symUp + "_";
-      if(score > 0) GlobalVariableSet(pfx + "SCORE", score);
-      if(grade != "") GlobalVariableSet(pfx + "GRADE", (double)(int)StringGetCharacter(grade, 0));
-   }
-
-   if(!EnableServerSend) return;
-   string targetUrl = (ServerSignalUrl != "") ? ServerSignalUrl : BuildServerEndpoint("/api/signals/realtime");
-
-   datetime nowGmt7 = TimeGMT7();
-   bool hasIdx = (idx >= 0 && idx < ArraySize(arrSymTF));
-   int resendSec = MathMax(1, ServerResendSeconds);
-   if(hasIdx && signalKey == arrSymTF[idx].lastSentSignalKey &&
-      (nowGmt7 - arrSymTF[idx].lastSentSignalTime) < resendSec)
-      return;
-
-   int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
-   if(digits <= 0) digits = 5;
-
-   double scoreToSend = (score > 0) ? score :
-      (isStrong ? MathMin(100.0, 70.0 + volRatio * 10.0) : MathMin(69.0, 40.0 + volRatio * 8.0));
-   string dedupSource = BuildDedupSource(signalKey);
-
-   string payload = StringFormat(
-      "{\"symbol\":\"%s\",\"timeframe\":\"%s\",\"direction\":\"%s\",\"order_type\":\"MARKET\","
-      "\"entry\":%s,\"sl\":%s,\"tp\":0,\"score\":%.2f,\"source\":\"%s\",\"grade\":\"%s\"}",
-      EscapeJson(sym), EscapeJson(tfStr), EscapeJson(side),
-      DoubleToString(entryPrice, digits), DoubleToString(slPrice, digits),
-      scoreToSend, EscapeJson(dedupSource), EscapeJson(grade));
-
-   string respStr = "";
-   int httpCode = PostJsonToServer(targetUrl, payload, respStr);
-
-   if(httpCode >= 200 && httpCode < 300)
-   {
-      if(hasIdx)
-      {
-         arrSymTF[idx].lastSentSignalKey = signalKey;
-         arrSymTF[idx].lastSentSignalTime = nowGmt7;
-      }
-      Print("SERVER RT SENT [HTTP ", httpCode, "]: ", signalKey, " score=", DoubleToString(scoreToSend,1), " grade=", grade);
-   }
-   else
-   {
-      Print("SERVER RT FAILED [HTTP ", httpCode, "]: ", signalKey, " resp=", respStr);
-   }
 }
 
-//--- HUD -----------------------------------------------------------------
-bool GetGvBool(string name, bool defVal) { if(!GlobalVariableCheck(name)) return defVal; return (GlobalVariableGet(name) >= 0.5); }
-int  GetGvInt(string name, int defVal)   { if(!GlobalVariableCheck(name)) return defVal; return (int)MathRound(GlobalVariableGet(name)); }
+//+------------------------------------------------------------------+
+//| DASHBOARD HUD CONFIG (READ FROM GLOBAL VARIABLES)                |
+//+------------------------------------------------------------------+
+bool GetGvBool(string name, bool defVal)
+{
+   if(!GlobalVariableCheck(name)) return defVal;
+   return (GlobalVariableGet(name) >= 0.5);
+}
+
+int GetGvInt(string name, int defVal)
+{
+   if(!GlobalVariableCheck(name)) return defVal;
+   return (int)MathRound(GlobalVariableGet(name));
+}
 
 SHudConfig GetHudConfig()
 {
@@ -441,6 +264,7 @@ SHudConfig GetHudConfig()
    cfg.showRT       = GetGvBool("GV_HUD_SHOW_RT", true);
    cfg.showHist     = GetGvBool("GV_HUD_SHOW_HIST", true);
    cfg.showToday    = GetGvBool("GV_HUD_SHOW_TODAY", true);
+
    cfg.fontRT       = MathMax(7, MathMin(24, GetGvInt("GV_HUD_FONT_RT", 11)));
    cfg.fontHist     = MathMax(7, MathMin(24, GetGvInt("GV_HUD_FONT_HIST", 10)));
    cfg.fontToday    = MathMax(7, MathMin(24, GetGvInt("GV_HUD_FONT_TODAY", 9)));
@@ -450,14 +274,19 @@ SHudConfig GetHudConfig()
    return cfg;
 }
 
-//--- TimeGMT7 --------------------------------------------------------------
+//+------------------------------------------------------------------+
+//| UNIFIED TIMEGMT7() & NEWS                                        |
+//+------------------------------------------------------------------+
 void SyncBrokerGMTOffset(bool force)
 {
    datetime now = TimeCurrent();
-   if(!force && g_lastBrokerOffsetSync > 0 && (now - g_lastBrokerOffsetSync) < 300) return;
+   if(!force && g_lastBrokerOffsetSync > 0 && (now - g_lastBrokerOffsetSync) < 300)
+      return;
+
    datetime gt = TimeGMT();
    datetime st = TimeTradeServer();
    if(st <= 0) st = now;
+
    if(gt > 0 && st > 0)
    {
       int rawDiff = (int)(st - gt);
@@ -470,7 +299,9 @@ void SyncBrokerGMTOffset(bool force)
 datetime TimeGMT7()
 {
    datetime gt = TimeGMT();
-   if(gt > 0) return gt + 7 * 3600;
+   if(gt > 0)
+      return gt + 7 * 3600;
+
    SyncBrokerGMTOffset(false);
    datetime st = TimeTradeServer();
    if(st <= 0) st = TimeCurrent();
@@ -484,7 +315,10 @@ datetime ServerTimeToGMT7(datetime serverTime)
    return (serverTime - g_brokerToGMTOffset) + 7 * 3600;
 }
 
-datetime GetGMT7Now() { return TimeGMT7(); }
+datetime GetGMT7Now()
+{
+   return TimeGMT7();
+}
 
 void UpdateTodayBounds()
 {
@@ -492,15 +326,27 @@ void UpdateTodayBounds()
    g_todayStartGMT7 = n - (n % 86400);
 }
 
+bool IsHourAllowed(int h)
+{
+   int start = GetGvInt("GV_Dash_TradingStartHour", ScanStartHour);
+   int end   = GetGvInt("GV_Dash_TradingEndHour", ScanEndHour);
+   if(start <= end) return (h >= start && h < end);
+   return (h >= start || h < end);
+}
+
+bool IsTimeFilterEnabledEffective()
+{
+   return GetGvBool("GV_Dash_TimeFilterEnabled", EnableTimeFilter);
+}
+
 bool IsInScanTime()
 {
-   if(!EnableTimeFilter) return true;
+   if(!IsTimeFilterEnabledEffective()) return true;
    SyncBrokerGMTOffset(false);
    datetime n = TimeGMT7();
-   MqlDateTime dt; TimeToStruct(n, dt);
-   int h = dt.hour;
-   if(ScanStartHour <= ScanEndHour) return (h >= ScanStartHour && h < ScanEndHour);
-   return (h >= ScanStartHour || h < ScanEndHour);
+   MqlDateTime dt;
+   TimeToStruct(n, dt);
+   return IsHourAllowed(dt.hour);
 }
 
 bool IsNewsFilterEnabledEffective()
@@ -518,15 +364,15 @@ bool IsNewsSafe()
 
 bool IsInTradeTime(datetime signalTime)
 {
-   if(!EnableTimeFilter) return true;
+   if(!IsTimeFilterEnabledEffective()) return true;
    datetime gmt7Time = ServerTimeToGMT7(signalTime);
    MqlDateTime dt; TimeToStruct(gmt7Time, dt);
-   int h = dt.hour;
-   if(ScanStartHour <= ScanEndHour) return (h >= ScanStartHour && h < ScanEndHour);
-   return (h >= ScanStartHour || h < ScanEndHour);
+   return IsHourAllowed(dt.hour);
 }
 
-//--- Helpers ---------------------------------------------------------------
+//+------------------------------------------------------------------+
+//| HELPERS                                                          |
+//+------------------------------------------------------------------+
 void GetEnabledTimeframes(ENUM_TIMEFRAMES &tfs[], string &tss[])
 {
    ArrayResize(tfs, 0); ArrayResize(tss, 0);
@@ -537,7 +383,8 @@ void GetEnabledTimeframes(ENUM_TIMEFRAMES &tfs[], string &tss[])
 double GetATRValue(int idx, string sym, ENUM_TIMEFRAMES tf, int p)
 {
    if(idx < 0 || idx >= ArraySize(arrSymTF)) return 0;
-   if(arrSymTF[idx].atrHandle == INVALID_HANDLE) arrSymTF[idx].atrHandle = iATR(sym, tf, p);
+   if(arrSymTF[idx].atrHandle == INVALID_HANDLE)
+      arrSymTF[idx].atrHandle = iATR(sym, tf, p);
    int h = arrSymTF[idx].atrHandle;
    if(h == INVALID_HANDLE) return 0;
    double b[]; ArraySetAsSeries(b, true);
@@ -549,26 +396,15 @@ double GetCurrentSpreadPrice(string sym)
 {
    double ask = SymbolInfoDouble(sym, SYMBOL_ASK);
    double bid = SymbolInfoDouble(sym, SYMBOL_BID);
-   if(ask > 0 && bid > 0 && ask >= bid) return (ask - bid);
+   if(ask > 0 && bid > 0 && ask >= bid)
+      return (ask - bid);
+
    long sprPts = SymbolInfoInteger(sym, SYMBOL_SPREAD);
    double pt = SymbolInfoDouble(sym, SYMBOL_POINT);
-   if(sprPts > 0 && pt > 0) return (double)sprPts * pt;
-   return 0.0;
-}
+   if(sprPts > 0 && pt > 0)
+      return (double)sprPts * pt;
 
-double UpdateAndGetAvgSpread(int idx, double currentSpread)
-{
-   if(idx < 0 || idx >= ArraySize(arrSymTF) || currentSpread <= 0.0) return currentSpread;
-   if(arrSymTF[idx].spreadSamples <= 0 || arrSymTF[idx].avgSpread <= 0.0)
-   {
-      arrSymTF[idx].avgSpread = currentSpread;
-      arrSymTF[idx].spreadSamples = 1;
-      return currentSpread;
-   }
-   int n = MathMin(arrSymTF[idx].spreadSamples + 1, 200);
-   arrSymTF[idx].avgSpread = ((arrSymTF[idx].avgSpread * (n - 1)) + currentSpread) / (double)n;
-   arrSymTF[idx].spreadSamples = n;
-   return arrSymTF[idx].avgSpread;
+   return 0.0;
 }
 
 ENUM_TIMEFRAMES StringToEnum(string ts)
@@ -601,8 +437,14 @@ bool IsValidSLForDirection(string type, double entryPrice, double slPrice)
    return false;
 }
 
-//--- RSI / Volume -----------------------------------------------------
-double GetRSI(double &buf[], int shift) { if(shift < 0 || shift >= ArraySize(buf)) return -1; return buf[shift]; }
+//+------------------------------------------------------------------+
+//| RSI & VOLUME FUNCTIONS                                           |
+//+------------------------------------------------------------------+
+double GetRSI(double &buf[], int shift)
+{
+   if(shift < 0 || shift >= ArraySize(buf)) return -1;
+   return buf[shift];
+}
 
 bool IsRSISwingHigh(double &buf[], int shift)
 {
@@ -610,7 +452,8 @@ bool IsRSISwingHigh(double &buf[], int shift)
    if(center < 0) return false;
    for(int i = 1; i <= MS_SwingBars; i++)
    {
-      double left = GetRSI(buf, shift + i), right = GetRSI(buf, shift - i);
+      double left = GetRSI(buf, shift + i);
+      double right = GetRSI(buf, shift - i);
       if(left < 0 || right < 0) return false;
       if(center <= left || center <= right) return false;
    }
@@ -623,7 +466,8 @@ bool IsRSISwingLow(double &buf[], int shift)
    if(center < 0) return false;
    for(int i = 1; i <= MS_SwingBars; i++)
    {
-      double left = GetRSI(buf, shift + i), right = GetRSI(buf, shift - i);
+      double left = GetRSI(buf, shift + i);
+      double right = GetRSI(buf, shift - i);
       if(left < 0 || right < 0) return false;
       if(center >= left || center >= right) return false;
    }
@@ -637,8 +481,10 @@ double GetVolumeRatioAtShift(string sym, int shift, ENUM_TIMEFRAMES tf)
    const int MA_LEN = 11;
    double bestVolRatio = 0;
    bestVolRatio = MathMax(bestVolRatio, CalcVolumeRatio(sym, tf, shift, bars, MA_LEN));
-   if(shift - 1 >= 0) bestVolRatio = MathMax(bestVolRatio, CalcVolumeRatio(sym, tf, shift - 1, bars, MA_LEN));
-   if(shift + 1 < bars && IsReversalCandle(sym, tf, shift)) bestVolRatio = MathMax(bestVolRatio, CalcVolumeRatio(sym, tf, shift + 1, bars, MA_LEN));
+   if(shift - 1 >= 0)
+      bestVolRatio = MathMax(bestVolRatio, CalcVolumeRatio(sym, tf, shift - 1, bars, MA_LEN));
+   if(shift + 1 < bars && IsReversalCandle(sym, tf, shift))
+      bestVolRatio = MathMax(bestVolRatio, CalcVolumeRatio(sym, tf, shift + 1, bars, MA_LEN));
    return bestVolRatio;
 }
 
@@ -666,7 +512,8 @@ double CalcVolumeRatio(string sym, ENUM_TIMEFRAMES tf, int shift, int bars, int 
 {
    if(shift + maLen > bars || maLen <= 0) return 0;
    double sum = 0;
-   for(int i = shift; i < shift + maLen; i++) sum += (double)iTickVolume(sym, tf, i);
+   for(int i = shift; i < shift + maLen; i++)
+      sum += (double)iTickVolume(sym, tf, i);
    double volMA = sum / maLen;
    if(volMA <= 0) return 0;
    return (double)iTickVolume(sym, tf, shift) / volMA;
@@ -674,8 +521,8 @@ double CalcVolumeRatio(string sym, ENUM_TIMEFRAMES tf, int shift, int bars, int 
 
 bool CheckMiddleValid(string sym, ENUM_TIMEFRAMES tf, int shift2, int shift1, datetime refTime, bool isHigh)
 {
-   int s1 = (shift1 >= 0) ? shift1 : iBarShift(sym, tf, refTime);
-   if(s1 < 0 || shift2 >= s1) return true;
+   int s1 = iBarShift(sym, tf, refTime);
+   if(shift2 >= s1) return true;
    double refPrice = isHigh ? iHigh(sym, tf, s1) : iLow(sym, tf, s1);
    double newPrice = isHigh ? iHigh(sym, tf, shift2) : iLow(sym, tf, shift2);
    double bound = isHigh ? MathMax(refPrice, newPrice) : MathMin(refPrice, newPrice);
@@ -734,7 +581,8 @@ bool ShouldRetrack(int idx, double currentPrice, double lastTrackedPrice, string
 int GetSymbolTFIndex(string s, ENUM_TIMEFRAMES tf)
 {
    for(int i = 0; i < ArraySize(arrSymTF); i++)
-      if(arrSymTF[i].sym == s && arrSymTF[i].tf == tf) return i;
+      if(arrSymTF[i].sym == s && arrSymTF[i].tf == tf)
+         return i;
    return -1;
 }
 
@@ -748,13 +596,6 @@ int InitSymTF(string sym, ENUM_TIMEFRAMES tf, string tfStr)
    arrSymTF[idx].tfStr = tfStr;
    arrSymTF[idx].rsiHandle = iRSI(sym, tf, 14, PRICE_CLOSE);
    arrSymTF[idx].atrHandle = iATR(sym, tf, 14);
-
-   ENUM_TIMEFRAMES htf = SSE_GetHTF(tf);
-   arrSymTF[idx].htfMAHandle  = iMA(sym, htf, MathMax(1, g_sseCfg.htfMAPeriod), 0, MODE_EMA, PRICE_CLOSE);
-   arrSymTF[idx].htfRSIHandle = iRSI(sym, htf, 14, PRICE_CLOSE);
-   arrSymTF[idx].avgSpread = 0.0;
-   arrSymTF[idx].spreadSamples = 0;
-
    arrSymTF[idx].lastShiftCached = MS_BARS_DEFAULT - 1;
    arrSymTF[idx].lastHighShift = -9999;
    arrSymTF[idx].lastLowShift = -9999;
@@ -768,8 +609,6 @@ int InitSymTF(string sym, ENUM_TIMEFRAMES tf, string tfStr)
    arrSymTF[idx].lastDirectEaSignalTime = 0;
    arrSymTF[idx].lastSentSignalKey = "";
    arrSymTF[idx].lastSentSignalTime = 0;
-   arrSymTF[idx].lastQueueSignalKey = "";
-   arrSymTF[idx].lastQueueSignalTime = 0;
    arrSymTF[idx].lastBearRegRTPrice = 0;
    arrSymTF[idx].lastBearHidRTPrice = 0;
    arrSymTF[idx].lastBullRegRTPrice = 0;
@@ -778,31 +617,34 @@ int InitSymTF(string sym, ENUM_TIMEFRAMES tf, string tfStr)
    arrSymTF[idx].lastBearHidRTTime = 0;
    arrSymTF[idx].lastBullRegRTTime = 0;
    arrSymTF[idx].lastBullHidRTTime = 0;
-   SSE_ResetPending(arrSymTF[idx].pendingBearReg2);
-   SSE_ResetPending(arrSymTF[idx].pendingBearHid2);
-   SSE_ResetPending(arrSymTF[idx].pendingBullReg2);
-   SSE_ResetPending(arrSymTF[idx].pendingBullHid2);
-   arrSymTF[idx].lastStrongEmitBar = 0;
-   arrSymTF[idx].lastStrongGrade = "";
+   arrSymTF[idx].firedBearReg = 0;
+   arrSymTF[idx].firedBearHid = 0;
+   arrSymTF[idx].firedBullReg = 0;
+   arrSymTF[idx].firedBullHid = 0;
    ArraySetAsSeries(arrSymTF[idx].rsiBuf, true);
    return idx;
 }
 
-//--- Signal output ---------------------------------------------------------
+//+------------------------------------------------------------------+
+//| SIGNAL OUTPUT FUNCTIONS                                          |
+//+------------------------------------------------------------------+
 void SendDivergenceNotify(string sym, string tfStr, string divType, string direction, string timeStr)
 {
    if(!EnablePushNotify) return;
    string msg = StringFormat("[IND] %s %s %s %s Div | %s", sym, tfStr, direction, divType, timeStr);
-   if(SendNotification(msg)) Print("Push sent: ", msg);
-   else Print("Push FAILED! Error: ", GetLastError());
+   if(SendNotification(msg))
+      Print("Push sent: ", msg);
+   else
+      Print("Push FAILED! Error: ", GetLastError());
 }
 
-void WriteStrongSignalToGV(int idx, string sym, string tfStr, string type, double entryPrice, double slPrice, double highPrice, double lowPrice, bool isStrong, string divType, datetime signalTime, double score = 0, string signalKey = "")
+void WriteStrongSignalToGV(string sym, string tfStr, string type, double entryPrice, double slPrice, double highPrice, double lowPrice, bool isStrong, string divType, datetime signalTime, double score = 0)
 {
    if(!EnableSignalOutput || !isStrong) return;
    if(!IsValidSLForDirection(type, entryPrice, slPrice)) return;
    datetime nowGmt7 = TimeGMT7();
    datetime sigGmt7 = (signalTime > 0) ? ServerTimeToGMT7(signalTime) : nowGmt7;
+
    string prefix = "DIVSIGNAL_";
    GlobalVariableSet(prefix + "TYPE", type == "SELL" ? -1 : 1);
    GlobalVariableSet(prefix + "ORDER_TYPE", 0);
@@ -814,36 +656,20 @@ void WriteStrongSignalToGV(int idx, string sym, string tfStr, string type, doubl
    GlobalVariableSet(prefix + "ACTIVE", 1);
    GlobalVariableSet(prefix + "TF", StringToEnum(tfStr));
    if(score > 0) GlobalVariableSet(prefix + "SCORE", score);
-
-   bool allowQueueWrite = true;
-   if(idx >= 0 && idx < ArraySize(arrSymTF) && signalKey != "")
+   int q = FileOpen("DIVSIGNAL_QUEUE.txt", FILE_READ | FILE_WRITE | FILE_TXT | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE);
+   if(q != INVALID_HANDLE)
    {
-      if(signalKey == arrSymTF[idx].lastQueueSignalKey &&
-         (nowGmt7 - arrSymTF[idx].lastQueueSignalTime) < MathMax(1, ServerResendSeconds))
-      {
-         allowQueueWrite = false;
-      }
-      else
-      {
-         arrSymTF[idx].lastQueueSignalKey = signalKey;
-         arrSymTF[idx].lastQueueSignalTime = nowGmt7;
-      }
+      FileSeek(q, 0, SEEK_END);
+      string queueLine = StringFormat("%s|%s|%s|%s|%d|%.8f|%.8f|%.2f|%d\r\n", sym, tfStr, type, divType, (int)sigGmt7, entryPrice, slPrice, score, (int)nowGmt7);
+      FileWriteString(q, queueLine);
+      FileClose(q);
    }
-
-   if(allowQueueWrite)
-   {
-      int q = FileOpen("DIVSIGNAL_QUEUE.txt", FILE_READ | FILE_WRITE | FILE_TXT | FILE_COMMON | FILE_SHARE_READ | FILE_SHARE_WRITE);
-      if(q != INVALID_HANDLE)
-      {
-         FileSeek(q, 0, SEEK_END);
-         string queueLine = StringFormat("%s|%s|%s|%s|%d|%.8f|%.8f|%.2f|%d\r\n", sym, tfStr, type, divType, (int)sigGmt7, entryPrice, slPrice, score, (int)nowGmt7);
-         FileWriteString(q, queueLine);
-         FileClose(q);
-      }
-   }
-
    int h = FileOpen("DIVSIGNAL_SYMBOL.txt", FILE_WRITE | FILE_TXT | FILE_COMMON);
-   if(h != INVALID_HANDLE) { FileWriteString(h, sym + "|" + tfStr + "|" + type); FileClose(h); }
+   if(h != INVALID_HANDLE)
+   {
+      FileWriteString(h, sym + "|" + tfStr + "|" + type);
+      FileClose(h);
+   }
 }
 
 void WriteHistoricalDivergence(string sym, string tfStr, bool isBearish, bool isRegular, datetime t1, double rsi1, double price1, datetime t2, double rsi2, double price2, double volRatio)
@@ -856,7 +682,11 @@ void WriteHistoricalDivergence(string sym, string tfStr, bool isBearish, bool is
    for(int i = 0; i < 20; i++)
    {
       string key = prefix + "HIST_" + type + "_" + IntegerToString(i) + "_TIME";
-      if(!GlobalVariableCheck(key)) { slot = i; break; }
+      if(!GlobalVariableCheck(key))
+      {
+         slot = i;
+         break;
+      }
       else
       {
          datetime t = (datetime)GlobalVariableGet(key);
@@ -899,10 +729,15 @@ void ClearInactiveRTDivergence(string sym, string tfStr, ENUM_TIMEFRAMES tf)
 {
    string prefix = "DIVDATA_" + sym + "_" + tfStr + "_";
    datetime nowGmt7 = TimeGMT7();
+
    if(GlobalVariableCheck(prefix + "BEAR_ACTIVE") && GlobalVariableGet(prefix + "BEAR_ACTIVE") == 1)
    {
       bool shouldClear = false;
-      if(GlobalVariableCheck(prefix + "BEAR_TIME")) { if(nowGmt7 - (datetime)GlobalVariableGet(prefix + "BEAR_TIME") > 10) shouldClear = true; }
+      if(GlobalVariableCheck(prefix + "BEAR_TIME"))
+      {
+         if(nowGmt7 - (datetime)GlobalVariableGet(prefix + "BEAR_TIME") > 10)
+            shouldClear = true;
+      }
       else shouldClear = true;
       if(!shouldClear && GlobalVariableCheck(prefix + "BEAR_T2"))
       {
@@ -912,14 +747,21 @@ void ClearInactiveRTDivergence(string sym, string tfStr, ENUM_TIMEFRAMES tf)
          int divShift = iBarShift(sym, tf, t2);
          if(divShift >= 0 && curShift >= 0)
             for(int i = divShift - 1; i >= curShift; i--)
-               if(iHigh(sym, tf, i) > price2) { shouldClear = true; break; }
+               if(iHigh(sym, tf, i) > price2)
+               { shouldClear = true; break; }
       }
-      if(shouldClear) GlobalVariableSet(prefix + "BEAR_ACTIVE", 0);
+      if(shouldClear)
+         GlobalVariableSet(prefix + "BEAR_ACTIVE", 0);
    }
+
    if(GlobalVariableCheck(prefix + "BULL_ACTIVE") && GlobalVariableGet(prefix + "BULL_ACTIVE") == 1)
    {
       bool shouldClear = false;
-      if(GlobalVariableCheck(prefix + "BULL_TIME")) { if(nowGmt7 - (datetime)GlobalVariableGet(prefix + "BULL_TIME") > 10) shouldClear = true; }
+      if(GlobalVariableCheck(prefix + "BULL_TIME"))
+      {
+         if(nowGmt7 - (datetime)GlobalVariableGet(prefix + "BULL_TIME") > 10)
+            shouldClear = true;
+      }
       else shouldClear = true;
       if(!shouldClear && GlobalVariableCheck(prefix + "BULL_T2"))
       {
@@ -929,9 +771,11 @@ void ClearInactiveRTDivergence(string sym, string tfStr, ENUM_TIMEFRAMES tf)
          int divShift = iBarShift(sym, tf, t2);
          if(divShift >= 0 && curShift >= 0)
             for(int i = divShift - 1; i >= curShift; i--)
-               if(iLow(sym, tf, i) < price2) { shouldClear = true; break; }
+               if(iLow(sym, tf, i) < price2)
+               { shouldClear = true; break; }
       }
-      if(shouldClear) GlobalVariableSet(prefix + "BULL_ACTIVE", 0);
+      if(shouldClear)
+         GlobalVariableSet(prefix + "BULL_ACTIVE", 0);
    }
 }
 
@@ -968,7 +812,7 @@ void PrintStrongSignalOnce(SSymbolTFData &data, string sym, string tfStr, string
    datetime gmt7Time = ServerTimeToGMT7(signalTime);
    int digits = (int)SymbolInfoInteger(sym, SYMBOL_DIGITS);
    if(digits <= 0) digits = 5;
-   Print("STRONG SENT: ", sym, " ", tfStr, " ", type, " ", divType, " Entry=", DoubleToString(entryPrice, digits), " SL=", DoubleToString(slPrice, digits), " Time=", TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES));
+   Print("STRONG SIGNAL SENT: ", sym, " ", tfStr, " ", type, " ", divType, " Entry=", DoubleToString(entryPrice, digits), " SL=", DoubleToString(slPrice, digits), " Time=", TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES));
    data.lastStrongSignalKey = signalKey;
    data.lastStrongSignalPrintTime = TimeGMT7();
 }
@@ -985,10 +829,9 @@ void PrintRTSignalChange(int currentRTCount, string comment)
 
 void AddTodaySignal(string sym, string tfStr, string type, string divType, string signalType, datetime time1, datetime time2, double price1, double price2, double rsi1, double rsi2)
 {
-   datetime t1Gmt7 = (time1 > 0) ? ServerTimeToGMT7(time1) : ServerTimeToGMT7(time2);
-   datetime t2Gmt7 = (time2 > 0) ? ServerTimeToGMT7(time2) : t1Gmt7;
    for(int i = 0; i < g_todaySignalCount; i++)
-      if(g_todaySignals[i].sym == sym && g_todaySignals[i].tfStr == tfStr && g_todaySignals[i].type == type && g_todaySignals[i].signalType == signalType && g_todaySignals[i].time == t2Gmt7) return;
+      if(g_todaySignals[i].sym == sym && g_todaySignals[i].tfStr == tfStr && g_todaySignals[i].type == type && g_todaySignals[i].signalType == signalType && g_todaySignals[i].time == time2)
+         return;
    int idx = g_todaySignalCount;
    ArrayResize(g_todaySignals, idx + 1);
    g_todaySignals[idx].sym = sym;
@@ -996,9 +839,9 @@ void AddTodaySignal(string sym, string tfStr, string type, string divType, strin
    g_todaySignals[idx].type = type;
    g_todaySignals[idx].divType = divType;
    g_todaySignals[idx].signalType = signalType;
-   g_todaySignals[idx].time = t2Gmt7;
-   g_todaySignals[idx].time1 = t1Gmt7;
-   g_todaySignals[idx].time2 = t2Gmt7;
+   g_todaySignals[idx].time = time2;
+   g_todaySignals[idx].time1 = (time1 > 0) ? time1 : time2;
+   g_todaySignals[idx].time2 = (time2 > 0) ? time2 : time1;
    g_todaySignals[idx].price1 = price1;
    g_todaySignals[idx].price2 = price2;
    g_todaySignals[idx].rsi1 = rsi1;
@@ -1036,7 +879,8 @@ void CleanupInvalidRTTodaySignals()
          string type = g_todaySignals[i].type;
          if(!GlobalVariableCheck(prefix + type + "_ACTIVE") || GlobalVariableGet(prefix + type + "_ACTIVE") == 0)
          {
-            if(i < g_todaySignalCount - 1) g_todaySignals[i] = g_todaySignals[g_todaySignalCount - 1];
+            if(i < g_todaySignalCount - 1)
+               g_todaySignals[i] = g_todaySignals[g_todaySignalCount - 1];
             g_todaySignalCount--;
          }
       }
@@ -1050,9 +894,11 @@ void ClearOldTodaySignals()
    int validCount = 0;
    for(int i = 0; i < g_todaySignalCount; i++)
    {
-      if(g_todaySignals[i].time >= todayStartGMT7)
+      datetime signalGMT7 = ServerTimeToGMT7(g_todaySignals[i].time);
+      if(signalGMT7 >= todayStartGMT7)
       {
-         if(validCount != i) g_todaySignals[validCount] = g_todaySignals[i];
+         if(validCount != i)
+            g_todaySignals[validCount] = g_todaySignals[i];
          validCount++;
       }
    }
@@ -1062,120 +908,197 @@ void ClearOldTodaySignals()
 string BuildTodaySignalsDisplay()
 {
    CleanupInvalidRTTodaySignals();
+
+   for(int i = 0; i < g_todaySignalCount - 1; i++)
+      for(int j = i + 1; j < g_todaySignalCount; j++)
+         if(ServerTimeToGMT7(g_todaySignals[i].time) < ServerTimeToGMT7(g_todaySignals[j].time))
+         {
+            STodaySignal tmp = g_todaySignals[i];
+            g_todaySignals[i] = g_todaySignals[j];
+            g_todaySignals[j] = tmp;
+         }
    PublishTodaySignals();
-   SyncTodaySignalsToServer(false);
-   string display = "\nTODAY SIGNALS - " + IntegerToString(g_todaySignalCount) + " signals\n \n";
+
+   string display = "\nTODAY SIGNALS - " + IntegerToString(g_todaySignalCount) + " signals\n";
+
    if(g_todaySignalCount > 0)
    {
-      for(int i = 0; i < g_todaySignalCount - 1; i++)
-         for(int j = i + 1; j < g_todaySignalCount; j++)
-            if(g_todaySignals[i].time < g_todaySignals[j].time)
-            { STodaySignal tmp = g_todaySignals[i]; g_todaySignals[i] = g_todaySignals[j]; g_todaySignals[j] = tmp; }
       for(int i = 0; i < g_todaySignalCount; i++)
       {
          string icon = (g_todaySignals[i].type == "BEAR") ? "[SELL]" : "[BUY]";
          string sigTag = (g_todaySignals[i].signalType == "RT") ? " [RT]" : "";
-         string timeStr = TimeToString(g_todaySignals[i].time, TIME_MINUTES);
+         datetime gmt7Time = ServerTimeToGMT7(g_todaySignals[i].time);
+         string timeStr = TimeToString(gmt7Time, TIME_MINUTES);
          display += StringFormat("%s%s %s %s [%s] %s\n", icon, sigTag, g_todaySignals[i].sym, g_todaySignals[i].tfStr, g_todaySignals[i].divType, timeStr);
       }
    }
-   else display += "No signals yet\n";
-   display += "----------------------------------------\n";
+   else
+   {
+      display += "No signals yet\n";
+   }
+
    return display;
 }
 
-//--- Display --------------------------------------------------------------
+//+------------------------------------------------------------------+
+//| DISPLAY FUNCTIONS                                                |
+//+------------------------------------------------------------------+
+string BuildConfigCommentLine()
+{
+   string tfs = "";
+   if(EnableM15) tfs += "M15";
+   if(EnableH1)  tfs += (tfs != "" ? "+H1" : "H1");
+   if(tfs == "") tfs = "NONE";
+
+   int startH = GetGvInt("GV_Dash_TradingStartHour", ScanStartHour);
+   int endH   = GetGvInt("GV_Dash_TradingEndHour", ScanEndHour);
+   string hrStr = IsTimeFilterEnabledEffective()
+      ? StringFormat("%02d-%02dh GMT+7", startH, endH)
+      : "24/7";
+
+   string newsStr = IsNewsFilterEnabledEffective()
+      ? (g_isNewsBlocked ? "News:BLOCK" : "News:OK")
+      : "News:OFF";
+
+   string rejStr = StringFormat("RT:SimpleClose");
+
+   return StringFormat("// TF:%s | %s | %s | Vol>=%.1f | %s | EA:%s",
+                       tfs, hrStr, newsStr, VolumeAutoRatio, rejStr,
+                       PublishToDirectEA_GV ? "ON" : "OFF");
+}
+
 void Draw(string divergenceComment)
 {
    SHudConfig hud = GetHudConfig();
-   if(!hud.enabled) { ClearAll(); return; }
+   if(!hud.enabled)
+   {
+      ClearAll();
+      return;
+   }
+
+   for(int i = ObjectsTotal(0) - 1; i >= 0; i--)
+   {
+      string name = ObjectName(0, i);
+      if(StringFind(name, P + "LINE_DECOR_") == 0 || StringFind(name, P + "FEATURES") == 0)
+         ObjectDelete(0, name);
+   }
+
    int rowH = 18;
    int y = hud.topMargin;
+
    if(hud.showHeader)
    {
       datetime gmt7Time = TimeGMT7();
       string timeStr = TimeToString(gmt7Time, TIME_MINUTES | TIME_SECONDS);
       string dotChar = g_heartbeatState ? "●" : "○";
-      string speedStr = (g_lastScanDurationMs >= 1000) ? DoubleToString((double)g_lastScanDurationMs / 1000.0, 1) + "s" : IntegerToString((int)g_lastScanDurationMs) + "ms";
-      string timeFilterStr = EnableTimeFilter ? " | " + IntegerToString(ScanStartHour) + "h-" + IntegerToString(ScanEndHour) + "h" : " | 24/7";
-      string line1Status = StringFormat("%s %s | %s | %s%s", dotChar, speedStr, g_statusText, timeStr, timeFilterStr);
+      string speedStr = (g_lastScanDurationMs >= 1000)
+         ? DoubleToString((double)g_lastScanDurationMs / 1000.0, 1) + "s"
+         : IntegerToString((int)g_lastScanDurationMs) + "ms";
+
+      string line1Status = StringFormat("%s %s | %s | %s",
+                                       dotChar, speedStr, g_statusText, timeStr);
       UpdMsg("HEARTBEAT", line1Status, hud.startX, y, g_statusColor, hud.fontHeader, true);
       y += rowH + 2;
    }
-   else { string hn = P + "HEARTBEAT"; if(ObjectFind(0, hn) >= 0) ObjectDelete(0, hn); }
+   else
+   {
+      string hn = P + "HEARTBEAT";
+      if(ObjectFind(0, hn) >= 0) ObjectDelete(0, hn);
+   }
+
    if(hud.showFeatures)
    {
-      string tfListStr = "";
-      if(EnableM15) tfListStr += "M15 ";
-      if(EnableH1)  tfListStr += "H1 ";
-      string signalStatus = EnableSignalOutput ? "SIG:ON" : "SIG:OFF";
-      string notifyStatus = EnablePushNotify ? "PUSH:ON" : "PUSH:OFF";
-      string monoStatus = RT_RequireMonotonicMove ? "MONO:ON" : "MONO:OFF";
-      string newsStatus = IsNewsFilterEnabledEffective() ? (g_isNewsBlocked ? "NEWS:BLOCKED" : "NEWS:SAFE") : "NEWS:OFF";
-      string sseStatus = SSE_EnableScoring ? "SSE:ON" : "SSE:OFF";
-      string line2Features = StringFormat("%s | %s | %s | %s | %s | %s", tfListStr, signalStatus, notifyStatus, monoStatus, newsStatus, sseStatus);
-      color line2Color = g_isNewsBlocked ? clrOrangeRed : clrDimGray;
-      UpdMsg("FEATURES", line2Features, hud.startX, y, line2Color, 9, false);
-      y += rowH + 6;
+      color cfgColor = g_isNewsBlocked ? clrOrangeRed : clrSilver;
+      UpdMsg("CFG_COMMENT", BuildConfigCommentLine(), hud.startX, y, cfgColor, 9, false);
+      y += rowH + 4;
    }
-   else { string fn = P + "FEATURES"; if(ObjectFind(0, fn) >= 0) ObjectDelete(0, fn); }
-   if(hud.showHeader || hud.showFeatures)
+   else
    {
-      UpdMsg("LINE_DECOR_1", "================================================================================", hud.startX, y, clrDarkGray, 8);
-      y += 10;
+      string cn = P + "CFG_COMMENT";
+      if(ObjectFind(0, cn) >= 0) ObjectDelete(0, cn);
    }
-   else { string ln = P + "LINE_DECOR_1"; if(ObjectFind(0, ln) >= 0) ObjectDelete(0, ln); }
+
    if(divergenceComment != "" && StringFind(divergenceComment, "CRASHED") < 0)
    {
       string divLines[];
       int divCount = StringSplit(divergenceComment, '\n', divLines);
       bool inHistorical = false, inToday = false;
       int validLineCount = 0;
+
       for(int i = 0; i < divCount; i++)
       {
          if(divLines[i] == "") continue;
-         if(StringFind(divLines[i], "[M15]") >= 0 || StringFind(divLines[i], "[H1]") >= 0) { inHistorical = true; inToday = false; y += 4; }
-         if(StringFind(divLines[i], "TODAY") >= 0) { inHistorical = false; inToday = true; y += 4; }
+
+         if(StringFind(divLines[i], "[M15]") >= 0 || StringFind(divLines[i], "[H1]") >= 0)
+         {
+            inHistorical = true;
+            inToday = false;
+            y += 3;
+         }
+         if(StringFind(divLines[i], "TODAY") >= 0)
+         {
+            inHistorical = false;
+            inToday = true;
+            y += 3;
+         }
+
          if(inToday && !hud.showToday) continue;
          if(inHistorical && !hud.showHist) continue;
          if(!inToday && !inHistorical && !hud.showRT) continue;
+
          color c = clrLightBlue;
          int fontSize = hud.fontRT;
+
          if(inToday)
          {
             fontSize = hud.fontToday;
-            if(StringFind(divLines[i], "[SELL]") >= 0) c = clrLightCoral;
-            else if(StringFind(divLines[i], "[BUY]") >= 0) c = clrMediumAquamarine;
-            else if(StringFind(divLines[i], "TODAY") >= 0) c = clrOrange;
-            else c = clrDarkGray;
+            if(StringFind(divLines[i], "[SELL]") >= 0)
+               c = clrLightCoral;
+            else if(StringFind(divLines[i], "[BUY]") >= 0)
+               c = clrMediumAquamarine;
+            else if(StringFind(divLines[i], "TODAY") >= 0)
+               c = clrOrange;
+            else
+               c = clrDarkGray;
          }
          else if(inHistorical)
          {
             fontSize = hud.fontHist;
-            if(StringFind(divLines[i], "Bear") >= 0) c = clrPaleVioletRed;
-            else if(StringFind(divLines[i], "Bull") >= 0) c = clrDarkSeaGreen;
-            else c = clrGold;
+            if(StringFind(divLines[i], "Bear") >= 0)
+               c = clrPaleVioletRed;
+            else if(StringFind(divLines[i], "Bull") >= 0)
+               c = clrDarkSeaGreen;
+            else
+               c = clrGold;
          }
          else
          {
             fontSize = hud.fontRT;
-            if(StringFind(divLines[i], "SELL") >= 0) c = clrDeepPink;
-            else if(StringFind(divLines[i], "BUY") >= 0) c = clrMediumSpringGreen;
-            else if(StringFind(divLines[i], "---") >= 0) c = clrCadetBlue;
+            if(StringFind(divLines[i], "SELL") >= 0)
+               c = clrDeepPink;
+            else if(StringFind(divLines[i], "BUY") >= 0)
+               c = clrMediumSpringGreen;
+            else if(StringFind(divLines[i], "---") >= 0)
+               c = clrCadetBlue;
          }
+
          UpdMsg("DIV_" + IntegerToString(validLineCount), divLines[i], hud.startX, y, c, fontSize);
          y += (inToday || inHistorical) ? rowH - 4 : rowH;
          validLineCount++;
       }
       Cleanup(validLineCount);
    }
-   else Cleanup(0);
+   else
+   {
+      Cleanup(0);
+   }
 }
 
 void UpdMsg(string n, string t, int x, int y, color c, int fontSize = 11, bool isBold = false)
 {
    string o = P + n;
-   if(ObjectFind(0, o) < 0) ObjectCreate(0, o, OBJ_LABEL, 0, 0, 0);
+   if(ObjectFind(0, o) < 0)
+      ObjectCreate(0, o, OBJ_LABEL, 0, 0, 0);
    ObjectSetString(0, o, OBJPROP_FONT, "Consolas");
    ObjectSetInteger(0, o, OBJPROP_FONTSIZE, fontSize);
    ObjectSetInteger(0, o, OBJPROP_CORNER, CORNER_LEFT_UPPER);
@@ -1194,8 +1117,7 @@ void Cleanup(int validLineCount)
       string name = ObjectName(0, i);
       if(StringFind(name, P) != 0) continue;
       if(StringFind(name, P + "HEARTBEAT") == 0) continue;
-      if(StringFind(name, P + "FEATURES") == 0) continue;
-      if(StringFind(name, P + "LINE_DECOR_") == 0) continue;
+      if(StringFind(name, P + "CFG_COMMENT") == 0) continue;
       if(StringFind(name, P + "DIV_") == 0)
       {
          int idx_obj = (int)StringToInteger(StringSubstr(name, StringLen(P + "DIV_")));
@@ -1210,15 +1132,22 @@ void ClearAll()
    for(int i = ObjectsTotal(0) - 1; i >= 0; i--)
    {
       string n = ObjectName(0, i);
-      if(StringFind(n, P) == 0) ObjectDelete(0, n);
+      if(StringFind(n, P) == 0)
+         ObjectDelete(0, n);
    }
 }
 
-//--- OnInit ---------------------------------------------------------------
+//+------------------------------------------------------------------+
+//| ONINIT                                                            |
+//+------------------------------------------------------------------+
 int OnInit()
 {
    datetime nowGmt7 = TimeGMT7();
-   if(nowGmt7 > expiry) { MessageBox("Expired!", "EXPIRED", MB_OK | MB_ICONSTOP); return INIT_FAILED; }
+   if(nowGmt7 > expiry)
+   {
+      MessageBox("Expired!", "EXPIRED", MB_OK | MB_ICONSTOP);
+      return INIT_FAILED;
+   }
 
    EventSetTimer(1);
    SyncBrokerGMTOffset(true);
@@ -1234,25 +1163,9 @@ int OnInit()
    g_lastRTPrintTime = g_lastRTCount = 0;
    g_isNewsBlocked = false;
    g_lastNewsCheckTime = 0;
-   g_lastServerHeartbeatTime = 0;
-   g_lastTodaySyncTime = 0;
-   g_lastSyncedSymbolsJson = "";
    ArrayResize(g_todaySignals, 0);
    g_todaySignalCount = 0;
    CleanupOldSignals();
-
-   g_sseCfg.enableScoring          = SSE_EnableScoring;
-   g_sseCfg.requireHTFAlignment    = SSE_RequireHTFAlignment;
-   g_sseCfg.scoreThresholdStrong   = SSE_ScoreThresholdStrong;
-   g_sseCfg.scoreThresholdGood     = SSE_ScoreThresholdGood;
-   g_sseCfg.pendingTTLBars         = SSE_PendingTTLBars;
-   g_sseCfg.minRejectATR           = SSE_MinRejectATR;
-   g_sseCfg.freshnessMaxBars       = SSE_FreshnessMaxBars;
-   g_sseCfg.downgradeCounterTrend  = SSE_DowngradeCounterTrend;
-   g_sseCfg.atrPeriod              = 14;
-   g_sseCfg.htfMAPeriod            = 50;
-
-   GlobalVariableSet("GV_IND_PROTO_VER", INDICATOR_PROTOCOL_VERSION);
 
    string tfList = "";
    if(EnableM15) tfList += "M15 ";
@@ -1260,32 +1173,30 @@ int OnInit()
    if(tfList == "") tfList = "NONE!";
 
    Print("═══════════════════════════════════════════");
-   Print("RSI Divergence Realtime v2.1 (SSE 5-tier scoring)");
+   Print("RSI Divergence Realtime v1.17 (TimeGMT7 + TF Sync, RT SimpleClose)");
    Print("   Timeframes: ", tfList);
    Print("   GMT+7 Now: ", TimeToString(nowGmt7, TIME_DATE|TIME_SECONDS));
    Print("   Direct EA GV: ", PublishToDirectEA_GV ? "ON" : "OFF");
-   Print("   Server Sync: ", EnableServerSync ? "ON" : "OFF");
-   Print("   SSE Scoring: ", SSE_EnableScoring ? "ON" : "OFF", " | HTF Gate: ", SSE_RequireHTFAlignment ? "ON" : "OFF");
-   Print("   Score thresholds: A+>=", SSE_ScoreThresholdStrong, " A>=", SSE_ScoreThresholdGood);
-   Print("   Pending TTL: ", SSE_PendingTTLBars, " bars | Min reject: ", SSE_MinRejectATR, " ATR");
+   Print("   Server Sync: qua ServerConnector (file Common)");
    Print("═══════════════════════════════════════════");
 
    g_statusText = "RUNNING";
    g_statusColor = clrTeal;
-   SyncHeartbeatToServer("online", "Initialized: " + tfList, true);
+
    return INIT_SUCCEEDED;
 }
 
+//+------------------------------------------------------------------+
+//| ONTIMER                                                           |
+//+------------------------------------------------------------------+
 void PublishScanSymbols(string symbols)
 {
-   int h = FileOpen("DIVSCAN_SYMBOLS.txt", FILE_WRITE | FILE_TXT | FILE_COMMON);
+   int h = FileOpen("DIVSCAN_SYMBOLS.txt", FILE_WRITE | FILE_TXT | FILE_COMMON | FILE_SHARE_READ);
    if(h == INVALID_HANDLE) return;
    FileWriteString(h, IntegerToString((int)TimeGMT7()) + "#" + symbols);
    FileClose(h);
-   SyncScansToServer(symbols);
 }
 
-//--- OnTimer --------------------------------------------------------------
 void OnTimer()
 {
    datetime nowGmt7 = TimeGMT7();
@@ -1303,38 +1214,44 @@ void OnTimer()
       g_isNewsBlocked = !IsNewsSafe();
       g_lastNewsCheckTime = nowGmt7;
    }
-   else if(!IsNewsFilterEnabledEffective()) g_isNewsBlocked = false;
+   else if(!IsNewsFilterEnabledEffective())
+   {
+      g_isNewsBlocked = false;
+   }
 
    if(g_isNewsBlocked)
    {
       PublishScanSymbols("");
       g_statusColor = clrOrangeRed;
       g_statusText = "NEWS BLOCKED";
-      SyncHeartbeatToServer("warning", "News filter active", false);
       Draw("NEWS BLOCKED");
       return;
    }
 
    bool isScanTime = IsInScanTime();
    bool has_crash = false;
+
    if(g_firstScanDone)
    {
-      if(ArraySize(arrSymTF) == 0) has_crash = true;
+      if(ArraySize(arrSymTF) == 0)
+         has_crash = true;
       else
       {
          bool allInvalid = true;
          for(int i = 0; i < ArraySize(arrSymTF); i++)
-            if(arrSymTF[i].rsiHandle != INVALID_HANDLE) { allInvalid = false; break; }
+            if(arrSymTF[i].rsiHandle != INVALID_HANDLE)
+            { allInvalid = false; break; }
          if(allInvalid) has_crash = true;
-         if(!has_crash && !TerminalInfoInteger(TERMINAL_CONNECTED)) has_crash = true;
+         if(!has_crash && !TerminalInfoInteger(TERMINAL_CONNECTED))
+            has_crash = true;
       }
    }
+
    if(has_crash)
    {
       PublishScanSymbols("");
       g_statusColor = clrRed;
       g_statusText = "CRASHED!";
-      SyncHeartbeatToServer("offline", "Indicator or terminal disconnected", false);
       Draw("CRASHED");
       return;
    }
@@ -1344,7 +1261,6 @@ void OnTimer()
       PublishScanSymbols("");
       g_statusColor = clrGray;
       g_statusText = "STANDBY";
-      SyncHeartbeatToServer("online", "Standby outside scan hours", false);
       Draw("STANDBY");
       return;
    }
@@ -1362,7 +1278,6 @@ void OnTimer()
    {
       string td = BuildTodaySignalsDisplay();
       string dm = g_latestRTSignal == "" ? "Scanning..." : g_latestRTSignal;
-      SyncHeartbeatToServer("online", StringFormat("Idle tick | symTF=%d", ArraySize(arrSymTF)), false);
       Draw(dm + td);
       return;
    }
@@ -1373,45 +1288,66 @@ void OnTimer()
    string histLines[];
    datetime histTimes[];
    int histCount = 0;
+
    string scannedSymbols = "";
    int totalSymbols = SymbolsTotal(true);
    for(int s = 0; s < totalSymbols; s++)
    {
       string sym = SymbolName(s, true);
       if(IsSymbolExcluded(sym)) continue;
+
       if(EnableM15)
       {
          int idx = GetSymbolTFIndex(sym, PERIOD_M15);
          if(idx == -1) idx = InitSymTF(sym, PERIOD_M15, "M15");
-         if(sM15) { ProcessSymbolTF(idx, rtLines, rtCount, histLines, histTimes, histCount); ClearInactiveRTDivergence(sym, "M15", PERIOD_M15); }
+         if(sM15)
+         {
+            ProcessSymbolTF(idx, rtLines, rtCount, histLines, histTimes, histCount);
+            ClearInactiveRTDivergence(sym, "M15", PERIOD_M15);
+         }
          if(scannedSymbols != "") scannedSymbols += ";";
          scannedSymbols += sym + "|M15";
       }
+
       if(EnableH1)
       {
          int idx = GetSymbolTFIndex(sym, PERIOD_H1);
          if(idx == -1) idx = InitSymTF(sym, PERIOD_H1, "H1");
-         if(sH1) { ProcessSymbolTF(idx, rtLines, rtCount, histLines, histTimes, histCount); ClearInactiveRTDivergence(sym, "H1", PERIOD_H1); }
+         if(sH1)
+         {
+            ProcessSymbolTF(idx, rtLines, rtCount, histLines, histTimes, histCount);
+            ClearInactiveRTDivergence(sym, "H1", PERIOD_H1);
+         }
          if(scannedSymbols != "") scannedSymbols += ";";
          scannedSymbols += sym + "|H1";
       }
    }
    PublishScanSymbols(scannedSymbols);
    g_lastScanDurationMs = GetTickCount() - scanStartMs;
-   SyncHeartbeatToServer("online", StringFormat("Scan %ums | RT=%d | Today=%d", (int)g_lastScanDurationMs, rtCount, g_todaySignalCount), false);
 
    string dc = "";
    static string slr = "";
+
    if(rtCount > 0)
    {
       for(int i = 0; i < rtCount - 1; i++)
          for(int j = i + 1; j < rtCount; j++)
-            if(rtLines[i].time > rtLines[j].time) { SRTLine t = rtLines[i]; rtLines[i] = rtLines[j]; rtLines[j] = t; }
+            if(rtLines[i].time > rtLines[j].time)
+            {
+               SRTLine t = rtLines[i];
+               rtLines[i] = rtLines[j];
+               rtLines[j] = t;
+            }
       string gc = "--- RT SIGNALS (1/Bar) ---\n\n";
-      for(int i = 0; i < rtCount; i++) gc += rtLines[i].text + "\n";
+      for(int i = 0; i < rtCount; i++)
+         gc += rtLines[i].text + "\n";
       g_latestRTSignal = gc;
       dc = gc;
-      if(gc != slr) { PrintRTSignalChange(rtCount, gc); slr = gc; }
+      if(gc != slr)
+      {
+         PrintRTSignalChange(rtCount, gc);
+         slr = gc;
+      }
    }
    else
    {
@@ -1420,40 +1356,63 @@ void OnTimer()
       slr = "";
       g_lastRTCount = 0;
    }
+
    if(histCount > 0)
    {
       for(int i = 0; i < histCount - 1; i++)
          for(int j = i + 1; j < histCount; j++)
             if(histTimes[i] < histTimes[j])
-            { datetime t = histTimes[i]; histTimes[i] = histTimes[j]; histTimes[j] = t; string tl = histLines[i]; histLines[i] = histLines[j]; histLines[j] = tl; }
-      for(int i = 0; i < histCount; i++) dc += "\n" + histLines[i];
+            {
+               datetime t = histTimes[i];
+               histTimes[i] = histTimes[j];
+               histTimes[j] = t;
+               string tl = histLines[i];
+               histLines[i] = histLines[j];
+               histLines[j] = tl;
+            }
+      for(int i = 0; i < histCount; i++)
+         dc += "\n" + histLines[i];
    }
+
    string td = BuildTodaySignalsDisplay();
    dc += td;
    Draw(dc);
    g_firstScanDone = true;
 }
 
-//--- OnDeinit -------------------------------------------------------------
+//+------------------------------------------------------------------+
+//| ONDEINIT                                                          |
+//+------------------------------------------------------------------+
 void OnDeinit(const int reason)
 {
-   SyncHeartbeatToServer("offline", "Indicator removed/deinit: " + IntegerToString(reason), true);
    EventKillTimer();
    ClearAll();
+
+   ENUM_TIMEFRAMES tfs[];
+   string tfStrs[];
+   GetEnabledTimeframes(tfs, tfStrs);
    for(int i = 0; i < ArraySize(arrSymTF); i++)
       ClearAllDivergenceData(arrSymTF[i].sym, arrSymTF[i].tfStr);
+   for(int s = 0; s < SymbolsTotal(true); s++)
+   {
+      string sym = SymbolName(s, true);
+      for(int t = 0; t < ArraySize(tfs); t++)
+         ClearAllDivergenceData(sym, tfStrs[t]);
+   }
+
    for(int i = 0; i < ArraySize(arrSymTF); i++)
    {
-      if(arrSymTF[i].rsiHandle != INVALID_HANDLE)    IndicatorRelease(arrSymTF[i].rsiHandle);
-      if(arrSymTF[i].atrHandle != INVALID_HANDLE)    IndicatorRelease(arrSymTF[i].atrHandle);
-      if(arrSymTF[i].htfMAHandle != INVALID_HANDLE)  IndicatorRelease(arrSymTF[i].htfMAHandle);
-      if(arrSymTF[i].htfRSIHandle != INVALID_HANDLE) IndicatorRelease(arrSymTF[i].htfRSIHandle);
+      if(arrSymTF[i].rsiHandle != INVALID_HANDLE)
+         IndicatorRelease(arrSymTF[i].rsiHandle);
+      if(arrSymTF[i].atrHandle != INVALID_HANDLE)
+         IndicatorRelease(arrSymTF[i].atrHandle);
    }
+
    CleanupOldSignals();
 }
 
 //+------------------------------------------------------------------+
-//| PROCESS SYMBOL TF - V2.1 với Strong Signal Engine                |
+//| PROCESS SYMBOL TF                                                |
 //+------------------------------------------------------------------+
 void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLines[], datetime &histTimes[], int &histCount)
 {
@@ -1461,6 +1420,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
    ENUM_TIMEFRAMES tf = arrSymTF[idx].tf;
    string tfStr = arrSymTF[idx].tfStr;
    int rsiHandle = arrSymTF[idx].rsiHandle;
+
    if(rsiHandle == INVALID_HANDLE) return;
 
    int readCount = MS_BARS_DEFAULT + 50;
@@ -1478,12 +1438,14 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
    datetime bestBearT1 = 0, bestBearT2 = 0;
    bool bestBearIsReg = false;
    double bestBearVol = 0;
+
    double bestBullP1 = 0, bestBullP2 = 0, bestBullR1 = 0, bestBullR2 = 0;
    datetime bestBullT1 = 0, bestBullT2 = 0;
    bool bestBullIsReg = false;
    double bestBullVol = 0;
 
    int scanLimit = MathMax(arrSymTF[idx].lastShiftCached, MS_SwingBars);
+
    double prevHighPrice = 0, lastHighPrice = 0, prevHighRSI = 0, lastHighRSI = 0;
    datetime prevHighTime = 0, lastHighTime = 0;
    double prevLowPrice = 0, lastLowPrice = 0, prevLowRSI = 0, lastLowRSI = 0;
@@ -1498,13 +1460,17 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
          {
             datetime t = iTime(sym, tf, shift);
             double rsiVal = GetRSI(arrSymTF[idx].rsiBuf, shift);
-            int shiftRight = MathMax(0, shift - 1), shiftLeft = shift + 1;
+
+            int shiftRight = MathMax(0, shift - 1);
+            int shiftLeft  = shift + 1;
             double h = iHigh(sym, tf, shift);
             h = MathMax(h, iHigh(sym, tf, shiftLeft));
             h = MathMax(h, iHigh(sym, tf, shiftRight));
+
             lastHighShift = shift;
             prevHighPrice = lastHighPrice; prevHighRSI = lastHighRSI; prevHighTime = lastHighTime;
             lastHighPrice = h; lastHighRSI = rsiVal; lastHighTime = t;
+
             if(prevHighPrice > 0 && lastHighPrice > 0)
             {
                double h1 = prevHighPrice, h2 = lastHighPrice;
@@ -1514,6 +1480,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                bool hidBearDiv = (h2 < h1) && (r2 > r1);
                bool bearDiv = regBearDiv || hidBearDiv;
                int divShift = iBarShift(sym, tf, t2, false);
+
                if(bearDiv)
                {
                   bool highestValid = true;
@@ -1521,6 +1488,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   double maxAllowed = MathMax(h1, h2);
                   for(int i = divShift + 1; i < shift1; i++)
                      if(iHigh(sym, tf, i) > maxAllowed) { highestValid = false; break; }
+
                   if(highestValid)
                   {
                      double peakVolRatio = GetVolumeRatioAtShift(sym, divShift, tf);
@@ -1540,19 +1508,24 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
             }
          }
       }
+
       if(IsRSISwingLow(arrSymTF[idx].rsiBuf, shift))
       {
          if(MathAbs(shift - lastLowShift) >= MS_SwingBars)
          {
             datetime t = iTime(sym, tf, shift);
             double rsiVal = GetRSI(arrSymTF[idx].rsiBuf, shift);
-            int shiftRight = MathMax(0, shift - 1), shiftLeft = shift + 1;
+
+            int shiftRight = MathMax(0, shift - 1);
+            int shiftLeft  = shift + 1;
             double l = iLow(sym, tf, shift);
             l = MathMin(l, iLow(sym, tf, shiftLeft));
             l = MathMin(l, iLow(sym, tf, shiftRight));
+
             lastLowShift = shift;
             prevLowPrice = lastLowPrice; prevLowRSI = lastLowRSI; prevLowTime = lastLowTime;
             lastLowPrice = l; lastLowRSI = rsiVal; lastLowTime = t;
+
             if(prevLowPrice > 0 && lastLowPrice > 0)
             {
                double p1 = prevLowPrice, p2 = lastLowPrice;
@@ -1562,6 +1535,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                bool hidBullDiv = (p2 > p1) && (r2 < r1);
                bool bullDiv = regBullDiv || hidBullDiv;
                int divShift = iBarShift(sym, tf, t2, false);
+
                if(bullDiv)
                {
                   bool lowestValid = true;
@@ -1569,6 +1543,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                   double minAllowed = MathMin(p1, p2);
                   for(int i = divShift + 1; i < shift1; i++)
                      if(iLow(sym, tf, i) < minAllowed) { lowestValid = false; break; }
+
                   if(lowestValid)
                   {
                      double troughVolRatio = GetVolumeRatioAtShift(sym, divShift, tf);
@@ -1600,17 +1575,21 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
       string divShort = bestBearIsReg ? "Reg" : "Hid";
       arrSymTF[idx].histBearDisplay = "Bear [" + divShort + "] (" + timeStr + ")";
       arrSymTF[idx].histBearTime = bestBearT2;
+
       WriteHistoricalDivergence(sym, tfStr, true, bestBearIsReg,
                                 bestBearT1, bestBearR1, bestBearH1,
                                 bestBearT2, bestBearR2, bestBearH2, bestBearVol);
+
       ArrayResize(histLines, histCount + 1);
       ArrayResize(histTimes, histCount + 1);
       histLines[histCount] = "[" + tfStr + "] " + sym + ": " + arrSymTF[idx].histBearDisplay;
       histTimes[histCount] = bestBearT2;
       histCount++;
+
       if(gmt7Time >= todayStartGMT7)
          AddTodaySignal(sym, tfStr, "BEAR", divShort, "HIST", bestBearT1, bestBearT2, bestBearH1, bestBearH2, bestBearR1, bestBearR2);
    }
+
    if(bestBullT2 > 0)
    {
       datetime gmt7Time = ServerTimeToGMT7(bestBullT2);
@@ -1618,14 +1597,17 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
       string divShort = bestBullIsReg ? "Reg" : "Hid";
       arrSymTF[idx].histBullDisplay = "Bull [" + divShort + "] (" + timeStr + ")";
       arrSymTF[idx].histBullTime = bestBullT2;
+
       WriteHistoricalDivergence(sym, tfStr, false, bestBullIsReg,
                                 bestBullT1, bestBullR1, bestBullP1,
                                 bestBullT2, bestBullR2, bestBullP2, bestBullVol);
+
       ArrayResize(histLines, histCount + 1);
       ArrayResize(histTimes, histCount + 1);
       histLines[histCount] = "[" + tfStr + "] " + sym + ": " + arrSymTF[idx].histBullDisplay;
       histTimes[histCount] = bestBullT2;
       histCount++;
+
       if(gmt7Time >= todayStartGMT7)
          AddTodaySignal(sym, tfStr, "BULL", divShort, "HIST", bestBullT1, bestBullT2, bestBullP1, bestBullP2, bestBullR1, bestBullR2);
    }
@@ -1642,16 +1624,12 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
 
    datetime currentBarTimeForTrack = iTime(sym, tf, 0);
    double spreadVal = GetCurrentSpreadPrice(sym);
-   double avgSpreadVal = UpdateAndGetAvgSpread(idx, spreadVal);
-   double atrV = GetATRValue(idx, sym, tf, 14);
-   double htfRSI = SSE_ReadRSIFromHandle(arrSymTF[idx].htfRSIHandle);
-   bool bearHTFAligned = SSE_CheckHTFAlignmentFromHandle(sym, tf, arrSymTF[idx].htfMAHandle, true);
-   bool bullHTFAligned = SSE_CheckHTFAlignmentFromHandle(sym, tf, arrSymTF[idx].htfMAHandle, false);
 
-   //=== REALTIME BEARISH (SSE v2.1) ===
+   // REALTIME BEARISH
    if(lastHighPrice > 0 && lastHighShift >= 0)
    {
       int startBear = MathMax(0, lastHighShift - 1);
+
       double rtMaxHigh = -DBL_MAX, rsiAtMaxHigh = 0;
       datetime timeAtMaxHigh = 0;
       int rtMaxHighShift = -1;
@@ -1660,6 +1638,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
          double curH = iHigh(sym, tf, i);
          if(curH > rtMaxHigh) { rtMaxHigh = curH; rsiAtMaxHigh = GetRSI(arrSymTF[idx].rsiBuf, i); timeAtMaxHigh = iTime(sym, tf, i); rtMaxHighShift = i; }
       }
+
       double rtMaxRSI = -DBL_MAX, priceAtMaxRSI = 0;
       datetime timeAtMaxRSI = 0;
       int rtMaxRSIShift = -1;
@@ -1669,7 +1648,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
          if(curR > rtMaxRSI) { rtMaxRSI = curR; priceAtMaxRSI = iHigh(sym, tf, i); timeAtMaxRSI = iTime(sym, tf, i); rtMaxRSIShift = i; }
       }
 
-      //--- REG BEAR
+      //===== SELL REGULAR RT (simple close compare) =====
       if(rtMaxHigh > lastHighPrice && rsiAtMaxHigh < lastHighRSI && rtMaxHighShift != lastHighShift)
       {
          if(!RT_RequireMonotonicMove || IsMonotonicStructure(sym, tf, rtMaxHighShift, lastHighShift, true))
@@ -1681,66 +1660,51 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                {
                   datetime gmt7Time = ServerTimeToGMT7(timeAtMaxHigh);
                   string timeStr = TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES);
+
                   double currentPrice = SymbolInfoDouble(sym, SYMBOL_BID);
-                  int barsSinceDiv = MathMax(0, rtMaxHighShift);
-                  double rangeH = iHigh(sym, tf, rtMaxHighShift) - iLow(sym, tf, rtMaxHighShift);
-                  double barBody = (rangeH > 0) ? MathAbs(iClose(sym, tf, rtMaxHighShift) - iOpen(sym, tf, rtMaxHighShift)) / rangeH : 0.0;
-                  bool isRevCandle = IsReversalCandle(sym, tf, rtMaxHighShift);
-
-                  SStrongResult sr = SSE_Evaluate(g_sseCfg, sym, tf, true, true,
-                                                  lastHighPrice, rtMaxHigh,
-                                                  lastHighRSI, rsiAtMaxHigh,
-                                                  barsSinceDiv, peakVolRatio,
-                                                  isRevCandle, barBody,
-                                                  currentPrice, rtMaxHighShift,
-                                                  atrV, htfRSI, bearHTFAligned,
-                                                  spreadVal, avgSpreadVal);
-
-                  SPendingSignal pendCopy = arrSymTF[idx].pendingBearReg2;
-                  if(!pendCopy.active)
-                  {
-                     double closeDiv = iClose(sym, tf, rtMaxHighShift);
-                     SSE_CreatePending(pendCopy, TimeGMT7(), timeAtMaxHigh,
-                                       rtMaxHighShift, rtMaxHigh, rsiAtMaxHigh,
-                                       closeDiv, atrV, SSE_PendingTTLBars, SSE_MinRejectATR);
-                     arrSymTF[idx].pendingBearReg2 = pendCopy;
-                  }
-                  int pendTrigger = SSE_CheckPending(arrSymTF[idx].pendingBearReg2, sym, tf, true,
-                                                     currentPrice, TimeGMT7(), rtMaxHighShift, atrV);
-                  bool isStrong = sr.isStrong && (pendTrigger == 1 || (rtMaxHighShift == 0 && currentPrice < lastHighPrice));
-                  if(isStrong) { SSE_ResetPending(arrSymTF[idx].pendingBearReg2); arrSymTF[idx].lastStrongEmitBar = currentBarTime; arrSymTF[idx].lastStrongGrade = sr.grade; }
+                  double closeNewReg = iClose(sym, tf, rtMaxHighShift);
+                  double closeOldReg = iClose(sym, tf, iBarShift(sym, tf, lastHighTime, false));
+                  bool isStrong = (closeNewReg > closeOldReg) && arrSymTF[idx].firedBearReg != timeAtMaxHigh;
+                  if(isStrong)
+                     arrSymTF[idx].firedBearReg = timeAtMaxHigh;
 
                   double slSellReg = rtMaxHigh + spreadVal;
-                  string strengthTag = isStrong ? " [" + sr.grade + "]" : (sr.grade == "FILTERED" ? " [FILTERED]" : " [WEAK]");
 
                   bool shouldTrack = ShouldRetrack(idx, currentPrice, arrSymTF[idx].lastBearRegRTPrice, sym, tf, currentBarTimeForTrack, arrSymTF[idx].lastBearRegRTTime);
                   if(shouldTrack && !IsInTradeTime(timeAtMaxHigh)) shouldTrack = false;
-                  if(shouldTrack) { arrSymTF[idx].lastBearRegRTPrice = currentPrice; arrSymTF[idx].lastBearRegRTTime = currentBarTimeForTrack; }
+
+                  if(shouldTrack)
+                  {
+                     arrSymTF[idx].lastBearRegRTPrice = currentPrice;
+                     arrSymTF[idx].lastBearRegRTTime = currentBarTimeForTrack;
+                  }
+
+                  string strengthTag = isStrong ? " [STRONG]" : " [WEAK]";
 
                   ArrayResize(rtLines, rtCount + 1);
-                  rtLines[rtCount].text = "[SELL-RT] [" + tfStr + "] " + sym + " [Reg] (" + timeStr + ")" + strengthTag + " score=" + DoubleToString(sr.totalScore, 0);
+                  rtLines[rtCount].text = "[SELL-RT] [" + tfStr + "] " + sym + " [Reg] (" + timeStr + ")" + strengthTag + " [Running...]";
                   rtLines[rtCount].time = timeAtMaxHigh;
                   rtLines[rtCount].isToday = (gmt7Time >= todayStartGMT7);
                   rtCount++;
 
                   WriteRTDivergence(sym, tfStr, true, true, lastHighTime, lastHighRSI, lastHighPrice, timeAtMaxHigh, rsiAtMaxHigh, rtMaxHigh);
+
                   if(gmt7Time >= todayStartGMT7)
                      AddTodaySignal(sym, tfStr, "BEAR", "Reg", "RT", lastHighTime, timeAtMaxHigh, lastHighPrice, rtMaxHigh, lastHighRSI, rsiAtMaxHigh);
 
-                  string sigKey = sym + "|" + tfStr + "|SELL|Reg|" + IntegerToString(timeAtMaxHigh);
                   if(timeAtMaxHigh >= g_initTime && IsNewsSafe())
                   {
-                     EmitRealtimeSignal(idx, sym, tf, tfStr, "SELL", "REG", isStrong,
-                                        currentPrice, slSellReg, 0.0,
-                                        lastHighPrice, rtMaxHigh, peakVolRatio,
-                                        timeAtMaxHigh, sigKey, sr.totalScore, sr.grade);
+                     string sigKey = sym + "|" + tfStr + "|SELL|Reg|" + IntegerToString(timeAtMaxHigh);
+                     EmitRealtimeSignal(idx, sym, tf, tfStr, "SELL", "REG", isStrong, currentPrice, slSellReg, 0.0, lastHighPrice, rtMaxHigh, peakVolRatio, currentBarTimeForTrack, sigKey);
                   }
-                  if(isStrong && timeAtMaxHigh >= g_initTime && IsNewsSafe() && shouldTrack && IsValidSLForDirection("SELL", currentPrice, slSellReg))
+
+                  if(isStrong && timeAtMaxHigh >= g_initTime && IsNewsSafe() && IsInTradeTime(timeAtMaxHigh) && IsValidSLForDirection("SELL", currentPrice, slSellReg))
                   {
-                     WriteStrongSignalToGV(idx, sym, tfStr, "SELL", currentPrice, slSellReg, slSellReg, lastHighPrice, true, "REG", timeAtMaxHigh, sr.totalScore, sigKey);
+                     WriteStrongSignalToGV(sym, tfStr, "SELL", currentPrice, slSellReg, slSellReg, lastHighPrice, true, "REG", currentBarTimeForTrack);
+                     string sigKey = sym + "|" + tfStr + "|SELL|Reg|" + IntegerToString(timeAtMaxHigh);
                      PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "SELL", "Reg", currentPrice, slSellReg, timeAtMaxHigh, sigKey);
-                     Print("[SSE ", sr.grade, "] ", sym, " ", tfStr, " SELL-Reg ", sr.reason);
                   }
+
                   if(timeAtMaxHigh >= g_initTime && timeAtMaxHigh != arrSymTF[idx].lastBearNotifyBar)
                   {
                      datetime now2 = TimeGMT7();
@@ -1756,7 +1720,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
          }
       }
 
-      //--- HID BEAR
+      //===== SELL HIDDEN RT (simple close compare) =====
       if(rtMaxRSI > lastHighRSI && priceAtMaxRSI < lastHighPrice && rtMaxRSIShift != lastHighShift)
       {
          if(!RT_RequireMonotonicMove || IsMonotonicStructure(sym, tf, rtMaxRSIShift, lastHighShift, true))
@@ -1768,66 +1732,55 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                {
                   datetime gmt7Time = ServerTimeToGMT7(timeAtMaxRSI);
                   string timeStr = TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES);
-                  double currentPrice = SymbolInfoDouble(sym, SYMBOL_BID);
-                  int barsSinceDiv = MathMax(0, rtMaxRSIShift);
-                  double rangeH = iHigh(sym, tf, rtMaxRSIShift) - iLow(sym, tf, rtMaxRSIShift);
-                  double barBody = (rangeH > 0) ? MathAbs(iClose(sym, tf, rtMaxRSIShift) - iOpen(sym, tf, rtMaxRSIShift)) / rangeH : 0.0;
-                  bool isRevCandle = IsReversalCandle(sym, tf, rtMaxRSIShift);
 
-                  SStrongResult sr = SSE_Evaluate(g_sseCfg, sym, tf, true, false,
-                                                  lastHighPrice, priceAtMaxRSI,
-                                                  lastHighRSI, rtMaxRSI,
-                                                  barsSinceDiv, peakVolRatio,
-                                                  isRevCandle, barBody,
-                                                  currentPrice, rtMaxRSIShift,
-                                                  atrV, htfRSI, bearHTFAligned,
-                                                  spreadVal, avgSpreadVal);
-
-                  SPendingSignal pendCopy = arrSymTF[idx].pendingBearHid2;
-                  if(!pendCopy.active)
-                  {
-                     double closeDiv = iClose(sym, tf, rtMaxRSIShift);
-                     SSE_CreatePending(pendCopy, TimeGMT7(), timeAtMaxRSI,
-                                       rtMaxRSIShift, priceAtMaxRSI, rtMaxRSI,
-                                       closeDiv, atrV, SSE_PendingTTLBars, SSE_MinRejectATR);
-                     arrSymTF[idx].pendingBearHid2 = pendCopy;
-                  }
-                  int pendTrigger = SSE_CheckPending(arrSymTF[idx].pendingBearHid2, sym, tf, true,
-                                                     currentPrice, TimeGMT7(), rtMaxRSIShift, atrV);
                   double slHidBear = MathMax(lastHighPrice, priceAtMaxRSI);
                   double slSellHid = slHidBear + spreadVal;
-                  bool isStrong = sr.isStrong && (pendTrigger == 1 || (rtMaxRSIShift == 0 && currentPrice < slHidBear));
-                  if(isStrong) { SSE_ResetPending(arrSymTF[idx].pendingBearHid2); arrSymTF[idx].lastStrongEmitBar = currentBarTime; arrSymTF[idx].lastStrongGrade = sr.grade; }
 
-                  string strengthTag = isStrong ? " [" + sr.grade + "]" : (sr.grade == "FILTERED" ? " [FILTERED]" : " [WEAK]");
+                  double currentPrice = SymbolInfoDouble(sym, SYMBOL_BID);
+                  double closeNewHid = iClose(sym, tf, rtMaxRSIShift);
+                  double closeOldHid = iClose(sym, tf, iBarShift(sym, tf, lastHighTime, false));
+                  bool isStrong = (closeNewHid < closeOldHid) && arrSymTF[idx].firedBearHid != timeAtMaxRSI;
+                  if(isStrong)
+                     arrSymTF[idx].firedBearHid = timeAtMaxRSI;
+
                   bool shouldTrack = ShouldRetrack(idx, currentPrice, arrSymTF[idx].lastBearHidRTPrice, sym, tf, currentBarTimeForTrack, arrSymTF[idx].lastBearHidRTTime);
                   if(shouldTrack && !IsInTradeTime(timeAtMaxRSI)) shouldTrack = false;
-                  if(shouldTrack) { arrSymTF[idx].lastBearHidRTPrice = currentPrice; arrSymTF[idx].lastBearHidRTTime = currentBarTimeForTrack; }
+
+                  if(shouldTrack)
+                  {
+                     arrSymTF[idx].lastBearHidRTPrice = currentPrice;
+                     arrSymTF[idx].lastBearHidRTTime = currentBarTimeForTrack;
+                  }
+
+                  string strengthTag = isStrong ? " [STRONG]" : " [WEAK]";
 
                   ArrayResize(rtLines, rtCount + 1);
-                  rtLines[rtCount].text = "[SELL-RT] [" + tfStr + "] " + sym + " [Hid] (" + timeStr + ")" + strengthTag + " score=" + DoubleToString(sr.totalScore, 0);
+                  rtLines[rtCount].text = "[SELL-RT] [" + tfStr + "] " + sym + " [Hid] (" + timeStr + ")" + strengthTag + " [Running...]";
                   rtLines[rtCount].time = timeAtMaxRSI;
                   rtLines[rtCount].isToday = (gmt7Time >= todayStartGMT7);
                   rtCount++;
 
                   WriteRTDivergence(sym, tfStr, true, false, lastHighTime, lastHighRSI, lastHighPrice, timeAtMaxRSI, rtMaxRSI, priceAtMaxRSI);
+
                   if(gmt7Time >= todayStartGMT7)
                      AddTodaySignal(sym, tfStr, "BEAR", "Hid", "RT", lastHighTime, timeAtMaxRSI, lastHighPrice, priceAtMaxRSI, lastHighRSI, rtMaxRSI);
 
-                  string sigKey = sym + "|" + tfStr + "|SELL|Hid|" + IntegerToString(timeAtMaxRSI);
                   if(timeAtMaxRSI >= g_initTime && IsNewsSafe())
                   {
-                     EmitRealtimeSignal(idx, sym, tf, tfStr, "SELL", "HID", isStrong,
-                                        currentPrice, slSellHid, 0.0,
-                                        lastHighPrice, priceAtMaxRSI, peakVolRatio,
-                                        timeAtMaxRSI, sigKey, sr.totalScore, sr.grade);
+                     string sigKey = sym + "|" + tfStr + "|SELL|Hid|" + IntegerToString(timeAtMaxRSI);
+                     EmitRealtimeSignal(idx, sym, tf, tfStr, "SELL", "HID", isStrong, currentPrice, slSellHid, 0.0, lastHighPrice, priceAtMaxRSI, peakVolRatio, currentBarTimeForTrack, sigKey);
                   }
-                  if(isStrong && timeAtMaxRSI >= g_initTime && IsNewsSafe() && shouldTrack && IsValidSLForDirection("SELL", currentPrice, slSellHid))
+
+                  if(isStrong && timeAtMaxRSI >= g_initTime && IsNewsSafe() && IsInTradeTime(timeAtMaxRSI))
                   {
-                     WriteStrongSignalToGV(idx, sym, tfStr, "SELL", currentPrice, slSellHid, slSellHid, lastHighPrice, true, "HID", timeAtMaxRSI, sr.totalScore, sigKey);
-                     PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "SELL", "Hid", currentPrice, slSellHid, timeAtMaxRSI, sigKey);
-                     Print("[SSE ", sr.grade, "] ", sym, " ", tfStr, " SELL-Hid ", sr.reason);
+                     if(IsValidSLForDirection("SELL", currentPrice, slSellHid))
+                     {
+                        WriteStrongSignalToGV(sym, tfStr, "SELL", currentPrice, slSellHid, slSellHid, lastHighPrice, true, "HID", currentBarTimeForTrack);
+                        string sigKey = sym + "|" + tfStr + "|SELL|Hid|" + IntegerToString(timeAtMaxRSI);
+                        PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "SELL", "Hid", currentPrice, slSellHid, timeAtMaxRSI, sigKey);
+                     }
                   }
+
                   if(timeAtMaxRSI >= g_initTime && timeAtMaxRSI != arrSymTF[idx].lastBearNotifyBar)
                   {
                      datetime now2 = TimeGMT7();
@@ -1844,10 +1797,11 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
       }
    }
 
-   //=== REALTIME BULLISH (SSE v2.1) ===
+   // REALTIME BULLISH
    if(lastLowPrice > 0 && lastLowShift >= 0)
    {
       int startBull = MathMax(0, lastLowShift - 1);
+
       double rtMinLow = DBL_MAX, rsiAtMinLow = 0;
       datetime timeAtMinLow = 0;
       int rtMinLowShift = -1;
@@ -1856,6 +1810,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
          double curL = iLow(sym, tf, i);
          if(curL < rtMinLow) { rtMinLow = curL; rsiAtMinLow = GetRSI(arrSymTF[idx].rsiBuf, i); timeAtMinLow = iTime(sym, tf, i); rtMinLowShift = i; }
       }
+
       double rtMinRSI = DBL_MAX, priceAtMinRSI = 0;
       datetime timeAtMinRSI = 0;
       int rtMinRSIShift = -1;
@@ -1865,7 +1820,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
          if(curR < rtMinRSI) { rtMinRSI = curR; priceAtMinRSI = iLow(sym, tf, i); timeAtMinRSI = iTime(sym, tf, i); rtMinRSIShift = i; }
       }
 
-      //--- REG BULL
+      //===== BUY REGULAR RT (simple close compare) =====
       if(rtMinLow < lastLowPrice && rsiAtMinLow > lastLowRSI && rtMinLowShift != lastLowShift)
       {
          if(!RT_RequireMonotonicMove || IsMonotonicStructure(sym, tf, rtMinLowShift, lastLowShift, false))
@@ -1877,64 +1832,49 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                {
                   datetime gmt7Time = ServerTimeToGMT7(timeAtMinLow);
                   string timeStr = TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES);
+
                   double currentPrice = SymbolInfoDouble(sym, SYMBOL_ASK);
-                  int barsSinceDiv = MathMax(0, rtMinLowShift);
-                  double rangeH = iHigh(sym, tf, rtMinLowShift) - iLow(sym, tf, rtMinLowShift);
-                  double barBody = (rangeH > 0) ? MathAbs(iClose(sym, tf, rtMinLowShift) - iOpen(sym, tf, rtMinLowShift)) / rangeH : 0.0;
-                  bool isRevCandle = IsReversalCandle(sym, tf, rtMinLowShift);
+                  double closeNewReg = iClose(sym, tf, rtMinLowShift);
+                  double closeOldReg = iClose(sym, tf, iBarShift(sym, tf, lastLowTime, false));
+                  bool isStrong = (closeNewReg < closeOldReg) && arrSymTF[idx].firedBullReg != timeAtMinLow;
+                  if(isStrong)
+                     arrSymTF[idx].firedBullReg = timeAtMinLow;
 
-                  SStrongResult sr = SSE_Evaluate(g_sseCfg, sym, tf, false, true,
-                                                  lastLowPrice, rtMinLow,
-                                                  lastLowRSI, rsiAtMinLow,
-                                                  barsSinceDiv, troughVolRatio,
-                                                  isRevCandle, barBody,
-                                                  currentPrice, rtMinLowShift,
-                                                  atrV, htfRSI, bullHTFAligned,
-                                                  spreadVal, avgSpreadVal);
-
-                  SPendingSignal pendCopy = arrSymTF[idx].pendingBullReg2;
-                  if(!pendCopy.active)
-                  {
-                     double closeDiv = iClose(sym, tf, rtMinLowShift);
-                     SSE_CreatePending(pendCopy, TimeGMT7(), timeAtMinLow,
-                                       rtMinLowShift, rtMinLow, rsiAtMinLow,
-                                       closeDiv, atrV, SSE_PendingTTLBars, SSE_MinRejectATR);
-                     arrSymTF[idx].pendingBullReg2 = pendCopy;
-                  }
-                  int pendTrigger = SSE_CheckPending(arrSymTF[idx].pendingBullReg2, sym, tf, false,
-                                                     currentPrice, TimeGMT7(), rtMinLowShift, atrV);
-                  bool isStrong = sr.isStrong && (pendTrigger == 1 || (rtMinLowShift == 0 && currentPrice > lastLowPrice));
-                  if(isStrong) { SSE_ResetPending(arrSymTF[idx].pendingBullReg2); arrSymTF[idx].lastStrongEmitBar = currentBarTime; arrSymTF[idx].lastStrongGrade = sr.grade; }
-
-                  string strengthTag = isStrong ? " [" + sr.grade + "]" : (sr.grade == "FILTERED" ? " [FILTERED]" : " [WEAK]");
                   bool shouldTrack = ShouldRetrack(idx, currentPrice, arrSymTF[idx].lastBullRegRTPrice, sym, tf, currentBarTimeForTrack, arrSymTF[idx].lastBullRegRTTime);
                   if(shouldTrack && !IsInTradeTime(timeAtMinLow)) shouldTrack = false;
-                  if(shouldTrack) { arrSymTF[idx].lastBullRegRTPrice = currentPrice; arrSymTF[idx].lastBullRegRTTime = currentBarTimeForTrack; }
+
+                  if(shouldTrack)
+                  {
+                     arrSymTF[idx].lastBullRegRTPrice = currentPrice;
+                     arrSymTF[idx].lastBullRegRTTime = currentBarTimeForTrack;
+                  }
+
+                  string strengthTag = isStrong ? " [STRONG]" : " [WEAK]";
 
                   ArrayResize(rtLines, rtCount + 1);
-                  rtLines[rtCount].text = "[BUY-RT] [" + tfStr + "] " + sym + " [Reg] (" + timeStr + ")" + strengthTag + " score=" + DoubleToString(sr.totalScore, 0);
+                  rtLines[rtCount].text = "[BUY-RT] [" + tfStr + "] " + sym + " [Reg] (" + timeStr + ")" + strengthTag + " [Running...]";
                   rtLines[rtCount].time = timeAtMinLow;
                   rtLines[rtCount].isToday = (gmt7Time >= todayStartGMT7);
                   rtCount++;
 
                   WriteRTDivergence(sym, tfStr, false, true, lastLowTime, lastLowRSI, lastLowPrice, timeAtMinLow, rsiAtMinLow, rtMinLow);
+
                   if(gmt7Time >= todayStartGMT7)
                      AddTodaySignal(sym, tfStr, "BULL", "Reg", "RT", lastLowTime, timeAtMinLow, lastLowPrice, rtMinLow, lastLowRSI, rsiAtMinLow);
 
-                  string sigKey = sym + "|" + tfStr + "|BUY|Reg|" + IntegerToString(timeAtMinLow);
                   if(timeAtMinLow >= g_initTime && IsNewsSafe())
                   {
-                     EmitRealtimeSignal(idx, sym, tf, tfStr, "BUY", "REG", isStrong,
-                                        currentPrice, rtMinLow, 0.0,
-                                        lastLowPrice, rtMinLow, troughVolRatio,
-                                        timeAtMinLow, sigKey, sr.totalScore, sr.grade);
+                     string sigKey = sym + "|" + tfStr + "|BUY|Reg|" + IntegerToString(timeAtMinLow);
+                     EmitRealtimeSignal(idx, sym, tf, tfStr, "BUY", "REG", isStrong, currentPrice, rtMinLow, 0.0, lastLowPrice, rtMinLow, troughVolRatio, currentBarTimeForTrack, sigKey);
                   }
-                  if(isStrong && timeAtMinLow >= g_initTime && IsNewsSafe() && shouldTrack && IsValidSLForDirection("BUY", currentPrice, rtMinLow))
+
+                  if(isStrong && timeAtMinLow >= g_initTime && IsNewsSafe() && IsInTradeTime(timeAtMinLow) && IsValidSLForDirection("BUY", currentPrice, rtMinLow))
                   {
-                     WriteStrongSignalToGV(idx, sym, tfStr, "BUY", currentPrice, rtMinLow, lastHighPrice, rtMinLow, true, "REG", timeAtMinLow, sr.totalScore, sigKey);
+                     WriteStrongSignalToGV(sym, tfStr, "BUY", currentPrice, rtMinLow, lastHighPrice, rtMinLow, true, "REG", currentBarTimeForTrack);
+                     string sigKey = sym + "|" + tfStr + "|BUY|Reg|" + IntegerToString(timeAtMinLow);
                      PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "BUY", "Reg", currentPrice, rtMinLow, timeAtMinLow, sigKey);
-                     Print("[SSE ", sr.grade, "] ", sym, " ", tfStr, " BUY-Reg ", sr.reason);
                   }
+
                   if(timeAtMinLow >= g_initTime && timeAtMinLow != arrSymTF[idx].lastBullNotifyBar)
                   {
                      datetime now2 = TimeGMT7();
@@ -1950,7 +1890,7 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
          }
       }
 
-      //--- HID BULL
+      //===== BUY HIDDEN RT (simple close compare) =====
       if(rtMinRSI < lastLowRSI && priceAtMinRSI > lastLowPrice && rtMinRSIShift != lastLowShift)
       {
          if(!RT_RequireMonotonicMove || IsMonotonicStructure(sym, tf, rtMinRSIShift, lastLowShift, false))
@@ -1962,65 +1902,54 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
                {
                   datetime gmt7Time = ServerTimeToGMT7(timeAtMinRSI);
                   string timeStr = TimeToString(gmt7Time, TIME_DATE | TIME_MINUTES);
-                  double currentPrice = SymbolInfoDouble(sym, SYMBOL_ASK);
-                  int barsSinceDiv = MathMax(0, rtMinRSIShift);
-                  double rangeH = iHigh(sym, tf, rtMinRSIShift) - iLow(sym, tf, rtMinRSIShift);
-                  double barBody = (rangeH > 0) ? MathAbs(iClose(sym, tf, rtMinRSIShift) - iOpen(sym, tf, rtMinRSIShift)) / rangeH : 0.0;
-                  bool isRevCandle = IsReversalCandle(sym, tf, rtMinRSIShift);
 
-                  SStrongResult sr = SSE_Evaluate(g_sseCfg, sym, tf, false, false,
-                                                  lastLowPrice, priceAtMinRSI,
-                                                  lastLowRSI, rtMinRSI,
-                                                  barsSinceDiv, troughVolRatio,
-                                                  isRevCandle, barBody,
-                                                  currentPrice, rtMinRSIShift,
-                                                  atrV, htfRSI, bullHTFAligned,
-                                                  spreadVal, avgSpreadVal);
-
-                  SPendingSignal pendCopy = arrSymTF[idx].pendingBullHid2;
-                  if(!pendCopy.active)
-                  {
-                     double closeDiv = iClose(sym, tf, rtMinRSIShift);
-                     SSE_CreatePending(pendCopy, TimeGMT7(), timeAtMinRSI,
-                                       rtMinRSIShift, priceAtMinRSI, rtMinRSI,
-                                       closeDiv, atrV, SSE_PendingTTLBars, SSE_MinRejectATR);
-                     arrSymTF[idx].pendingBullHid2 = pendCopy;
-                  }
-                  int pendTrigger = SSE_CheckPending(arrSymTF[idx].pendingBullHid2, sym, tf, false,
-                                                     currentPrice, TimeGMT7(), rtMinRSIShift, atrV);
                   double slHidBull = MathMin(lastLowPrice, priceAtMinRSI);
-                  bool isStrong = sr.isStrong && (pendTrigger == 1 || (rtMinRSIShift == 0 && currentPrice > slHidBull));
-                  if(isStrong) { SSE_ResetPending(arrSymTF[idx].pendingBullHid2); arrSymTF[idx].lastStrongEmitBar = currentBarTime; arrSymTF[idx].lastStrongGrade = sr.grade; }
 
-                  string strengthTag = isStrong ? " [" + sr.grade + "]" : (sr.grade == "FILTERED" ? " [FILTERED]" : " [WEAK]");
+                  double currentPrice = SymbolInfoDouble(sym, SYMBOL_ASK);
+                  double closeNewHid = iClose(sym, tf, rtMinRSIShift);
+                  double closeOldHid = iClose(sym, tf, iBarShift(sym, tf, lastLowTime, false));
+                  bool isStrong = (closeNewHid > closeOldHid) && arrSymTF[idx].firedBullHid != timeAtMinRSI;
+                  if(isStrong)
+                     arrSymTF[idx].firedBullHid = timeAtMinRSI;
+
                   bool shouldTrack = ShouldRetrack(idx, currentPrice, arrSymTF[idx].lastBullHidRTPrice, sym, tf, currentBarTimeForTrack, arrSymTF[idx].lastBullHidRTTime);
                   if(shouldTrack && !IsInTradeTime(timeAtMinRSI)) shouldTrack = false;
-                  if(shouldTrack) { arrSymTF[idx].lastBullHidRTPrice = currentPrice; arrSymTF[idx].lastBullHidRTTime = currentBarTimeForTrack; }
+
+                  if(shouldTrack)
+                  {
+                     arrSymTF[idx].lastBullHidRTPrice = currentPrice;
+                     arrSymTF[idx].lastBullHidRTTime = currentBarTimeForTrack;
+                  }
+
+                  string strengthTag = isStrong ? " [STRONG]" : " [WEAK]";
 
                   ArrayResize(rtLines, rtCount + 1);
-                  rtLines[rtCount].text = "[BUY-RT] [" + tfStr + "] " + sym + " [Hid] (" + timeStr + ")" + strengthTag + " score=" + DoubleToString(sr.totalScore, 0);
+                  rtLines[rtCount].text = "[BUY-RT] [" + tfStr + "] " + sym + " [Hid] (" + timeStr + ")" + strengthTag + " [Running...]";
                   rtLines[rtCount].time = timeAtMinRSI;
                   rtLines[rtCount].isToday = (gmt7Time >= todayStartGMT7);
                   rtCount++;
 
                   WriteRTDivergence(sym, tfStr, false, false, lastLowTime, lastLowRSI, lastLowPrice, timeAtMinRSI, rtMinRSI, priceAtMinRSI);
+
                   if(gmt7Time >= todayStartGMT7)
                      AddTodaySignal(sym, tfStr, "BULL", "Hid", "RT", lastLowTime, timeAtMinRSI, lastLowPrice, priceAtMinRSI, lastLowRSI, rtMinRSI);
 
-                  string sigKey = sym + "|" + tfStr + "|BUY|Hid|" + IntegerToString(timeAtMinRSI);
                   if(timeAtMinRSI >= g_initTime && IsNewsSafe())
                   {
-                     EmitRealtimeSignal(idx, sym, tf, tfStr, "BUY", "HID", isStrong,
-                                        currentPrice, slHidBull, 0.0,
-                                        lastLowPrice, priceAtMinRSI, troughVolRatio,
-                                        timeAtMinRSI, sigKey, sr.totalScore, sr.grade);
+                     string sigKey = sym + "|" + tfStr + "|BUY|Hid|" + IntegerToString(timeAtMinRSI);
+                     EmitRealtimeSignal(idx, sym, tf, tfStr, "BUY", "HID", isStrong, currentPrice, slHidBull, 0.0, lastLowPrice, priceAtMinRSI, troughVolRatio, currentBarTimeForTrack, sigKey);
                   }
-                  if(isStrong && timeAtMinRSI >= g_initTime && IsNewsSafe() && shouldTrack && IsValidSLForDirection("BUY", currentPrice, slHidBull))
+
+                  if(isStrong && timeAtMinRSI >= g_initTime && IsNewsSafe() && IsInTradeTime(timeAtMinRSI))
                   {
-                     WriteStrongSignalToGV(idx, sym, tfStr, "BUY", currentPrice, slHidBull, lastHighPrice, lastLowPrice, true, "HID", timeAtMinRSI, sr.totalScore, sigKey);
-                     PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "BUY", "Hid", currentPrice, slHidBull, timeAtMinRSI, sigKey);
-                     Print("[SSE ", sr.grade, "] ", sym, " ", tfStr, " BUY-Hid ", sr.reason);
+                     if(IsValidSLForDirection("BUY", currentPrice, slHidBull))
+                     {
+                        WriteStrongSignalToGV(sym, tfStr, "BUY", currentPrice, slHidBull, lastHighPrice, lastLowPrice, true, "HID", currentBarTimeForTrack);
+                        string sigKey = sym + "|" + tfStr + "|BUY|Hid|" + IntegerToString(timeAtMinRSI);
+                        PrintStrongSignalOnce(arrSymTF[idx], sym, tfStr, "BUY", "Hid", currentPrice, slHidBull, timeAtMinRSI, sigKey);
+                     }
                   }
+
                   if(timeAtMinRSI >= g_initTime && timeAtMinRSI != arrSymTF[idx].lastBullNotifyBar)
                   {
                      datetime now2 = TimeGMT7();
@@ -2038,6 +1967,8 @@ void ProcessSymbolTF(int idx, SRTLine &rtLines[], int &rtCount, string &histLine
    }
 }
 
+//+------------------------------------------------------------------+
+//| ONCALCULATE                                                       |
 //+------------------------------------------------------------------+
 int OnCalculate(const int rates_total, const int prev_calculated, const datetime &time[], const double &open[], const double &high[], const double &low[], const double &close[], const long &tick_volume[], const long &volume[], const int &spread[])
 {
