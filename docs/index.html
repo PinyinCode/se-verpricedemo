@@ -222,7 +222,7 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
   letter-spacing:.3px;
 }
 
-#rsiResizeHandle,#lotResizeHandle{
+#rsiResizeHandle{
   display:block;
   min-height:14px;
   height:14px;
@@ -238,7 +238,7 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
   border-top:1px solid #34445c;
   border-bottom:1px solid #34445c;
 }
-#rsiResizeHandle:after,#lotResizeHandle:after{
+#rsiResizeHandle:after{
   content:'';
   position:absolute;
   width:52px;
@@ -250,7 +250,7 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
   transform:translateX(-50%);
 }
 #rsiResizeHandle:active:after{background:var(--purple)}
-#lotResizeHandle:active:after{background:var(--green)}
+
 
 .drag-overlay{position:absolute;inset:0;pointer-events:none;z-index:5}
 .drag-line{position:absolute;left:0;right:0;height:2px;cursor:ns-resize;pointer-events:auto;touch-action:none}
@@ -426,20 +426,10 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
   cursor:pointer;
 }
 
-.real-layer-toggles{
-  display:flex;
-  gap:10px;
-  align-items:center;
-  flex-wrap:wrap;
-  flex:0 0 auto;
-  padding:5px 10px;
-  background:#0d1929;
-  border-bottom:1px solid var(--line-soft);
-  font-size:10px;
-}
-.real-layer-toggles label{display:inline-flex;gap:4px;align-items:center;color:#aebdd0}
-.real-layer-toggles input{accent-color:var(--green);margin:0}
-.real-layer-toggles .real-layer-title{color:#8ba3bf;font-weight:700;letter-spacing:.3px}
+
+
+
+
 
 .confirm-dialog{
   width:min(440px,calc(100vw - 24px));
@@ -474,107 +464,34 @@ body.trade-fullscreen .chart-pickers select{flex:0 1 auto;min-width:0;width:clam
 .confirm-dialog .cd-foot #cdCancel,.confirm-dialog .cd-foot #cpCancel{background:#192941}
 .confirm-dialog .cd-foot #cdOk,.confirm-dialog .cd-foot #cpOk{background:rgba(96,165,250,.16);border-color:var(--blue);color:#93c5fd}
 
-.chart-overlay-bottom{
-  display:flex;
-  flex-direction:column;
-  min-height:0;
-  overflow:hidden;
-}
-.trade-footer{
-  flex:1 1 auto;
-  min-height:0;
-  display:grid;
-  grid-template-columns:minmax(220px,1.35fr) auto minmax(170px,.85fr);
-  gap:10px 14px;
-  align-content:stretch;
-  align-items:center;
-  padding:9px 11px;
-  background:linear-gradient(180deg,#101e31,#0d1929);
-  border-top:1px solid #2a3b53;
-  overflow:auto;
-}
-.lot-block{
-  min-width:0;
-  height:100%;
-  display:flex;
-  flex-direction:column;
-  justify-content:space-between;
-  gap:4px;
-}
-.lot-block #lotResult{margin-top:0;display:flex;align-items:center;flex-wrap:wrap;gap:6px}
-.lot-block .lot-value{display:inline-block;font-size:clamp(16px,calc(12px + .06 * var(--lot-panel-h, 110px)),26px);font-weight:800;color:#62dfb3;margin:0 6px 0 0;line-height:1.15}
-.lot-controls{display:flex;align-items:center;gap:8px 12px;margin-top:2px;flex-wrap:wrap}
-.limit-preset-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 
-.btn-limit-preset{
-  padding:clamp(4px,calc(2px + .02 * var(--lot-panel-h, 110px)),7px) clamp(8px,calc(6px + .03 * var(--lot-panel-h, 110px)),12px);
-  font-size:clamp(10px,calc(9px + .015 * var(--lot-panel-h, 110px)),12px);
-  font-weight:700;
-  border-radius:6px;
-  background:#121e30;
-  border:1px solid #2a3b52;
-  color:#7f92aa;
-  opacity:.82;
-  transform:scale(1);
-  transform-origin:center;
-}
-.btn-limit-preset:hover:not(:disabled){
-  background:#18273d;
-  border-color:#3a506e;
-  color:#a8b9cf;
-  opacity:.95;
-}
-.btn-limit-preset.buy-preset{
-  background:#11202c;
-  border-color:#264552;
-  color:#6ea39a;
-}
-.btn-limit-preset.sell-preset{
-  background:#201424;
-  border-color:#4b2b3b;
-  color:#a87886;
-}
-.btn-limit-preset.mkt-preset{
-  background:#121f32;
-  border-color:#2b3e58;
-  color:#7f96b3;
-}
 
-.btn-limit-preset.selected{
-  opacity:1;
-  transform:scale(1.07);
-  padding:clamp(5px,calc(3px + .025 * var(--lot-panel-h, 110px)),8px) clamp(11px,calc(8px + .035 * var(--lot-panel-h, 110px)),15px);
-  font-size:clamp(11px,calc(10px + .018 * var(--lot-panel-h, 110px)),13px);
-  letter-spacing:.35px;
-}
-.btn-limit-preset.mkt-preset.selected{
-  background:rgba(96,165,250,.24);
-  border-color:#60a5fa;
-  color:#dbeafe;
-  box-shadow:0 0 0 2px rgba(96,165,250,.18),0 6px 16px rgba(59,130,246,.28);
-}
-.btn-limit-preset.buy-preset.selected{
-  background:rgba(39,201,149,.24);
-  border-color:#27c995;
-  color:#a7f3d0;
-  box-shadow:0 0 0 2px rgba(39,201,149,.18),0 6px 16px rgba(16,185,129,.28);
-}
-.btn-limit-preset.sell-preset.selected{
-  background:rgba(240,107,126,.26);
-  border-color:#f06b7e;
-  color:#fecdd3;
-  box-shadow:0 0 0 2px rgba(240,107,126,.20),0 6px 16px rgba(244,63,94,.30);
-}
 
-.level-toggles{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-.level-toggles label{display:inline-flex;gap:4px;align-items:center;color:#aebdd0;font-size:clamp(10px,calc(9px + .012 * var(--lot-panel-h, 110px)),12px);cursor:pointer}
-.level-toggles input{accent-color:var(--blue);margin:0}
 
-.trade-submit{display:flex;gap:8px;align-items:center;flex-wrap:wrap;justify-content:center}
-.trade-submit button{min-width:clamp(96px,calc(84px + .15 * var(--lot-panel-h, 110px)),144px);min-height:clamp(32px,calc(26px + .08 * var(--lot-panel-h, 110px)),44px);font-weight:750;padding:8px 12px;border-radius:8px;white-space:nowrap}
-#sendBuy{background:rgba(39,201,149,.12);border-color:#217c62;color:#6de3b8}
-#sendSell{background:rgba(240,107,126,.1);border-color:#8c4050;color:#ff9aaa}
-.request-state{text-align:right;line-height:1.4;max-width:340px;align-self:center}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 .statusline{padding:5px 10px;color:#8195ad;font-size:11px;border-top:1px solid var(--line);background:#0d1929}
 
 .side{padding:12px;background:linear-gradient(180deg,#111e31,#0e1929)}
@@ -711,9 +628,9 @@ body.trade-fullscreen .chart-stage #tradePanelToggle.floating-trade-toggle[aria-
   border-color:#60a5fa;color:#d8ecff;box-shadow:0 0 0 2px rgba(96,165,250,.12),0 0 14px rgba(96,165,250,.14)
 }
 body.trade-fullscreen .chart-stage #tradePanelToggle.floating-trade-toggle:hover{background:rgba(96,165,250,.22);border-color:#80baff}
-.chart-overlay-bottom.trade-panel-collapsed{height:0!important;min-height:0!important;flex:0 0 0!important;border:0;overflow:hidden}
-.chart-overlay-bottom.trade-panel-collapsed #lotResizeHandle{display:none!important}
-.chart-overlay-bottom.trade-panel-collapsed>*{display:none!important}
+
+
+
 
 .stats-dialog{width:min(1120px,calc(100vw - 20px));max-height:88dvh}
 .stats-body{padding:12px 16px 16px;overflow:auto;max-height:calc(88dvh - 58px)}
@@ -819,16 +736,16 @@ body.trade-fullscreen .chart-overlay-top .status-row>.status-strip{flex:0 1 auto
   #priceChart{height:clamp(300px,48dvh,560px)}
   #rsiChart{height:76px}
   .chart-actions #feedState{max-width:42vw}
-  .trade-footer{grid-template-columns:minmax(0,1fr) auto;gap:6px}
-  .trade-submit{grid-column:2;grid-row:1}
-  .request-state{grid-column:1/-1;text-align:left;max-width:none}
+  
+  
+  
 }
 @media (orientation:portrait) and (max-width:520px){
   .chart-pickers strong{font-size:12px}
   .chart-pickers select{padding:6px 7px;min-width:76px}
   .chart-actions button{padding:6px 8px}
   .ohlc-strip{gap:6px;font-size:9px;overflow:hidden;white-space:nowrap}
-  .trade-submit button{min-width:82px;padding:7px 8px;font-size:11px}
+  
   #priceChart{height:46dvh;min-height:260px}
   #rsiChart{height:68px}
   .entry-popup{min-width:210px;font-size:10px}
@@ -922,30 +839,12 @@ body.trade-fullscreen .chart-overlay-top .chart-actions-tools{margin-left:auto}
 body.trade-fullscreen .chart-overlay-top .chart-actions button{min-width:30px;min-height:29px;padding:4px 6px;font-size:11px;white-space:nowrap}
 body.trade-fullscreen .chart-overlay-top .status-strip{display:inline-flex;width:max-content;max-width:100%;flex:0 0 auto;align-self:flex-start;padding:3px 8px;gap:10px;font-size:10px}
 
-body.trade-fullscreen .chart-overlay-bottom{
-  position:relative;
-  z-index:15;
-  flex:0 0 auto;
-  display:flex;
-  flex-direction:column;
-  background:#0d192a;
-  border-top:1px solid #34445c;
-  overflow:hidden;
-}
-body.trade-fullscreen .chart-overlay-bottom #lotResizeHandle{width:100%;flex:0 0 14px;border-top:0}
-body.trade-fullscreen .chart-overlay-bottom .trade-footer{
-  flex:1 1 auto;
-  min-height:64px;
-  padding:8px 10px;
-  gap:8px 10px;
-  border-top:0;
-  background:transparent;
-  grid-template-columns:minmax(0,1.35fr) auto minmax(130px,.75fr);
-  overflow:auto;
-}
-body.trade-fullscreen .chart-overlay-bottom .lot-value{font-size:clamp(16px,calc(12px + .06 * var(--lot-panel-h, 110px)),25px)}
-body.trade-fullscreen .chart-overlay-bottom .trade-submit button{min-width:clamp(92px,calc(78px + .14 * var(--lot-panel-h, 110px)),136px);min-height:clamp(32px,calc(26px + .07 * var(--lot-panel-h, 110px)),42px);padding:6px 10px;font-size:11px}
-body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,calc(9.5px + .01 * var(--lot-panel-h, 110px)),12px)}
+
+
+
+
+
+
 
 @media(max-width:600px){
   body.trade-fullscreen .chart-overlay-top{top:5px;left:5px;right:5px}
@@ -959,9 +858,9 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
   body.trade-fullscreen .chart-overlay-top .chart-actions button{min-width:22px;padding:3px 4px;font-size:10px}
   body.trade-fullscreen .chart-overlay-top .chart-actions .primary-chart-action{min-width:64px;min-height:28px;padding:4px 7px;font-size:10px}
   body.trade-fullscreen .chart-overlay-top .chart-actions #feedState{display:none}
-  body.trade-fullscreen .chart-overlay-bottom .trade-footer{grid-template-columns:minmax(0,1fr) auto;gap:5px}
-  body.trade-fullscreen .chart-overlay-bottom .request-state{display:none}
-  body.trade-fullscreen .chart-overlay-bottom .trade-submit button{min-width:82px}
+  
+  
+  
   body.trade-fullscreen .chart-stage #rsiChart{height:58px}
 }
 @media(max-width:360px){
@@ -974,7 +873,7 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
 @media(orientation:landscape) and (max-height:520px){
   body.trade-fullscreen .chart-overlay-top{top:4px;left:6px;right:6px}
   body.trade-fullscreen .chart-overlay-top .chart-head{min-height:34px;padding:3px 6px}
-  body.trade-fullscreen .chart-overlay-bottom .trade-footer{padding:4px 6px}
+  
   body.trade-fullscreen .chart-stage #rsiChart{height:48px}
 }
 /* Lịch sử giao dịch trên chart */
@@ -1044,6 +943,127 @@ body.trade-fullscreen .chart-stage #tradePanelToggle.floating-trade-toggle[aria-
   body.trade-fullscreen .chart-overlay-top #moreMenu{background:rgba(12,23,39,.94)}
   body.trade-fullscreen .chart-overlay-top .chart-head #moreMenu :is(button,.control-link){border-color:transparent;text-shadow:none}
 }
+/* ===== Bảng lệnh ===== */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+/* ===== Phiếu lệnh nổi trên chart ===== */
+body.trade-fullscreen .chart-stage #tradePanelToggle.floating-trade-toggle[aria-expanded="true"]{display:none}
+.order-ticket{position:absolute;z-index:31;left:8px;bottom:34px;width:min(360px,calc(100% - 76px));max-height:calc(100% - 44px);display:flex;flex-direction:column;gap:6px;padding:7px;overflow:auto;overscroll-behavior:contain;border:1px solid #2c4160;border-radius:12px;background:rgba(11,21,37,.93);box-shadow:0 10px 30px rgba(0,0,0,.45);color:#e8eef7;cursor:default;touch-action:pan-y;text-align:left}
+.order-ticket.trade-panel-collapsed{display:none}
+.order-ticket>*{flex:0 0 auto}
+.tk-head{display:flex;gap:4px;align-items:center}
+.tp-modes{flex:1 1 auto;min-width:0;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:2px;padding:2px;background:#08111f;border:1px solid #22344d;border-radius:9px}
+.tp-modes .btn-limit-preset{min-height:30px;padding:0 2px;border:0;border-radius:7px;background:transparent;color:#8ea2bd;font-size:11px;font-weight:700;white-space:nowrap;overflow:hidden}
+.tp-modes .btn-limit-preset.selected{color:#fff}
+.tp-modes .mkt-preset.selected{background:#2563eb}
+.tp-modes .buy-preset.selected{background:#0f8a63}
+.tp-modes .sell-preset.selected{background:#bd3c53}
+.order-ticket .tk-icon{flex:0 0 28px;width:28px;height:34px;padding:0;border:0;background:transparent;color:#a9b8ca;font-size:15px}
+#ticketMore[aria-expanded="true"]{color:#fff;transform:rotate(180deg)}
+.tk-main{display:flex;align-items:stretch;gap:8px}
+.tp-lot{flex:1 1 auto;min-width:0;min-height:44px;display:flex;flex-direction:column;justify-content:center;padding:0 4px;color:#9fb1ca;font-size:11px;line-height:1.35}
+.tp-lot .lot-value{font-size:21px;font-weight:800;color:#62dfb3;font-variant-numeric:tabular-nums;line-height:1.15;white-space:nowrap}
+.tp-lot .lot-value small{font-size:10px;margin-left:3px;color:#8ea2bd}
+.tp-lot .tp-lot-risk{font-variant-numeric:tabular-nums}
+.tp-lot b{color:#eef4fc}
+.tp-lot .tp-lot-detail{display:none;margin-top:2px;font-size:10px;color:#7f93ae;font-variant-numeric:tabular-nums}
+.order-ticket.expanded .tp-lot-detail{display:block}
+.tp-submit{flex:0 0 42%;display:flex}
+.tp-submit button{flex:1 1 0;min-height:44px;padding:0 6px;border:0;border-radius:9px;font-size:14px;font-weight:800;letter-spacing:.4px;color:#fff;white-space:nowrap}
+.tp-submit #sendBuy,.tp-submit #sendBuy:hover:not(:disabled){background:#0f8a63}
+.tp-submit #sendSell,.tp-submit #sendSell:hover:not(:disabled){background:#bd3c53}
+.tp-submit button[data-lot=""]{opacity:.45}
+.tp-state{font-size:11px;line-height:1.35;color:#9fb1ca;padding:0 4px;max-height:2.8em;overflow:auto}
+.tp-state:empty{display:none}
+.tk-extra{display:none;gap:6px;padding-bottom:6px;border-bottom:1px solid #22344d}
+.order-ticket.expanded .tk-extra{display:grid}
+.tp-levels{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:5px}
+.tp-level{--c:#60a5fa;position:relative;display:grid;gap:1px;min-height:40px;padding:5px 7px;border:1px solid #22344d;border-radius:8px;background:#101c2e;cursor:pointer;min-width:0}
+.tp-level.sl{--c:#f06b7e}.tp-level.tp{--c:#27c995}
+.tp-level input{position:absolute;opacity:0;width:1px;height:1px;margin:0}
+.tp-level span{display:flex;align-items:center;gap:4px;font-size:10px;font-weight:700;color:#8ea2bd;white-space:nowrap;overflow:hidden}
+.tp-level span::before{content:"";width:6px;height:6px;flex:0 0 auto;border-radius:50%;border:1.5px solid #5d7190}
+.tp-level b{font-size:12px;font-weight:700;color:#5f718c;font-variant-numeric:tabular-nums;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tp-level:has(input:checked){border-color:var(--c);background:#14233a}
+.tp-level:has(input:checked) span{color:var(--c)}
+.tp-level:has(input:checked) span::before{background:var(--c);border-color:var(--c)}
+.tp-level:has(input:checked) b{color:#eef4fc}
+.tp-level:has(input:focus-visible){outline:2px solid #60a5fa;outline-offset:1px}
+.tp-real{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+.tp-real-title{margin-right:auto;font-size:11px;font-weight:700;color:#8ea2bd}
+.tp-real label{position:relative;cursor:pointer}
+.tp-real input{position:absolute;opacity:0;width:1px;height:1px;margin:0}
+.tp-real span{display:block}
+.tp-real label span{min-width:36px;padding:5px 7px;border:1px solid #22344d;border-radius:13px;text-align:center;font-size:10px;font-weight:700;color:#637691}
+.tp-real input:checked+span{border-color:#2f7d65;background:rgba(39,201,149,.14);color:#7ce3be}
+.tp-real input:focus-visible+span{outline:2px solid #60a5fa;outline-offset:1px}
+.tp-meta{font-size:10px;color:#7f93ae}
+.tp-meta summary{cursor:pointer;padding:2px 0}
+.tp-meta div{padding:3px 0 0;line-height:1.5;overflow-wrap:anywhere}
+@media (max-width:359px){.tk-head .btn-limit-preset{font-size:10px}.order-ticket{width:calc(100% - 70px)}.order-ticket .tk-icon{flex-basis:22px;width:22px}}
+/* khi phiếu lệnh mở, thẻ chi tiết lệnh chuyển lên phía trên để không chồng nhau */
+#priceChart.has-ticket #tradeDetail{bottom:auto;top:84px;max-height:calc(100% - 92px)}
+/* Thẻ chi tiết lệnh lịch sử */
+#tradeDetail{display:none;position:absolute;z-index:32;left:8px;bottom:70px;width:min(330px,calc(100% - 76px));max-height:calc(100% - 78px);overflow:auto;border:1px solid #35516f;border-left:4px solid var(--c,#3d8bff);border-radius:11px;background:rgba(11,21,37,.97);box-shadow:0 12px 32px rgba(0,0,0,.5);color:#e8eef7;font-size:12px;cursor:default;touch-action:pan-y}
+#tradeDetail.show{display:block}
+.td-head{display:flex;align-items:center;gap:8px;padding:6px 6px 6px 10px}
+.td-head b{font-size:13px;color:var(--c)}
+.td-head span{color:#8ea2bd;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.td-head strong{margin-left:auto;font-size:15px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.td-head button{flex:0 0 auto;width:30px;height:30px;padding:0;border:0;background:transparent;color:#a9b8ca;font-size:17px}
+.td-grid{display:grid;grid-template-columns:auto 1fr 1fr;gap:3px 10px;padding:0 10px 9px;font-variant-numeric:tabular-nums}
+.td-grid i{font-style:normal;color:#7f93ae;font-size:11px}
+.td-grid em{font-style:normal;text-align:right;white-space:nowrap}
+.td-grid .h{color:#7f93ae;font-size:10px;text-align:right}
+.td-foot{display:flex;justify-content:space-between;gap:8px;padding:6px 10px;border-top:1px solid #22344d;color:#8ea2bd;font-size:11px}
+.td-nav{display:flex;align-items:center;justify-content:space-between;padding:4px 8px;border-top:1px solid #22344d;color:#8ea2bd;font-size:11px}
+.td-nav button{min-width:44px;height:28px;padding:0}
 </style>
 <link rel="stylesheet" href="./auth.css">
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
@@ -1081,6 +1101,40 @@ body.trade-fullscreen .chart-stage #tradePanelToggle.floating-trade-toggle[aria-
         <div class="chart-stage">
           <div id="priceChart">
             <button id="tradePanelToggle" class="floating-trade-toggle" type="button" aria-expanded="false" title="Hiện/ẩn bảng lệnh">TRADE</button>
+            <div class="order-ticket trade-panel-collapsed" role="group" aria-label="Phiếu lệnh">
+              <div class="tk-head">
+              <div class="tp-modes" role="group" aria-label="Loại lệnh">
+                <button type="button" id="presetMarket" class="btn-limit-preset mkt-preset" aria-pressed="false">Market</button>
+                <button type="button" id="presetBuyLimit" class="btn-limit-preset buy-preset" aria-pressed="false">Buy Limit</button>
+                <button type="button" id="presetSellLimit" class="btn-limit-preset sell-preset" aria-pressed="false">Sell Limit</button>
+              </div>
+                <button type="button" id="ticketMore" class="tk-icon" aria-expanded="false" aria-controls="ticketExtra" aria-label="Mở rộng phiếu lệnh" title="Mức giá, chi tiết rủi ro, hiển thị lệnh MT5">⌃</button>
+                <button type="button" id="ticketClose" class="tk-icon" aria-label="Đóng phiếu lệnh" title="Đóng">✕</button>
+              </div>
+              <div id="ticketExtra" class="tk-extra">
+              <div class="tp-levels" role="group" aria-label="Đường lệnh mới trên biểu đồ">
+                <label class="tp-level entry"><input id="showEntry" type="checkbox"><span>Entry</span><b id="tpValEntry">Tắt</b></label>
+                <label class="tp-level sl"><input id="showSL" type="checkbox"><span>Stop Loss</span><b id="tpValSl">Tắt</b></label>
+                <label class="tp-level tp"><input id="showTP" type="checkbox"><span>Take Profit</span><b id="tpValTp">Tắt</b></label>
+              </div>
+              <div class="tp-real">
+                <span class="tp-real-title" title="Vị thế và lệnh chờ của tài khoản MT5 trên biểu đồ">Lệnh MT5</span>
+                <label><input id="showRealLayer" type="checkbox" checked><span>Hiện</span></label>
+                <label><input id="showRealEntry" type="checkbox" checked><span>Entry</span></label>
+                <label><input id="showRealSl" type="checkbox" checked><span>SL</span></label>
+                <label><input id="showRealTp" type="checkbox" checked><span>TP</span></label>
+              </div>
+              <details class="tp-meta"><summary>Thông số hợp đồng</summary><div id="contractMeta">Đang chờ thông số hợp đồng từ MT5...</div></details>
+              </div>
+              <div class="tk-main">
+                <div id="lotResult" class="tp-lot">Đang chờ dữ liệu MT5 để tính khối lượng.</div>
+                <div class="tp-submit">
+                  <button id="sendBuy" type="button" class="active">BUY</button>
+                  <button id="sendSell" type="button" class="sell">SELL</button>
+                </div>
+              </div>
+              <div id="requestState" class="tp-state" role="status"></div>
+            </div>
           </div>
           <div id="rsiResizeHandle" role="separator" aria-label="Kéo để thay đổi chiều cao RSI" title="Kéo để thay đổi chiều cao RSI"></div>
           <div id="rsiChart"></div>
@@ -1167,40 +1221,6 @@ body.trade-fullscreen .chart-stage #tradePanelToggle.floating-trade-toggle[aria-
             <div class="rp-row"><span>P/L</span><b id="rpPl">—</b></div>
             <div class="rp-state" id="rpState">—</div>
             <div class="rp-actions" id="rpActions"></div>
-          </div>
-        </div>
-
-        <div class="chart-overlay-bottom">
-          <div id="lotResizeHandle" role="separator" aria-label="Kéo để thay đổi chiều cao ô khối lượng" title="Kéo để thay đổi chiều cao ô khối lượng"></div>
-          <div class="real-layer-toggles">
-            <span class="real-layer-title">Dữ liệu tài khoản MT5:</span>
-            <label><input id="showRealLayer" type="checkbox" checked> Hiện</label>
-            <label><input id="showRealEntry" type="checkbox" checked> Entry</label>
-            <label><input id="showRealSl" type="checkbox" checked> SL</label>
-            <label><input id="showRealTp" type="checkbox" checked> TP</label>
-          </div>
-          <div class="trade-footer">
-            <div class="lot-block">
-              <div id="lotResult" class="small">Đang chờ dữ liệu MT5 để tính khối lượng.</div>
-              <div id="contractMeta" class="small">Đang chờ thông số hợp đồng từ MT5...</div>
-              <div class="lot-controls">
-                <div class="limit-preset-bar">
-                  <button type="button" id="presetMarket" class="btn-limit-preset mkt-preset" aria-pressed="false">MARKET</button>
-                  <button type="button" id="presetBuyLimit" class="btn-limit-preset buy-preset" aria-pressed="false">+ BUY LIMIT</button>
-                  <button type="button" id="presetSellLimit" class="btn-limit-preset sell-preset" aria-pressed="false">+ SELL LIMIT</button>
-                </div>
-                <div class="level-toggles">
-                  <label><input id="showEntry" type="checkbox"> Entry (form mới)</label>
-                  <label><input id="showSL" type="checkbox"> SL (form mới)</label>
-                  <label><input id="showTP" type="checkbox"> TP (form mới)</label>
-                </div>
-              </div>
-            </div>
-            <div class="trade-submit">
-              <button id="sendBuy" type="button" class="active">BUY</button>
-              <button id="sendSell" type="button" class="sell">SELL</button>
-            </div>
-            <div id="requestState" class="small request-state">Chỉ gửi yêu cầu lệnh vào hàng đợi MT5.</div>
           </div>
         </div>
 
@@ -4070,30 +4090,53 @@ async function refreshEmergencyModalWarning() {
 }
 $('settingsButton').addEventListener('click', () => { refreshApiKeyBox(); syncAskLineToggle(); calcLot(); $('tradeSettingsDialog').showModal(); refreshCommissionInfo(); refreshEmergencyModalWarning(); });
 
-const tradePanel = document.querySelector('.chart-overlay-bottom');
+const tradePanel = document.querySelector('.order-ticket');
 const tradePanelToggle = $('tradePanelToggle');
 function setTradePanelVisible(visible) {
   tradePanel.classList.toggle('trade-panel-collapsed', !visible);
-  tradePanelToggle.textContent = 'TRADE';
+  $('priceChart').classList.toggle('has-ticket', visible);
   tradePanelToggle.setAttribute('aria-expanded', visible ? 'true' : 'false');
-  tradePanelToggle.title = visible ? 'Thu gọn bảng lệnh' : 'Hiện bảng lệnh';
-  if (!visible) {
-    tradePanel.style.removeProperty('height');
-    tradePanel.style.removeProperty('flex');
-  } else {
-    try {
-      const savedHeight = Number(localStorage.getItem('chartLotPanelHeight'));
-      if (Number.isFinite(savedHeight) && savedHeight >= 84) setLotHeight(savedHeight);
-    } catch (_) {}
+  tradePanelToggle.title = visible ? 'Đóng phiếu lệnh' : 'Mở phiếu lệnh';
+  if (visible) {
     void syncEaSettings();
     void syncSymbolCommission($('symbol').value);
   }
-  try { localStorage.setItem('chartTradePanelVisible', visible ? '1' : '0'); } catch (_) {}
-  requestAnimationFrame(() => {
-    applyChartDimensions();
-    if (priceChart && priceChart.timeScale) priceChart.timeScale().applyOptions({ rightOffset: 10 });
-  });
+  requestAnimationFrame(() => { fitChartAboveTicket(); setLevelLines(); renderRealLines(); renderAskLine(); });
 }
+
+// Đẩy vùng giá lên trên phiếu lệnh để nến và các đường SL/TP không bị che
+let ticketMargin = '';
+function fitChartAboveTicket() {
+  const open = !tradePanel.classList.contains('trade-panel-collapsed');
+  const height = $('priceChart').clientHeight - (priceChart.timeScale().height() || 26);
+  // khi mở rộng phiếu lệnh chỉ chừa chỗ tối đa gần một nửa chart
+  const bottom = open && height > 0 ? Math.min(0.46, (tradePanel.offsetHeight + 16) / height) : 0.1;
+  const margins = { top: open ? 0.14 : 0.2, bottom: Math.round(bottom * 100) / 100 };
+  const key = margins.top + '|' + margins.bottom;
+  if (key === ticketMargin) return;
+  ticketMargin = key;
+  priceChart.priceScale('right').applyOptions({ scaleMargins: margins });
+  requestAnimationFrame(syncChartPriceOverlays);
+}
+
+function initOrderTicket() {
+  const more = $('ticketMore');
+  const setExpanded = value => {
+    tradePanel.classList.toggle('expanded', value);
+    more.setAttribute('aria-expanded', value ? 'true' : 'false');
+    try { localStorage.setItem('chartTicketExpanded', value ? '1' : '0'); } catch (_) {}
+  };
+  try { setExpanded(localStorage.getItem('chartTicketExpanded') === '1'); } catch (_) {}
+  more.addEventListener('click', () => setExpanded(!tradePanel.classList.contains('expanded')));
+  $('ticketClose').addEventListener('click', () => setTradePanelVisible(false));
+  // thao tác trên phiếu lệnh không truyền xuống chart
+  for (const type of ['pointerdown', 'mousedown', 'click', 'dblclick', 'wheel', 'touchstart', 'touchmove']) {
+    tradePanel.addEventListener(type, e => e.stopPropagation(), { passive: true });
+  }
+  new ResizeObserver(fitChartAboveTicket).observe(tradePanel);
+  new ResizeObserver(fitChartAboveTicket).observe($('priceChart'));
+}
+initOrderTicket();
 setTradePanelVisible(false);
 async function verifyEmergencyBeforeTradePanel() {
   try {
@@ -4260,6 +4303,7 @@ $('closeStatsDialog').addEventListener('click', () => $('statsDialog').close());
 $('statsDialog').addEventListener('click', e => { if (e.target === $('statsDialog')) $('statsDialog').close(); });
 
 function setLevelLines() {
+  syncTradeTiles();
   const mode = $('orderMode').value;
   for (const key of ['entry', 'sl', 'tp']) {
     const line = dragLevels[key];
@@ -4320,6 +4364,7 @@ function tradesForSymbol(symbol) {
     return {
       side: side(p), ticket: p.ticket ?? p.id, volume: Number(p.volume) || 0,
       profit: Number(p.profit) || 0, outcome: String(p.outcome || ''),
+      sl: Number(p.sl) || 0, tp: Number(p.tp) || 0, closedAt: Number(p.closed_at) || 0,
       openTime: full ? Number(p.opened_at) || 0 : 0, openPrice: full ? Number(p.entry) || 0 : 0,
       // Dữ liệu EA cũ: chỉ có giá đóng, nằm trong trường entry
       closeTime: Number(p.closed_at) || 0, closePrice: full ? Number(p.close_price) : Number(p.entry) || 0,
@@ -4327,7 +4372,7 @@ function tradesForSymbol(symbol) {
   });
   const open = (chartOpenPositions || []).filter(same).map(p => ({
     side: side(p), ticket: p.ticket ?? p.id, volume: Number(p.volume) || 0,
-    profit: Number(p.profit) || 0, outcome: 'OPEN',
+    profit: Number(p.profit) || 0, outcome: 'OPEN', sl: Number(p.sl) || 0, tp: Number(p.tp) || 0,
     openTime: Number(p.opened_at) || 0, openPrice: Number(p.entry) || 0, closeTime: 0, closePrice: 0,
   }));
   return closed.concat(open);
@@ -4361,7 +4406,7 @@ function drawTradeHistory() {
   const ctx = canvas.getContext('2d');
   ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
   ctx.clearRect(0, 0, width, height);
-  if (!tradeHistoryOpt.show) { hideTradeTip(); return; }
+  if (!tradeHistoryOpt.show) { hideTradeTip(); closeTradeDetail(); return; }
 
   const symbol = String($('symbol').value || '').toUpperCase();
   // Không vẽ khi nến trên chart vẫn là của mã khác
@@ -4385,6 +4430,19 @@ function drawTradeHistory() {
   ctx.rect(0, 0, plotWidth, plotHeight);
   ctx.clip();
   const trades = tradesForSymbol(symbol).map(t => ({ t, a: point(t.openTime, t.openPrice), b: point(t.closeTime, t.closePrice) }));
+
+  // lệnh đang xem chi tiết: đường nối đậm và khoanh tròn hai đầu
+  const picked = trades.find(x => tradeKey(x.t) === tradeDetailKeys[tradeDetailIndex]);
+  if (picked) {
+    ctx.strokeStyle = picked.t.side === 'BUY' ? TH_BUY : TH_SELL;
+    ctx.lineWidth = 2.5;
+    if (picked.a && picked.b) { ctx.beginPath(); ctx.moveTo(picked.a.x, picked.a.y); ctx.lineTo(picked.b.x, picked.b.y); ctx.stroke(); }
+    ctx.lineWidth = 1.5;
+    for (const [pt, dx] of [[picked.a, -5], [picked.b, 5]]) {
+      if (!pt) continue;
+      ctx.beginPath(); ctx.arc(pt.x + dx, pt.y, 12, 0, Math.PI * 2); ctx.strokeStyle = '#fff'; ctx.stroke();
+    }
+  }
 
   if (tradeHistoryOpt.lines) {
     ctx.setLineDash([4, 3]);
@@ -4420,6 +4478,112 @@ function drawTradeHistory() {
     }
   }
   ctx.restore();
+  if (tradeDetailKeys.length) renderTradeDetail(trades.map(x => x.t));
+}
+
+const tradeKey = t => String(t.ticket) + '|' + (t.outcome === 'OPEN' ? 'open' : t.closedAt);
+let tradeDetailCard = null, tradeDetailKeys = [], tradeDetailIndex = 0;
+
+function closeTradeDetail() {
+  if (!tradeDetailKeys.length) return;
+  tradeDetailKeys = [];
+  tradeDetailIndex = 0;
+  tradeDetailCard.classList.remove('show');
+  tradeDetailCard.dataset.html = '';
+  scheduleTradeHistory();
+}
+
+function renderTradeDetail(trades) {
+  const list = tradeDetailKeys.map(k => trades.find(t => tradeKey(t) === k));
+  const t = list[tradeDetailIndex];
+  if (!t) { closeTradeDetail(); return; }
+  const symbol = $('symbol').value;
+  const price = v => v > 0 ? fmtPrice(v, symbol) : '—';
+  const time = v => v > 0 ? formatGmt7FullTime(v).replace(' GMT+7', '') : '—';
+  const isOpen = t.outcome === 'OPEN';
+  const color = t.side === 'BUY' ? TH_BUY : TH_SELL;
+  const status = isOpen ? 'Đang mở' : t.outcome === 'TP' ? 'Chạm TP' : t.outcome === 'SL' ? 'Chạm SL' : 'Đã đóng';
+  let duration = '';
+  if (t.openTime > 0 && t.closedAt >= t.openTime && !isOpen) {
+    const min = Math.floor((t.closedAt - t.openTime) / 60);
+    duration = 'Giữ lệnh ' + (min >= 1440 ? Math.floor(min / 1440) + ' ngày ' : '') + (min >= 60 ? Math.floor(min % 1440 / 60) + ' giờ ' : '') + (min % 60) + ' phút';
+  }
+  const move = t.openPrice > 0 && t.closePrice > 0 ? (t.closePrice - t.openPrice) * (t.side === 'BUY' ? 1 : -1) : null;
+  const html =
+    '<div class="td-head"><b>' + t.side + ' ' + esc(fmtLot(t.volume)) + '</b><span>' + esc(symbol) + ' · #' + esc(t.ticket) + '</span>'
+    + '<strong style="color:' + (t.profit >= 0 ? '#27c995' : '#f06b7e') + '">' + (t.profit > 0 ? '+' : '') + esc(fmtMoney2(t.profit)) + '</strong>'
+    + '<button type="button" data-act="close" aria-label="Đóng">✕</button></div>'
+    + '<div class="td-grid"><i></i><em class="h">Giá</em><em class="h">Thời gian (GMT+7)</em>'
+    + '<i>Vào</i><em>' + price(t.openPrice) + '</em><em>' + time(t.openTime) + '</em>'
+    + '<i>Đóng</i><em>' + price(t.closePrice) + '</em><em>' + (isOpen ? 'đang mở' : time(t.closedAt)) + '</em>'
+    + '<i>SL</i><em>' + price(t.sl) + '</em><em></em><i>TP</i><em>' + price(t.tp) + '</em><em></em></div>'
+    + '<div class="td-foot"><span>' + status + (move === null ? '' : ' · ' + (move >= 0 ? '+' : '−') + fmtPrice(Math.abs(move), symbol) + ' giá') + '</span><span>' + duration + '</span></div>'
+    + (tradeDetailKeys.length > 1
+      ? '<div class="td-nav"><button type="button" data-act="prev" aria-label="Lệnh trước">‹</button><span>Lệnh ' + (tradeDetailIndex + 1) + '/' + tradeDetailKeys.length + ' tại điểm này</span><button type="button" data-act="next" aria-label="Lệnh sau">›</button></div>'
+      : '');
+  tradeDetailCard.style.setProperty('--c', color);
+  // chỉ dựng lại khi đổi để không mất thao tác chạm
+  if (tradeDetailCard.dataset.html !== html) {
+    tradeDetailCard.dataset.html = html;
+    tradeDetailCard.innerHTML = html;
+  }
+  tradeDetailCard.classList.add('show');
+}
+
+function pickTradeAt(x, y, radius) {
+  const near = tradeHistoryHits
+    .map(h => ({ trade: h.trade, d: Math.hypot(h.x - x, h.y - y) }))
+    .filter(h => h.d <= radius)
+    .sort((a, b) => a.d - b.d);
+  const keys = [...new Set(near.map(h => tradeKey(h.trade)))];
+  if (!keys.length) { closeTradeDetail(); return; }
+  tradeDetailKeys = keys;
+  tradeDetailIndex = 0;
+  hideTradeTip();
+  drawTradeHistory();
+}
+
+function initTradeDetail(host) {
+  tradeDetailCard = document.createElement('div');
+  tradeDetailCard.id = 'tradeDetail';
+  tradeDetailCard.setAttribute('role', 'dialog');
+  tradeDetailCard.setAttribute('aria-label', 'Chi tiết lệnh');
+  host.appendChild(tradeDetailCard);
+  for (const type of ['pointerdown', 'pointerup', 'click', 'dblclick', 'wheel', 'touchstart', 'touchmove']) {
+    tradeDetailCard.addEventListener(type, e => e.stopPropagation(), { passive: true });
+  }
+  tradeDetailCard.addEventListener('click', e => {
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    if (!act) return;
+    if (act === 'close') { closeTradeDetail(); return; }
+    const n = tradeDetailKeys.length;
+    tradeDetailIndex = (tradeDetailIndex + (act === 'next' ? 1 : n - 1)) % n;
+    drawTradeHistory();
+  });
+  // Chỉ tính là "nhấn" khi ngón tay gần như không di chuyển, để kéo chart không mở thẻ
+  let down = null, swallowClickUntil = 0;
+  host.addEventListener('click', e => {
+    if (Date.now() < swallowClickUntil && e.target.closest('.real-line')) { swallowClickUntil = 0; e.stopPropagation(); }
+  }, true);
+  host.addEventListener('pointerdown', e => {
+    down = e.isPrimary && e.button === 0 ? { x: e.clientX, y: e.clientY, at: Date.now() } : null;
+  }, true);
+  host.addEventListener('pointerup', e => {
+    const start = down;
+    down = null;
+    if (!start || !tradeHistoryOpt.show) return;
+    if (Math.hypot(e.clientX - start.x, e.clientY - start.y) > 8 || Date.now() - start.at > 700) return;
+    if (e.target.closest('button, .order-ticket, #tradeDetail, .real-entry-marker, .rt-signal-toast')) return;
+    const rect = host.getBoundingClientRect();
+    const x = e.clientX - rect.left, y = e.clientY - rect.top, radius = e.pointerType === 'mouse' ? 14 : 24;
+    if (e.target.closest('.real-line')) {
+      // Đường lệnh đang mở giữ thao tác cũ, trừ khi ngón tay trúng mũi tên của lệnh đã đóng
+      if (!tradeHistoryHits.some(h => h.trade.outcome !== 'OPEN' && Math.hypot(h.x - x, h.y - y) <= radius)) return;
+      swallowClickUntil = Date.now() + 500;
+    }
+    pickTradeAt(x, y, radius);
+  }, true);
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closeTradeDetail(); });
 }
 
 function hideTradeTip() {
@@ -4427,7 +4591,7 @@ function hideTradeTip() {
 }
 
 function showTradeTip(pointer) {
-  if (!pointer || !tradeHistoryOpt.show) { hideTradeTip(); return; }
+  if (!pointer || !tradeHistoryOpt.show || tradeDetailKeys.length) { hideTradeTip(); return; }
   const near = tradeHistoryHits
     .map(h => ({ ...h, d: Math.hypot(h.x - pointer.x, h.y - pointer.y) }))
     .filter(h => h.d <= 14)
@@ -4487,7 +4651,8 @@ function initTradeHistory() {
   $('showTradeHistory').addEventListener('change', e => setTradeHistoryOption('show', e.target.checked));
   $('showTradeHistoryLines').addEventListener('change', e => setTradeHistoryOption('lines', e.target.checked));
   $('showTradeHistoryProfit').addEventListener('change', e => setTradeHistoryOption('profit', e.target.checked));
-  $('symbol').addEventListener('change', () => { hideTradeTip(); scheduleTradeHistory(); });
+  $('symbol').addEventListener('change', () => { hideTradeTip(); closeTradeDetail(); scheduleTradeHistory(); });
+  initTradeDetail(host);
   priceChart.subscribeCrosshairMove(param => showTradeTip(param && param.point));
   new ResizeObserver(scheduleTradeHistory).observe(host);
   // Kéo/zoom thang giá không phát sự kiện riêng
@@ -4701,7 +4866,25 @@ function calculateEaLot(symbol, slDistance, targetRiskMoney) {
   };
 }
 
+function setSubmitLot(text) {
+  $('sendBuy').dataset.lot = text;
+  $('sendSell').dataset.lot = text;
+}
+
+// Ô Entry / SL / TP trên bảng lệnh luôn hiện đúng giá của đường tương ứng
+function syncTradeTiles() {
+  const pending = $('orderMode').value === 'PENDING';
+  for (const [box, input, out] of [['showEntry', 'entryPrice', 'tpValEntry'], ['showSL', 'slPrice', 'tpValSl'], ['showTP', 'tpPrice', 'tpValTp']]) {
+    const value = Number($(input).value);
+    let text = 'Tắt';
+    if (box === 'showEntry' && !pending) text = activePreset === 'MARKET' ? 'Thị trường' : 'Tắt';
+    else if ($(box).checked) text = value > 0 ? fmtPrice(value, $('symbol').value) : '—';
+    if ($(out).textContent !== text) $(out).textContent = text;
+  }
+}
+
 function setLotStatus(message, isError = true) {
+  setSubmitLot('');
   $('lotResult').textContent = message;
   const modalStatus = $('modalLotStatus');
   if (modalStatus) {
@@ -4723,7 +4906,7 @@ function calcLot() {
 
   if (!$('showSL').checked) {
     eaState.lastCalc = null;
-    setLotStatus('SL đang tắt — bật mục SL để tính khối lượng.');
+    setLotStatus(activePreset === null ? 'Chọn Market hoặc Limit để tính khối lượng.' : 'SL đang tắt — mở rộng (⌃) và bật Stop Loss.');
     return null;
   }
   if (!(sl > 0) || !Number.isFinite(sl)) {
@@ -4760,6 +4943,7 @@ function calcLot() {
   const calc = calculateEaLot($('symbol').value, distance, effectiveRisk);
   if (!calc.ok) {
     eaState.lastCalc = null;
+    setSubmitLot('');
     $('lotResult').innerHTML = '<div class="lot-value" style="color:var(--red)">KHÔNG ĐỦ ĐIỀU KIỆN</div><div>' + esc(calc.reason) + '</div>';
     if ($('modalLotStatus')) {
       $('modalLotStatus').textContent = calc.reason;
@@ -4776,13 +4960,17 @@ function calcLot() {
     + ' (SL $' + calc.slRisk.toFixed(2) + ' + Phí/Buf $' + (calc.commission + calc.spreadCost).toFixed(2) + ')'
     + adjTag + modeTag;
 
+  const tpValue = $('showTP').checked ? Number($('tpPrice').value) : 0;
+  const rrText = tpValue > 0 ? ' · R:R 1:' + (Math.abs(tpValue - e) / distance).toFixed(2) : '';
+  const lotText = calc.lot.toFixed(calc.lotDigits);
+  setSubmitLot(lotText);
   $('lotResult').innerHTML =
-    '<div class="lot-value">' + calc.lot.toFixed(calc.lotDigits) + ' LOT</div>'
-    + '<div>Tổng Risk: <b>$' + calc.actualRisk.toFixed(2) + '</b> / $' + effectiveRisk.toFixed(2)
-    + ' · SL: $' + calc.slRisk.toFixed(2)
-    + ' · Comm: $' + calc.commission.toFixed(2)
-    + ' · Buf: $' + calc.spreadCost.toFixed(2)
-    + adjTag + modeTag + '</div>';
+    '<div><span class="lot-value">' + lotText + '<small>LOT</small></span>'
+    + '</div><div class="tp-lot-risk">Rủi ro <b>$' + calc.actualRisk.toFixed(2) + '</b> / $' + effectiveRisk.toFixed(2) + '</div>'
+    + '<div class="tp-lot-detail">SL $' + calc.slRisk.toFixed(2)
+    + ' · Comm $' + calc.commission.toFixed(2)
+    + ' · Buf $' + calc.spreadCost.toFixed(2)
+    + rrText + adjTag + modeTag + '</div>';
 
   if ($('modalLotStatus')) {
     $('modalLotStatus').textContent = summary;
@@ -5028,7 +5216,6 @@ $('tf').addEventListener('change', () => { liveBar = null; loadedKey = ''; first
 $('refresh').addEventListener('click', () => { lastBarsSignature = ''; load(true); void syncD1Option(); void syncEaSettings(); void syncSymbolCommission($('symbol').value); });
 
 const rsiResizeHandle = $('rsiResizeHandle');
-const lotResizeHandle = $('lotResizeHandle');
 let activeResize = null, resizeStartY = 0, resizeStartHeight = 0;
 
 function setRsiHeight(height) {
@@ -5043,52 +5230,32 @@ function setRsiHeight(height) {
   applyChartDimensions();
   try { localStorage.setItem('chartRsiHeight', String(Math.round(next))); } catch (_) {}
 }
-function setLotHeight(height) {
-  const overlayBottom = document.querySelector('.chart-overlay-bottom');
-  const workspace = document.querySelector('.chart-workspace');
-  if (!overlayBottom || !workspace) return;
-  const max = Math.max(84, Math.floor(workspace.clientHeight * 0.72));
-  const next = Math.max(84, Math.min(max, height));
-  overlayBottom.style.setProperty('--lot-panel-h', String(Math.round(next)));
-  try { localStorage.setItem('chartLotPanelHeight', String(Math.round(next))); } catch (_) {}
-  if (overlayBottom.classList.contains('trade-panel-collapsed')) return;
-  overlayBottom.style.setProperty('height', next + 'px', 'important');
-  overlayBottom.style.setProperty('flex', `0 0 ${next}px`, 'important');
-  applyChartDimensions();
-}
-
 try {
   const savedRsi = Number(localStorage.getItem('chartRsiHeight'));
   if (Number.isFinite(savedRsi) && savedRsi >= 0) setRsiHeight(savedRsi);
-  const savedLot = Number(localStorage.getItem('chartLotPanelHeight'));
-  if (Number.isFinite(savedLot) && savedLot >= 84) setLotHeight(savedLot);
 } catch (_) {}
 
 function startResize(kind, e) {
   e.preventDefault();
-  const handle = kind === 'rsi' ? rsiResizeHandle : lotResizeHandle;
+  const handle = rsiResizeHandle;
   activeResize = kind;
   resizeStartY = e.clientY;
-  resizeStartHeight = kind === 'rsi'
-    ? $('rsiChart').getBoundingClientRect().height
-    : document.querySelector('.chart-overlay-bottom').getBoundingClientRect().height;
+  resizeStartHeight = $('rsiChart').getBoundingClientRect().height;
   try { handle.setPointerCapture(e.pointerId); } catch (_) {}
   document.body.style.setProperty('user-select', 'none');
   document.body.style.setProperty('-webkit-user-select', 'none');
 }
 rsiResizeHandle.addEventListener('pointerdown', e => startResize('rsi', e));
-lotResizeHandle.addEventListener('pointerdown', e => startResize('lot', e));
 document.addEventListener('pointermove', e => {
   if (!activeResize) return;
   e.preventDefault();
   const next = resizeStartHeight + resizeStartY - e.clientY;
-  if (activeResize === 'rsi') setRsiHeight(next);
-  else setLotHeight(next);
+  setRsiHeight(next);
 }, { passive: false });
 
 function stopResize(e) {
   if (!activeResize) return;
-  const handle = activeResize === 'rsi' ? rsiResizeHandle : lotResizeHandle;
+  const handle = rsiResizeHandle;
   if (e && e.pointerId != null) { try { handle.releasePointerCapture(e.pointerId); } catch (_) {} }
   activeResize = null;
   document.body.style.removeProperty('user-select');
