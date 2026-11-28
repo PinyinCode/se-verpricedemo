@@ -700,7 +700,7 @@ th{color:var(--muted);font-weight:600}
 .api-auth-warning.error{border-color:#984253;border-left-color:var(--red);background:rgba(240,107,126,.10);color:#ffb0bc}
 #tradePanelToggle{white-space:nowrap}
 body.trade-fullscreen .chart-stage #tradePanelToggle.floating-trade-toggle{
-  position:absolute;z-index:30;left:8px;bottom:calc(var(--rsi-chart-height,64px) + 22px);
+  position:absolute;z-index:30;left:8px;bottom:36px;
   min-width:58px;min-height:28px;padding:5px 9px;border:1px solid #47708f;border-radius:7px;
   background:rgba(8,15,27,.82);backdrop-filter:blur(5px);color:#b8dcff;
   font-size:10px;font-weight:800;letter-spacing:.4px;box-shadow:0 2px 8px rgba(0,0,0,.25);
@@ -739,7 +739,7 @@ body.trade-fullscreen .chart-stage #tradePanelToggle.floating-trade-toggle:hover
 .stats-updated{padding-top:10px;text-align:right}
 
 .rt-signal-toast{
-  position:absolute;z-index:35;top:54px;left:12px;width:min(330px,calc(100% - 24px));
+  position:absolute;z-index:35;top:84px;left:12px;width:min(330px,calc(100% - 24px));
   padding:10px 12px;border:1px solid #2c9b78;border-left:4px solid var(--green);
   border-radius:11px;background:rgba(12,27,43,.97);box-shadow:0 14px 36px rgba(0,0,0,.42);
   color:var(--text);display:none;backdrop-filter:blur(10px)
@@ -755,32 +755,22 @@ body.trade-fullscreen .chart-stage #tradePanelToggle.floating-trade-toggle:hover
 .rt-toast-actions button{font-size:11px;padding:4px 9px}
 .rt-toast-actions .rt-detail-btn{border-color:#238866;color:#75e5bd;background:rgba(39,201,149,.12)}
 
-.rt-reopen-btn{
-  position:fixed;
-  z-index:1200;
-  right:14px;
-  bottom:14px;
-  display:none;
-  align-items:center;
-  gap:6px;
-  padding:7px 12px;
-  border-radius:999px;
-  border:1px solid #2c9b78;
-  background:rgba(12,27,43,.96);
-  color:#75e5bd;
-  font-size:11px;
-  font-weight:800;
-  letter-spacing:.35px;
-  box-shadow:0 10px 26px rgba(0,0,0,.5);
-  backdrop-filter:blur(8px);
-  cursor:pointer;
-}
+.status-row{display:flex;align-items:center;gap:6px;min-width:0}
+body.trade-fullscreen .chart-overlay-top>.status-row{width:100%;border:0;background:none;box-shadow:none;backdrop-filter:none;pointer-events:none}
+body.trade-fullscreen .chart-overlay-top .status-row>*{pointer-events:auto}
+body.trade-fullscreen .chart-overlay-top .status-row>.status-strip{flex:0 1 auto;min-width:0;min-height:26px;border:1px solid rgba(91,117,150,.58);border-radius:8px;background:rgba(9,18,31,.88);backdrop-filter:blur(10px);box-shadow:0 5px 22px rgba(0,0,0,.28)}
+/* Nút tín hiệu realtime: nhãn nhỏ cạnh thanh trạng thái, không che chart/RSI */
+.rt-reopen-btn{position:relative;display:none;flex:0 0 auto;align-items:center;gap:5px;height:26px;padding:0 8px;border-radius:8px;border:1px solid rgba(39,201,149,.45);background:rgba(10,38,36,.9);color:#75e5bd;font:700 11px/1 ui-monospace,SFMono-Regular,monospace;white-space:nowrap;box-shadow:0 4px 14px rgba(0,0,0,.25);cursor:pointer}
 .rt-reopen-btn.show{display:inline-flex}
-.rt-reopen-btn.sell-mode{border-color:#a84457;color:#ff9aaa}
-.rt-reopen-btn .rt-dot{width:7px;height:7px;border-radius:50%;background:currentColor}
+#rtReopenText{display:contents}
+.rt-reopen-btn::after{content:"";position:absolute;left:-3px;right:-6px;top:-4px;bottom:-12px}
+.rt-reopen-btn.sell-mode{border-color:rgba(240,100,120,.5);background:rgba(44,18,30,.9);color:#ff9aaa}
+.rt-reopen-btn .rt-tf{font-weight:500;opacity:.75}
+.rt-reopen-btn .rt-more{min-width:18px;padding:2px 4px;border-radius:9px;background:rgba(255,255,255,.13);color:#e8eef7;font-size:10px;text-align:center}
+@media (max-width:359px){.rt-reopen-btn .rt-tf{display:none}.rt-reopen-btn{padding:0 6px;gap:3px}}
 
 .rt-list-panel{
-  position:fixed;z-index:1201;right:14px;bottom:14px;display:none;flex-direction:column;
+  position:fixed;z-index:1201;left:8px;top:84px;display:none;flex-direction:column;
   width:min(340px,calc(100vw - 24px));max-height:min(60dvh,440px);
   border:1px solid #35516f;border-radius:14px;background:#101b2c;color:var(--text);
   box-shadow:0 20px 60px rgba(0,0,0,.6);overflow:hidden
@@ -818,9 +808,8 @@ body.trade-fullscreen .chart-stage #tradePanelToggle.floating-trade-toggle:hover
 .rt-dialog-note{color:#9aabc2;font-size:11px;line-height:1.5}
 .rt-dialog-foot{display:flex;justify-content:flex-end;padding:0 14px 14px}
 @media(max-width:560px){
-  .rt-signal-toast{top:44px;left:7px;width:min(300px,calc(100% - 14px));padding:8px 10px}
+  .rt-signal-toast{top:84px;left:7px;width:min(300px,calc(100% - 14px));padding:8px 10px}
   .rt-toast-main{font-size:12px}
-  .rt-reopen-btn{right:10px;bottom:10px;padding:6px 10px;font-size:10px}
 }
 
 @media (orientation:portrait){
@@ -1028,6 +1017,33 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
   #moreMenu .more-system-link{order:10;font-size:13px;font-weight:700}
   #moreMenu .more-system-link::before{content:"🛠";font-size:16px}
 }
+@media (min-width:601px){
+  /* ô chọn đủ rộng, không bị nút SETTINGS đè lên */
+  body.trade-fullscreen .chart-overlay-top .chart-pickers select{width:auto;flex:0 0 auto;min-width:78px}
+}
+/* Thanh trên không khung, các nút nền trong suốt để nhìn thấy nến phía sau */
+body.trade-fullscreen .chart-overlay-top>.chart-head,
+body.trade-fullscreen .chart-overlay-top>.status-row>.status-strip{border:0;background:none;box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none}
+body.trade-fullscreen .chart-overlay-top>.chart-head{pointer-events:none}
+body.trade-fullscreen .chart-overlay-top>.chart-head :is(button,select,a,#moreMenu){pointer-events:auto}
+body.trade-fullscreen .chart-overlay-top>.status-row>.status-strip{padding-left:2px;text-shadow:0 0 3px #08101c,0 0 6px #08101c}
+body.trade-fullscreen .chart-overlay-top .chart-head :is(button,select,.control-link),
+body.trade-fullscreen .chart-overlay-top .chart-head .control-link.primary-chart-action,
+body.trade-fullscreen .chart-overlay-top .rt-reopen-btn,
+body.trade-fullscreen .chart-stage #tradePanelToggle.floating-trade-toggle{background-color:transparent;background-image:none;border:1px solid rgba(125,155,190,.38);box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none;text-shadow:0 0 3px #08101c,0 0 6px #08101c}
+body.trade-fullscreen .chart-overlay-top .rt-reopen-btn{border-color:rgba(39,201,149,.55)}
+body.trade-fullscreen .chart-overlay-top .rt-reopen-btn.sell-mode{border-color:rgba(240,100,120,.6)}
+body.trade-fullscreen .chart-overlay-top .chart-head option{background:#101b2c}
+/* trạng thái đang bật: chỉ phủ màu nhẹ */
+body.trade-fullscreen .chart-overlay-top .chart-head #tradeHistoryButton.active,
+body.trade-fullscreen .chart-overlay-top .chart-head #moreButton[aria-expanded="true"]{background-color:rgba(37,99,235,.45);border-color:#60a5fa}
+body.trade-fullscreen .chart-overlay-top .chart-head #lockButton.locked{background-color:rgba(251,191,36,.2);border-color:var(--amber)}
+body.trade-fullscreen .chart-stage #tradePanelToggle.floating-trade-toggle[aria-expanded="true"]{background-color:rgba(37,99,235,.4);border-color:#60a5fa}
+@media (max-width:600px){
+  /* menu ⋯ giữ nền tối để đọc rõ, các mục bên trong không viền */
+  body.trade-fullscreen .chart-overlay-top #moreMenu{background:rgba(12,23,39,.94)}
+  body.trade-fullscreen .chart-overlay-top .chart-head #moreMenu :is(button,.control-link){border-color:transparent;text-shadow:none}
+}
 </style>
 <link rel="stylesheet" href="./auth.css">
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
@@ -1063,10 +1079,11 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
     <div>
       <section class="panel chart-workspace">
         <div class="chart-stage">
-          <div id="priceChart"></div>
+          <div id="priceChart">
+            <button id="tradePanelToggle" class="floating-trade-toggle" type="button" aria-expanded="false" title="Hiện/ẩn bảng lệnh">TRADE</button>
+          </div>
           <div id="rsiResizeHandle" role="separator" aria-label="Kéo để thay đổi chiều cao RSI" title="Kéo để thay đổi chiều cao RSI"></div>
           <div id="rsiChart"></div>
-          <button id="tradePanelToggle" class="floating-trade-toggle" type="button" aria-expanded="false" title="Hiện/ẩn bảng lệnh">TRADE</button>
 
           <div class="chart-overlay-top">
             <div class="panel-head chart-head">
@@ -1107,10 +1124,15 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
                 </div>
               </div>
             </div>
-            <div class="status-strip" id="telemetryBar">
-              <span id="clockGMT7">--:--:--</span>
-              <span class="server-state" id="serverState" title="Đang kiểm tra"><i></i><span>--</span></span>
-              <span class="mt5-account-pill" id="mt5AccountStrip" title="Balance">Bal <b>—</b></span>
+            <div class="status-row">
+              <div class="status-strip" id="telemetryBar">
+                <span id="clockGMT7">--:--:--</span>
+                <span class="server-state" id="serverState" title="Đang kiểm tra"><i></i><span>--</span></span>
+                <span class="mt5-account-pill" id="mt5AccountStrip" title="Balance">Bal <b>—</b></span>
+              </div>
+              <button type="button" id="rtReopenBtn" class="rt-reopen-btn" title="Tín hiệu realtime hôm nay">
+                <span id="rtReopenText">RT</span>
+              </button>
             </div>
             <div class="ohlc-strip" id="ohlcLegend">
               <b>O —</b><span>H —</span><span>L —</span><span>C —</span><span class="ohlc-change">—</span>
@@ -1193,11 +1215,6 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
     </div>
   </div>
 </main>
-
-<button type="button" id="rtReopenBtn" class="rt-reopen-btn" title="Mở lại bảng tín hiệu realtime">
-  <span class="rt-dot"></span>
-  <span id="rtReopenText">RT</span>
-</button>
 
 <div id="rtListPanel" class="rt-list-panel" role="dialog" aria-label="Danh sách tín hiệu realtime hôm nay">
   <div class="rt-list-head">
@@ -2993,9 +3010,17 @@ function syncRealtimeReopenButton() {
 
   const isBuy = String(signal.direction || '').toUpperCase() === 'BUY';
   btn.classList.toggle('sell-mode', !isBuy);
-  $('rtReopenText').textContent =
-    (isBuy ? '▲ BUY' : '▼ SELL') + ' · ' + signal.symbol + ' · ' + signal.timeframe +
-    (rtSignals.length > 1 ? ' (+' + (rtSignals.length - 1) + ') ▴' : '');
+  const more = rtSignals.length - 1;
+  const html = '<span>' + (isBuy ? '▲' : '▼') + '</span><span>' + esc(signal.symbol) + '</span>'
+    + '<span class="rt-tf">' + esc(signal.timeframe) + '</span>'
+    + (more > 0 ? '<span class="rt-more">+' + more + '</span>' : '');
+  const label = $('rtReopenText');
+  if (label.dataset.html !== html) {
+    label.dataset.html = html;
+    label.innerHTML = html;
+    btn.setAttribute('aria-label', 'Tín hiệu realtime ' + (isBuy ? 'BUY ' : 'SELL ') + signal.symbol + ' ' + signal.timeframe
+      + (more > 0 ? ', còn ' + more + ' tín hiệu khác' : ''));
+  }
   btn.classList.add('show');
 }
 
