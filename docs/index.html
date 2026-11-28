@@ -1064,6 +1064,26 @@ body.trade-fullscreen .chart-stage #tradePanelToggle.floating-trade-toggle[aria-
 .td-foot{display:flex;justify-content:space-between;gap:8px;padding:6px 10px;border-top:1px solid #22344d;color:#8ea2bd;font-size:11px}
 .td-nav{display:flex;align-items:center;justify-content:space-between;padding:4px 8px;border-top:1px solid #22344d;color:#8ea2bd;font-size:11px}
 .td-nav button{min-width:44px;height:28px;padding:0}
+/* ===== Đường lệnh gọn: nét mảnh, nhãn ngắn bên trái, giá trên thang giá ===== */
+.real-line,.real-line.pos-entry,.real-line.pos-sl,.real-line.pos-tp,.real-line.pend-entry,.real-line.pend-sl,.real-line.pend-tp{background:none;border:0;height:2px;margin-top:-1px}
+.real-line.pos-entry{--lc:#4d94f5}.real-line.pend-entry{--lc:#2fbf8f}
+.real-line.pos-sl,.real-line.pend-sl{--lc:#f06478}.real-line.pos-tp,.real-line.pend-tp{--lc:#22c58b}
+.real-line::after{content:"";position:absolute;left:0;right:var(--ps-w,60px);top:0;border-top:1px dashed var(--lc);opacity:.75;pointer-events:none}
+.real-line.pos-entry::after{border-top-style:solid}
+.real-line.locked{opacity:1}
+.real-line .rl-tag{position:absolute;z-index:1;left:6px;right:auto;top:-8px;height:18px;padding:0 6px;border:1px solid var(--lc);border-radius:4px;background:rgba(11,21,37,.88);box-shadow:none;color:var(--lc);font-size:10px;font-weight:700;line-height:16px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.real-line.pos-entry .rl-tag{background:#1d4f8f;border-color:#4d94f5;color:#fff}
+.real-line .rl-tag b{margin-left:2px;color:#dbe6f5}
+.real-line .rl-tag b.up{color:#5ee6b3}.real-line .rl-tag b.down{color:#ff95a5}
+.real-line .rl-price{position:absolute;z-index:1;right:0;left:auto;top:-8px;width:var(--ps-w,60px);height:18px;padding:0 2px;border:0;border-radius:3px 0 0 3px;background:var(--lc);box-shadow:none;color:#07111f;font-size:10px;font-weight:800;line-height:18px;text-align:center;white-space:nowrap;overflow:hidden;font-variant-numeric:tabular-nums}
+.real-line:active::after{border-top-width:2px;opacity:1}
+/* Lệnh đang soạn: nằm bên phải, viền đứt để phân biệt với lệnh thật */
+.drag-line,.drag-line.entry,.drag-line.sl,.drag-line.tp{background:none}
+.drag-line.entry{--lc:#60a5fa}.drag-line.sl{--lc:#f06478}.drag-line.tp{--lc:#22c58b}
+.drag-line::after{content:"";position:absolute;left:0;right:var(--ps-w,60px);top:0;border-top:2px dashed var(--lc);pointer-events:none}
+.drag-line span{z-index:1;left:auto;right:calc(var(--ps-w,60px) + 6px);top:-9px;height:20px;padding:0 6px;border:1px dashed var(--lc);background:rgba(11,21,37,.92);color:var(--lc);font-size:10px;line-height:18px}
+/* nút TRADE tránh logo biểu đồ ở góc dưới trái */
+body.trade-fullscreen .chart-stage #tradePanelToggle.floating-trade-toggle{left:56px}
 </style>
 <link rel="stylesheet" href="./auth.css">
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
@@ -2472,7 +2492,7 @@ function renderRealLines() {
   const pendings = (chartPendingOrders || []).filter(o => String(o.symbol || '').toUpperCase() === curSym);
 
   const makeLine = (opts) => {
-    const { price, type, side, key, payload, label } = opts;
+    const { price, type, side, key, payload } = opts;
     const y = candleSeries.priceToCoordinate(price);
     if (y == null || !Number.isFinite(y)) return;
     const el = document.createElement('div');
@@ -2490,14 +2510,14 @@ function renderRealLines() {
     el.dataset.price = String(price);
     el.dataset.side = side || '';
     const span = document.createElement('span');
-    span.textContent = label;
-    el.appendChild(span);
+    span.className = 'rl-tag';
+    const priceTag = document.createElement('span');
+    priceTag.className = 'rl-price';
+    el.append(span, priceTag);
+    el.title = '#' + ticketId;
+    paintRealLabel(el, key, payload, price);
 
     if (canDragReal) {
-      const prefix = key === 'entry'
-        ? `#${ticketId} ${side} LIMIT `
-        : `#${ticketId} ${isPendingOrder ? 'P-' : ''}${key.toUpperCase()} `;
-
       el.addEventListener('pointerdown', ev => {
         if (realSltpLocked) return;
         ev.preventDefault();
@@ -2509,11 +2529,9 @@ function renderRealLines() {
         });
         activeRealDragItem = {
           el,
-          span,
           payload,
           key,
           ticketId,
-          prefix,
           startPrice: Number(price),
           currentPrice: Number(price),
           startX: ev.clientX,
@@ -2534,63 +2552,104 @@ function renderRealLines() {
     realLineEls.push({ el, type, key });
   };
 
-  const makeEntryMarker = (data, kind, entry, direction, index) => {
-    const y = candleSeries.priceToCoordinate(entry);
-    if (y == null || !Number.isFinite(y)) return;
-    const marker = document.createElement('button');
-    marker.type = 'button';
-    marker.className = 'real-entry-marker ' + (direction === 'BUY' ? 'buy' : 'sell') + (kind === 'pending' ? ' pending' : '');
-    marker.dataset.price = String(entry);
-    marker.dataset.ticket = String(data.ticket ?? data.id ?? '');
-    marker.textContent = direction === 'BUY' ? '▲ BUY' : '▼ SELL';
-    marker.title = 'Xem chi tiết lệnh #' + String(data.ticket ?? data.id ?? '');
-    marker.style.cssText = 'position:absolute;left:' + (10 + (index % 4) * 62) + 'px;top:' + Math.max(2, y - 11) + 'px;z-index:12;padding:3px 6px;border-radius:5px;border:1px solid ' + (direction === 'BUY' ? '#218765' : '#a44758') + ';background:' + (direction === 'BUY' ? 'rgba(18,92,68,.96)' : 'rgba(111,39,54,.96)') + ';color:#fff;font-size:10px;font-weight:800;line-height:14px;cursor:pointer;white-space:nowrap;pointer-events:auto;';
-    marker.addEventListener('click', ev => {
-      ev.preventDefault();
-      ev.stopPropagation();
-      openRealPopup({ kind, data }, ev.clientX, ev.clientY, false);
-    });
-    realOverlay.appendChild(marker);
-    realLineEls.push({ el: marker, type: 'entry-marker', key: 'entry-marker' });
-  };
-
-  positions.forEach((p, index) => {
+  positions.forEach(p => {
     const dir = String(p.direction || '').toUpperCase();
     const ticket = String(p.ticket ?? p.id ?? '');
     const entry = Number(p.entry) || 0;
     const sl = Number(p.sl) || 0;
     const tp = Number(p.tp) || 0;
     if (realEntryVisible && entry > 0) {
-      makeLine({ price: entry, type: 'pos-entry', key: 'entry', side: dir, payload: { kind: 'position', data: p }, label: `#${ticket} ${dir} ENTRY ${entry.toFixed(mt5Digits)}` });
-      makeEntryMarker(p, 'position', entry, dir, index);
+      makeLine({ price: entry, type: 'pos-entry', key: 'entry', side: dir, payload: { kind: 'position', data: p } });
     }
     if (realSlVisible && sl > 0) {
-      makeLine({ price: sl, type: 'pos-sl', key: 'sl', side: dir, payload: { kind: 'position', data: p }, label: `#${ticket} SL ${sl.toFixed(mt5Digits)}` });
+      makeLine({ price: sl, type: 'pos-sl', key: 'sl', side: dir, payload: { kind: 'position', data: p } });
     }
     if (realTpVisible && tp > 0) {
-      makeLine({ price: tp, type: 'pos-tp', key: 'tp', side: dir, payload: { kind: 'position', data: p }, label: `#${ticket} TP ${tp.toFixed(mt5Digits)}` });
+      makeLine({ price: tp, type: 'pos-tp', key: 'tp', side: dir, payload: { kind: 'position', data: p } });
     }
   });
 
-  pendings.forEach((o, index) => {
+  pendings.forEach(o => {
     const dir = String(o.direction || '').toUpperCase();
     const ticket = String(o.ticket ?? o.id ?? '');
     const entry = Number(o.entry ?? o.price ?? o.open_price) || 0;
     const sl = Number(o.sl) || 0;
     const tp = Number(o.tp) || 0;
     if (realEntryVisible && entry > 0) {
-      makeLine({ price: entry, type: 'pend-entry', key: 'entry', side: dir, payload: { kind: 'pending', data: o }, label: `#${ticket} ${dir} LIMIT ${entry.toFixed(mt5Digits)}` });
-      makeEntryMarker(o, 'pending', entry, dir, index + positions.length);
+      makeLine({ price: entry, type: 'pend-entry', key: 'entry', side: dir, payload: { kind: 'pending', data: o } });
     }
     if (realSlVisible && sl > 0) {
-      makeLine({ price: sl, type: 'pend-sl', key: 'sl', side: dir, payload: { kind: 'pending', data: o }, label: `#${ticket} P-SL ${sl.toFixed(mt5Digits)}` });
+      makeLine({ price: sl, type: 'pend-sl', key: 'sl', side: dir, payload: { kind: 'pending', data: o } });
     }
     if (realTpVisible && tp > 0) {
-      makeLine({ price: tp, type: 'pend-tp', key: 'tp', side: dir, payload: { kind: 'pending', data: o }, label: `#${ticket} P-TP ${tp.toFixed(mt5Digits)}` });
+      makeLine({ price: tp, type: 'pend-tp', key: 'tp', side: dir, payload: { kind: 'pending', data: o } });
     }
   });
 
+  spreadRealTags();
   applyLockState();
+}
+
+// Số tiền lãi/lỗ ước tính (chưa gồm phí) nếu giá chạm mức này
+function levelMoney(payload, price) {
+  const d = payload.data;
+  const entry = Number(d.entry ?? d.price ?? d.open_price) || 0;
+  const volume = Number(d.volume ?? d.lots ?? d.lot) || 0;
+  // thông số tick chỉ đúng khi chart đã tải xong đúng mã của lệnh
+  if (!loadedKey || loadedKey.split('|')[0] !== String(d.symbol || '').toUpperCase()) return null;
+  if (!(entry > 0 && volume > 0 && mt5TickSize > 0 && mt5TickValue > 0)) return null;
+  const side = String(d.direction || '').toUpperCase().includes('SELL') ? -1 : 1;
+  return (price - entry) * side / mt5TickSize * mt5TickValue * volume;
+}
+
+function paintRealLabel(el, key, payload, price) {
+  const d = payload.data;
+  const pending = payload.kind === 'pending';
+  const dir = String(d.direction || '').toUpperCase();
+  const volume = Number(d.volume ?? d.lots ?? d.lot) || 0;
+  const signed = v => (v > 0.004 ? '+' : v < -0.004 ? '−' : '') + Math.abs(v).toFixed(2);
+  let name, money = null;
+  if (key === 'entry') {
+    name = dir + (pending ? ' LIMIT' : '') + (volume > 0 ? ' ' + fmtLot(volume) : '');
+    if (!pending && Number.isFinite(Number(d.profit))) money = Number(d.profit);
+  } else {
+    name = key.toUpperCase() + (pending ? ' chờ' : '');
+    // đang kéo Entry của lệnh chờ thì chưa biết mức tiền nên chỉ tính cho SL/TP
+    money = levelMoney(payload, price);
+  }
+  const tag = el.querySelector('.rl-tag');
+  tag.textContent = name;
+  if (money !== null) {
+    const b = document.createElement('b');
+    b.textContent = signed(money);
+    b.className = money > 0.004 ? 'up' : money < -0.004 ? 'down' : '';
+    tag.append(' ', b);
+  }
+  el.querySelector('.rl-price').textContent = price.toFixed(mt5Digits);
+  let scale = 0;
+  try { scale = priceChart.priceScale('right').width(); } catch (_) {}
+  $('priceChart').style.setProperty('--ps-w', (scale > 20 ? Math.round(scale) : 60) + 'px');
+}
+
+// Các mức nằm sát nhau thì xếp nhãn cạnh nhau, không đè lên nhau
+function spreadRealTags() {
+  const placed = [];
+  let priceBottom = -Infinity;
+  realLineEls.map(x => x.el).sort((a, b) => parseFloat(a.style.top) - parseFloat(b.style.top)).forEach(el => {
+    const tag = el.querySelector('.rl-tag');
+    if (!tag) return;
+    const y = parseFloat(el.style.top);
+    // nhãn giá trên thang giá: đẩy xuống nếu chồng nhãn phía trên
+    const priceTop = Math.max(y - 9, priceBottom + 1);
+    el.querySelector('.rl-price').style.top = (priceTop - y + 1) + 'px';
+    priceBottom = priceTop + 18;
+    let left = 6;
+    for (const o of placed.filter(o => Math.abs(o.y - y) < 20).sort((a, b) => a.left - b.left)) {
+      if (left + tag.offsetWidth + 4 > o.left && left < o.right + 4) left = o.right + 4;
+    }
+    tag.style.left = left + 'px';
+    placed.push({ y, left, right: left + tag.offsetWidth });
+  });
 }
 
 function proposeRealLevelChange(payload, key, oldPrice, newPrice) {
@@ -2699,7 +2758,7 @@ function updateRealDragAtClientY(clientY) {
   const price = Math.max(0, Number(rawPrice));
   item.currentPrice = price;
   item.el.dataset.price = String(price);
-  item.span.textContent = item.prefix + price.toFixed(mt5Digits);
+  paintRealLabel(item.el, item.key, item.payload, price);
 }
 
 window.addEventListener('pointermove', ev => {
