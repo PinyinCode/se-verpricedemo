@@ -993,13 +993,40 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
 #tradeHistoryTip{display:none;position:absolute;z-index:8;pointer-events:none;max-width:260px;padding:8px 10px;border:1px solid #34475f;border-radius:8px;background:rgba(10,18,32,.95);color:#e8eef7;font-size:11px;line-height:1.55;box-shadow:0 8px 24px rgba(0,0,0,.45)}
 #tradeHistoryTip div+div{margin-top:6px;padding-top:6px;border-top:1px solid #2a3b52}
 #tradeHistoryButton.active{background:#2563eb;border-color:#60a5fa;color:#fff}
-/* Màn hình hẹp: thu gọn để thanh công cụ vẫn nằm một hàng */
-@media (max-width:430px){
-  body.trade-fullscreen .chart-overlay-top .chart-actions-tools{gap:2px!important}
-  body.trade-fullscreen .chart-overlay-top .chart-actions-tools button{min-width:0!important;width:auto!important;padding-left:3px!important;padding-right:3px!important}
-  body.trade-fullscreen .chart-overlay-top .chart-actions-tools #positionCount{min-width:14px!important;padding-left:2px!important;padding-right:2px!important;margin-left:1px!important}
-  body.trade-fullscreen .chart-overlay-top .primary-chart-action{padding-left:5px!important;padding-right:5px!important;font-size:10px!important;letter-spacing:0!important}
-  body.trade-fullscreen .chart-overlay-top .chart-pickers{gap:3px!important}
+/* Thanh công cụ: màn rộng hiện đủ nút; điện thoại gom nút ít dùng vào menu ⋯ */
+#moreMenu{display:contents}
+#moreButton,#moreMenu .more-system-link{display:none}
+.chart-actions-tools #lockButton{order:1}
+#settingsButton{order:2}#positionsButton{order:3}#statsButton{order:4}#tradeHistoryButton{order:5}#fitChart{order:6}#refresh{order:7}
+@media (pointer:coarse) and (min-width:601px){
+  body.trade-fullscreen .chart-overlay-top .chart-actions-tools{gap:6px}
+  body.trade-fullscreen .chart-overlay-top .chart-actions-tools button{min-width:40px;min-height:36px;font-size:16px}
+}
+@media (max-width:600px){
+  body.trade-fullscreen .chart-overlay-top .chart-head{position:relative;z-index:3;flex-wrap:nowrap;gap:5px;padding:3px 5px}
+  body.trade-fullscreen .chart-overlay-top .chart-pickers{flex:0 0 auto;gap:4px!important}
+  body.trade-fullscreen .chart-overlay-top .chart-pickers select{width:auto;height:36px;font-size:12px;padding:0 2px 0 5px}
+  body.trade-fullscreen .chart-overlay-top #symbol{width:84px}
+  body.trade-fullscreen .chart-overlay-top #tf{width:54px}
+  body.trade-fullscreen .chart-overlay-top .chart-actions{flex:1 1 0;width:auto;flex-basis:0;flex-wrap:nowrap;justify-content:flex-end;gap:0}
+  body.trade-fullscreen .chart-overlay-top .chart-actions-primary{display:none}
+  body.trade-fullscreen .chart-overlay-top .chart-actions-tools{position:relative;flex:1 1 auto;justify-content:flex-end;gap:5px!important;margin-left:0}
+  body.trade-fullscreen .chart-overlay-top .chart-actions-tools>button{position:relative;display:inline-flex;align-items:center;justify-content:center;flex:1 1 0;max-width:46px;min-width:0!important;height:36px;min-height:36px;padding:0!important;font-size:18px;line-height:1}
+  /* vùng chạm cao hơn nút nhưng không làm thanh cao thêm */
+  body.trade-fullscreen .chart-overlay-top .chart-actions-tools>button::after{content:"";position:absolute;left:-2px;right:-2px;top:-5px;bottom:-5px}
+  body.trade-fullscreen .chart-overlay-top .chart-actions-tools #positionCount{min-width:15px!important;margin-left:2px!important;padding:0 3px!important;font-size:11px}
+  #moreButton{order:9;display:inline-flex}
+  #moreButton[aria-expanded="true"]{background:#2563eb;border-color:#60a5fa;color:#fff}
+  #moreMenu{display:none;position:absolute;top:calc(100% + 8px);right:0;z-index:30;width:218px;padding:6px;flex-direction:column;gap:4px;background:#0c1727;border:1px solid #3a516d;border-radius:12px;box-shadow:0 14px 34px rgba(0,0,0,.5)}
+  #moreMenu.open{display:flex}
+  body.trade-fullscreen .chart-overlay-top #moreMenu button,#moreMenu .more-system-link{display:flex;align-items:center;justify-content:flex-start;gap:10px;width:100%;min-height:44px;padding:0 14px;font-size:17px;text-align:left}
+  #moreMenu button::after{font-size:13px;font-weight:600}
+  #settingsButton::after{content:"Cài đặt lệnh"}
+  #statsButton::after{content:"Thống kê"}
+  #fitChart::after{content:"Vừa khung"}
+  #refresh::after{content:"Làm mới dữ liệu"}
+  #moreMenu .more-system-link{order:10;font-size:13px;font-weight:700}
+  #moreMenu .more-system-link::before{content:"🛠";font-size:16px}
 }
 </style>
 <link rel="stylesheet" href="./auth.css">
@@ -1067,12 +1094,16 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
                 <div class="chart-actions-tools">
                   <span class="small" id="feedState">Đang kết nối dữ liệu...</span>
                   <button id="lockButton" type="button" aria-label="Khóa/mở kéo các mức SL/TP" title="Khóa/mở kéo các mức SL/TP">🔓</button>
-                  <button id="settingsButton" type="button" aria-label="Cài đặt" title="Cài đặt API key, Risk, Entry">⚙</button>
                   <button id="positionsButton" type="button" aria-label="Vị thế đang mở và lệnh chờ" title="Xem vị thế đang mở và vị thế chờ">▣<span id="positionCount">0</span></button>
-                  <button id="statsButton" type="button" aria-label="Thống kê" title="Thống kê tín hiệu và lịch sử giao dịch">▤</button>
                   <button id="tradeHistoryButton" type="button" aria-pressed="false" aria-label="Hiện/ẩn lịch sử giao dịch trên biểu đồ" title="Hiện/ẩn lịch sử giao dịch trên biểu đồ">⇄</button>
-                  <button id="fitChart" type="button" aria-label="Vừa khung" title="Vừa khung biểu đồ">⤢</button>
-                  <button id="refresh" type="button" title="Làm mới dữ liệu">↻</button>
+                  <button id="moreButton" type="button" aria-haspopup="true" aria-expanded="false" aria-controls="moreMenu" aria-label="Thêm công cụ" title="Thêm công cụ">⋯</button>
+                  <div id="moreMenu">
+                    <button id="settingsButton" type="button" aria-label="Cài đặt" title="Cài đặt API key, Risk, Entry">⚙</button>
+                    <button id="statsButton" type="button" aria-label="Thống kê" title="Thống kê tín hiệu và lịch sử giao dịch">▤</button>
+                    <button id="fitChart" type="button" aria-label="Vừa khung" title="Vừa khung biểu đồ">⤢</button>
+                    <button id="refresh" type="button" title="Làm mới dữ liệu">↻</button>
+                    <a class="control-link more-system-link" href="./settings.html">Điều khiển hệ thống</a>
+                  </div>
                 </div>
               </div>
             </div>
@@ -4775,6 +4806,22 @@ $('priceChart').addEventListener('dblclick', event => {
   requestAnimationFrame(syncChartPriceOverlays);
 }, true);
 
+function initMoreMenu() {
+  const button = $('moreButton');
+  const menu = $('moreMenu');
+  const setOpen = open => {
+    menu.classList.toggle('open', open);
+    button.setAttribute('aria-expanded', open ? 'true' : 'false');
+  };
+  button.addEventListener('click', () => setOpen(!menu.classList.contains('open')));
+  // chọn một mục hoặc chạm ra ngoài (kể cả chart) thì đóng menu
+  menu.addEventListener('click', () => setOpen(false));
+  document.addEventListener('pointerdown', event => {
+    if (!menu.contains(event.target) && !button.contains(event.target)) setOpen(false);
+  }, true);
+  document.addEventListener('keydown', event => { if (event.key === 'Escape') setOpen(false); });
+}
+initMoreMenu();
 $('fitChart').addEventListener('click', () => {
   priceChart.timeScale().fitContent();
   priceChart.timeScale().applyOptions({ rightOffset: 10 });
