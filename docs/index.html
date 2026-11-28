@@ -988,6 +988,19 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
   body.trade-fullscreen .chart-overlay-bottom .trade-footer{padding:4px 6px}
   body.trade-fullscreen .chart-stage #rsiChart{height:48px}
 }
+/* Lịch sử giao dịch trên chart */
+#tradeHistoryCanvas{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:4}
+#tradeHistoryTip{display:none;position:absolute;z-index:8;pointer-events:none;max-width:260px;padding:8px 10px;border:1px solid #34475f;border-radius:8px;background:rgba(10,18,32,.95);color:#e8eef7;font-size:11px;line-height:1.55;box-shadow:0 8px 24px rgba(0,0,0,.45)}
+#tradeHistoryTip div+div{margin-top:6px;padding-top:6px;border-top:1px solid #2a3b52}
+#tradeHistoryButton.active{background:#2563eb;border-color:#60a5fa;color:#fff}
+/* Màn hình hẹp: thu gọn để thanh công cụ vẫn nằm một hàng */
+@media (max-width:430px){
+  body.trade-fullscreen .chart-overlay-top .chart-actions-tools{gap:2px!important}
+  body.trade-fullscreen .chart-overlay-top .chart-actions-tools button{min-width:0!important;width:auto!important;padding-left:3px!important;padding-right:3px!important}
+  body.trade-fullscreen .chart-overlay-top .chart-actions-tools #positionCount{min-width:14px!important;padding-left:2px!important;padding-right:2px!important;margin-left:1px!important}
+  body.trade-fullscreen .chart-overlay-top .primary-chart-action{padding-left:5px!important;padding-right:5px!important;font-size:10px!important;letter-spacing:0!important}
+  body.trade-fullscreen .chart-overlay-top .chart-pickers{gap:3px!important}
+}
 </style>
 <link rel="stylesheet" href="./auth.css">
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
@@ -1057,6 +1070,7 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
                   <button id="settingsButton" type="button" aria-label="Cài đặt" title="Cài đặt API key, Risk, Entry">⚙</button>
                   <button id="positionsButton" type="button" aria-label="Vị thế đang mở và lệnh chờ" title="Xem vị thế đang mở và vị thế chờ">▣<span id="positionCount">0</span></button>
                   <button id="statsButton" type="button" aria-label="Thống kê" title="Thống kê tín hiệu và lịch sử giao dịch">▤</button>
+                  <button id="tradeHistoryButton" type="button" aria-pressed="false" aria-label="Hiện/ẩn lịch sử giao dịch trên biểu đồ" title="Hiện/ẩn lịch sử giao dịch trên biểu đồ">⇄</button>
                   <button id="fitChart" type="button" aria-label="Vừa khung" title="Vừa khung biểu đồ">⤢</button>
                   <button id="refresh" type="button" title="Làm mới dữ liệu">↻</button>
                 </div>
@@ -1193,6 +1207,18 @@ body.trade-fullscreen .chart-overlay-bottom .request-state{font-size:clamp(10px,
       <label class="settings-checkbox-row" for="showAskLine">
         <input id="showAskLine" type="checkbox">
         <span>Hiện đường Ask line trên biểu đồ giá</span>
+      </label>
+      <label class="settings-checkbox-row" for="showTradeHistory">
+        <input id="showTradeHistory" type="checkbox">
+        <span>Hiện lịch sử giao dịch trên biểu đồ (kiểu MT5)</span>
+      </label>
+      <label class="settings-checkbox-row" for="showTradeHistoryLines">
+        <input id="showTradeHistoryLines" type="checkbox">
+        <span>Đường nối điểm vào và điểm đóng</span>
+      </label>
+      <label class="settings-checkbox-row" for="showTradeHistoryProfit">
+        <input id="showTradeHistoryProfit" type="checkbox">
+        <span>Hiện lãi/lỗ tại điểm đóng</span>
       </label>
       <section class="commission-panel" aria-live="polite">
         <div class="commission-panel-head">
@@ -3675,6 +3701,7 @@ async function load(forceNetwork = false) {
     }
     // Chỉ cho đặt lệnh khi giá và thông số hợp đồng lấy từ server (không phải cache)
     if (!fromCache) loadedKey = cacheKey;
+    scheduleTradeHistory();
 
     rememberBrokerOffset(data.broker_offset_sec);
     renderSignals(data.signals || [], bars);
@@ -3949,6 +3976,7 @@ async function refreshChartPositions() {
     }
     chartMt5Accounts = Array.isArray(d.mt5_accounts) ? d.mt5_accounts : [];
     renderChartPositions(openList, pendingList);
+    setTradeHistory(d.real_history);
     if (!closingIds.size && !cancelingIds.size) {
       $('positionsUpdated').textContent = 'Đồng bộ ' + new Date().toLocaleTimeString('vi-VN') + ' · ' + openList.length + ' vị thế mở · ' + pendingList.length + ' lệnh chờ' + (snapshotAge !== null ? (snapshotAge > 15 ? ' · Dữ liệu MT5 cũ ' + snapshotAge + 's' : ' · MT5 ' + snapshotAge + 's') : ' · Chưa nhận snapshot MT5');
     }
@@ -4193,7 +4221,230 @@ function setLevelLines() {
   }
 }
 
+// ===== Lịch sử giao dịch trên chart (kiểu MT5) =====
+const TH_STORAGE = { show: 'chartTradeHistoryVisible', lines: 'chartTradeHistoryLines', profit: 'chartTradeHistoryProfit' };
+const tradeHistoryOpt = (() => {
+  const read = (key, fallback) => {
+    try { const v = localStorage.getItem(key); return v === null ? fallback : v === '1'; } catch (_) { return fallback; }
+  };
+  return { show: read(TH_STORAGE.show, false), lines: read(TH_STORAGE.lines, true), profit: read(TH_STORAGE.profit, false) };
+})();
+const TH_BUY = '#3d8bff', TH_SELL = '#ff5252';
+let tradeHistoryRows = [];
+let tradeHistoryHits = [];
+let tradeHistoryRaf = 0;
+let tradeHistoryCanvas = null, tradeHistoryTip = null;
+
+function setTradeHistory(rows) {
+  tradeHistoryRows = Array.isArray(rows) ? rows : [];
+  scheduleTradeHistory();
+}
+
+function scheduleTradeHistory() {
+  if (!tradeHistoryCanvas || tradeHistoryRaf) return;
+  tradeHistoryRaf = requestAnimationFrame(() => { tradeHistoryRaf = 0; drawTradeHistory(); });
+}
+
+// Vị trí cây nến chứa thời điểm t; -1 nếu t trước nến đầu tiên đang tải
+function barIndexAt(bars, t) {
+  let lo = 0, hi = bars.length - 1, found = -1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (Number(bars[mid].time) <= t) { found = mid; lo = mid + 1; } else hi = mid - 1;
+  }
+  return found;
+}
+
+// Chuyển lịch sử + vị thế đang mở của mã hiện tại thành các cặp điểm vào/ra
+function tradesForSymbol(symbol) {
+  const same = p => String(p.symbol || '').toUpperCase() === symbol;
+  const side = p => String(p.direction || '').toUpperCase().includes('SELL') ? 'SELL' : 'BUY';
+  const closed = tradeHistoryRows.filter(same).map(p => {
+    const full = Number(p.close_price) > 0;
+    return {
+      side: side(p), ticket: p.ticket ?? p.id, volume: Number(p.volume) || 0,
+      profit: Number(p.profit) || 0, outcome: String(p.outcome || ''),
+      openTime: full ? Number(p.opened_at) || 0 : 0, openPrice: full ? Number(p.entry) || 0 : 0,
+      // Dữ liệu EA cũ: chỉ có giá đóng, nằm trong trường entry
+      closeTime: Number(p.closed_at) || 0, closePrice: full ? Number(p.close_price) : Number(p.entry) || 0,
+    };
+  });
+  const open = (chartOpenPositions || []).filter(same).map(p => ({
+    side: side(p), ticket: p.ticket ?? p.id, volume: Number(p.volume) || 0,
+    profit: Number(p.profit) || 0, outcome: 'OPEN',
+    openTime: Number(p.opened_at) || 0, openPrice: Number(p.entry) || 0, closeTime: 0, closePrice: 0,
+  }));
+  return closed.concat(open);
+}
+
+function drawTradeArrow(ctx, x, y, pointRight, color) {
+  // mũi nhọn chạm đúng vị trí giá, giống mũi tên lịch sử của MT5
+  const d = pointRight ? -1 : 1;
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(x + d * 10, y - 6);
+  ctx.lineTo(x + d * 10, y + 6);
+  ctx.closePath();
+  ctx.fillStyle = color;
+  ctx.fill();
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = 'rgba(255,255,255,.85)';
+  ctx.stroke();
+}
+
+function drawTradeHistory() {
+  const canvas = tradeHistoryCanvas;
+  if (!canvas) return;
+  tradeHistoryHits = [];
+  const host = $('priceChart');
+  const width = host.clientWidth, height = host.clientHeight, ratio = window.devicePixelRatio || 1;
+  if (canvas.width !== Math.round(width * ratio) || canvas.height !== Math.round(height * ratio)) {
+    canvas.width = Math.round(width * ratio);
+    canvas.height = Math.round(height * ratio);
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+  ctx.clearRect(0, 0, width, height);
+  if (!tradeHistoryOpt.show) { hideTradeTip(); return; }
+
+  const symbol = String($('symbol').value || '').toUpperCase();
+  // Không vẽ khi nến trên chart vẫn là của mã khác
+  if (!loadedKey || loadedKey.split('|')[0] !== symbol) { hideTradeTip(); return; }
+  const bars = candleSeries.data() || [];
+  if (!bars.length) return;
+
+  const timeScale = priceChart.timeScale();
+  const plotWidth = timeScale.width() || width;
+  const plotHeight = height - (timeScale.height() || 0);
+  const point = (time, price) => {
+    if (!(time > 0) || !(price > 0)) return null;
+    const i = barIndexAt(bars, time);
+    if (i < 0) return null;
+    const x = timeScale.timeToCoordinate(bars[i].time), y = candleSeries.priceToCoordinate(price);
+    return x == null || y == null ? null : { x, y };
+  };
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(0, 0, plotWidth, plotHeight);
+  ctx.clip();
+  const trades = tradesForSymbol(symbol).map(t => ({ t, a: point(t.openTime, t.openPrice), b: point(t.closeTime, t.closePrice) }));
+
+  if (tradeHistoryOpt.lines) {
+    ctx.setLineDash([4, 3]);
+    ctx.lineWidth = 1.4;
+    for (const { t, a, b } of trades) {
+      if (!a || !b) continue;
+      ctx.strokeStyle = t.side === 'BUY' ? TH_BUY : TH_SELL;
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
+    ctx.setLineDash([]);
+  }
+
+  ctx.font = '600 11px system-ui, sans-serif';
+  ctx.textBaseline = 'middle';
+  for (const { t, a, b } of trades) {
+    const isBuy = t.side === 'BUY';
+    if (a) {
+      drawTradeArrow(ctx, a.x, a.y, true, isBuy ? TH_BUY : TH_SELL);
+      tradeHistoryHits.push({ x: a.x - 5, y: a.y, trade: t });
+    }
+    if (b) {
+      // lệnh đóng ngược chiều lệnh mở nên đổi màu
+      drawTradeArrow(ctx, b.x, b.y, false, isBuy ? TH_SELL : TH_BUY);
+      tradeHistoryHits.push({ x: b.x + 5, y: b.y, trade: t });
+      if (tradeHistoryOpt.profit) {
+        const text = (t.profit > 0 ? '+' : '') + t.profit.toFixed(2);
+        const w = ctx.measureText(text).width + 8;
+        ctx.fillStyle = 'rgba(8,15,27,.85)';
+        ctx.fillRect(b.x + 13, b.y - 9, w, 18);
+        ctx.fillStyle = t.profit >= 0 ? '#27c995' : '#f06b7e';
+        ctx.fillText(text, b.x + 17, b.y + 0.5);
+      }
+    }
+  }
+  ctx.restore();
+}
+
+function hideTradeTip() {
+  if (tradeHistoryTip) tradeHistoryTip.style.display = 'none';
+}
+
+function showTradeTip(pointer) {
+  if (!pointer || !tradeHistoryOpt.show) { hideTradeTip(); return; }
+  const near = tradeHistoryHits
+    .map(h => ({ ...h, d: Math.hypot(h.x - pointer.x, h.y - pointer.y) }))
+    .filter(h => h.d <= 14)
+    .sort((a, b) => a.d - b.d);
+  const unique = [...new Map(near.map(h => [h.trade, h])).keys()];
+  if (!unique.length) { hideTradeTip(); return; }
+  const symbol = $('symbol').value;
+  const price = v => v > 0 ? fmtPrice(v, symbol) : '—';
+  const blocks = unique.slice(0, 3).map(t => {
+    const isOpen = t.outcome === 'OPEN';
+    return '<div><b style="color:' + (t.side === 'BUY' ? TH_BUY : TH_SELL) + '">' + t.side + ' ' + esc(fmtLot(t.volume)) + '</b> #' + esc(t.ticket)
+      + '<br>Vào ' + price(t.openPrice) + (isOpen ? ' · đang mở' : ' → Đóng ' + price(t.closePrice))
+      + (!isOpen && t.outcome && t.outcome !== 'CLOSED' ? ' (' + esc(t.outcome) + ')' : '')
+      + '<br><b style="color:' + (t.profit >= 0 ? '#27c995' : '#f06b7e') + '">' + (t.profit > 0 ? '+' : '') + esc(fmtMoney2(t.profit)) + '</b></div>';
+  });
+  if (unique.length > 3) blocks.push('<div>+' + (unique.length - 3) + ' lệnh khác</div>');
+  const tip = tradeHistoryTip, host = $('priceChart');
+  tip.innerHTML = blocks.join('');
+  tip.style.display = 'block';
+  const x = Math.min(pointer.x + 14, host.clientWidth - tip.offsetWidth - 6);
+  let y = pointer.y + 14;
+  if (y + tip.offsetHeight > host.clientHeight - 6) y = pointer.y - tip.offsetHeight - 14;
+  tip.style.left = Math.max(6, x) + 'px';
+  tip.style.top = Math.max(6, y) + 'px';
+}
+
+function setTradeHistoryOption(name, value) {
+  tradeHistoryOpt[name] = Boolean(value);
+  try { localStorage.setItem(TH_STORAGE[name], value ? '1' : '0'); } catch (_) {}
+  syncTradeHistoryControls();
+  scheduleTradeHistory();
+}
+
+function syncTradeHistoryControls() {
+  const btn = $('tradeHistoryButton');
+  btn.classList.toggle('active', tradeHistoryOpt.show);
+  btn.setAttribute('aria-pressed', String(tradeHistoryOpt.show));
+  $('showTradeHistory').checked = tradeHistoryOpt.show;
+  $('showTradeHistoryLines').checked = tradeHistoryOpt.lines;
+  $('showTradeHistoryProfit').checked = tradeHistoryOpt.profit;
+  $('showTradeHistoryLines').disabled = !tradeHistoryOpt.show;
+  $('showTradeHistoryProfit').disabled = !tradeHistoryOpt.show;
+}
+
+function initTradeHistory() {
+  const host = $('priceChart');
+  tradeHistoryCanvas = document.createElement('canvas');
+  tradeHistoryCanvas.id = 'tradeHistoryCanvas';
+  tradeHistoryTip = document.createElement('div');
+  tradeHistoryTip.id = 'tradeHistoryTip';
+  host.append(tradeHistoryCanvas, tradeHistoryTip);
+
+  $('tradeHistoryButton').addEventListener('click', () => {
+    setTradeHistoryOption('show', !tradeHistoryOpt.show);
+    if (tradeHistoryOpt.show) void refreshChartPositions();
+  });
+  $('showTradeHistory').addEventListener('change', e => setTradeHistoryOption('show', e.target.checked));
+  $('showTradeHistoryLines').addEventListener('change', e => setTradeHistoryOption('lines', e.target.checked));
+  $('showTradeHistoryProfit').addEventListener('change', e => setTradeHistoryOption('profit', e.target.checked));
+  $('symbol').addEventListener('change', () => { hideTradeTip(); scheduleTradeHistory(); });
+  priceChart.subscribeCrosshairMove(param => showTradeTip(param && param.point));
+  new ResizeObserver(scheduleTradeHistory).observe(host);
+  // Kéo/zoom thang giá không phát sự kiện riêng
+  for (const type of ['wheel', 'pointerup', 'dblclick', 'touchend']) {
+    host.addEventListener(type, () => setTimeout(scheduleTradeHistory, 60), { passive: true });
+  }
+  setInterval(() => { if (tradeHistoryOpt.show && !document.hidden) scheduleTradeHistory(); }, 500);
+  syncTradeHistoryControls();
+  scheduleTradeHistory();
+}
+
 function syncChartPriceOverlays() {
+  scheduleTradeHistory();
   if (!activeFormDragKey) setLevelLines();
   renderAskLine();
   if (!activeRealDragItem) {
@@ -4821,6 +5072,7 @@ stopAuthorizedPolling();
 syncRealLayerToggles();
 bindRealLayerToggles();
 bindAskLineToggle();
+initTradeHistory();
 applyLockState();
 syncPresetButtons();
 
