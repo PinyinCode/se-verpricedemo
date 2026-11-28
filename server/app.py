@@ -76,6 +76,12 @@ def _ensure_candles_ask_column(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE candles ADD COLUMN ask REAL")
 
 
+def _ensure_history_close_price_column(conn: sqlite3.Connection) -> None:
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(real_history)").fetchall()}
+    if "close_price" not in cols:
+        conn.execute("ALTER TABLE real_history ADD COLUMN close_price REAL NOT NULL DEFAULT 0")
+
+
 def init_db() -> None:
     with db() as conn:
         conn.execute("""
@@ -254,6 +260,7 @@ def init_db() -> None:
             updated_at TEXT NOT NULL
         )
         """)
+        _ensure_history_close_price_column(conn)
 
         conn.execute("""
         CREATE TABLE IF NOT EXISTS heartbeats (
@@ -699,6 +706,7 @@ class RealTradeItemIn(BaseModel):
     outcome: str = Field(default="CLOSED", max_length=40)
     opened_at: float = Field(default=0, ge=0)
     closed_at: float = Field(gt=0)
+    close_price: float = Field(default=0, ge=0)
 
     @field_validator("symbol")
     @classmethod
@@ -2066,11 +2074,11 @@ def update_real_history(payload: RealHistoryBatchIn):
             ticket_str = str(item.ticket).strip() if item.ticket is not None else ""
             row_id = _stable_trade_id(item).strip()
             conn.execute(
-                "INSERT OR REPLACE INTO real_history(id,ticket,symbol,timeframe,direction,entry,sl,tp,volume,profit,outcome,opened_at,closed_at,updated_at) "
-                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "INSERT OR REPLACE INTO real_history(id,ticket,symbol,timeframe,direction,entry,sl,tp,volume,profit,outcome,opened_at,closed_at,updated_at,close_price) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (row_id, ticket_str or row_id, item.symbol, item.timeframe or "—", item.direction,
                  item.entry, item.sl, item.tp, item.volume, item.profit, item.outcome or "CLOSED",
-                 item.opened_at, item.closed_at, now),
+                 item.opened_at, item.closed_at, now, item.close_price),
             )
     return {"ok": True, "count": len(payload.trades), "updated_at": now}
 
@@ -2333,8 +2341,8 @@ def dashboard_data():
         ).fetchone()
         mt5_snapshot_updated_at = snapshot_state["updated_at"] if snapshot_state else None
         real_history = [dict(r) for r in conn.execute(
-            "SELECT id,ticket,symbol,timeframe,direction,entry,sl,tp,volume,profit,outcome,opened_at,closed_at "
-            "FROM real_history ORDER BY closed_at DESC LIMIT 100").fetchall()]
+            "SELECT id,ticket,symbol,timeframe,direction,entry,sl,tp,volume,profit,outcome,opened_at,closed_at,close_price "
+            "FROM real_history ORDER BY closed_at DESC LIMIT 200").fetchall()]
         heartbeats = [dict(r) for r in conn.execute(
             "SELECT component,status,details,updated_at FROM heartbeats ORDER BY component").fetchall()]
         for item in heartbeats:
